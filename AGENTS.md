@@ -26,8 +26,9 @@ This shows current project state and automatically starts a session if needed. R
 
 **At session end:**
 ```bash
-proj session end "Brief summary of what was accomplished"
+proj session end "Implemented X, fixed Y, updated Z"
 ```
+Write substantive summaries (1-3 sentences) that answer "what was accomplished?" Avoid generic summaries like "reviewed status" - future sessions need specific context to resume effectively.
 
 ### Quick Reference
 
