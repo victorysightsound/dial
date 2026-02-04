@@ -48,7 +48,7 @@ A methodology and toolset for autonomous AI development:
 
 | Component | Location |
 |-----------|----------|
-| DIAL CLI | `~/.dial/dial.py` (symlinked to `~/bin/dial`) |
+| DIAL CLI | `~/projects/dial/dial.py` (symlinked to `~/bin/dial`) |
 | Methodology guide | `./dial_guide.db` |
 | Upgrade plan | `./DIAL_UPGRADE_PLAN.md` |
 | Memory proposal | `./DIAL_Memory_System_Proposal.md` |
