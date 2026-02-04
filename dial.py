@@ -23,7 +23,7 @@ from pathlib import Path
 # CONFIGURATION
 # ============================================================
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_PHASE = "default"
 DEFAULT_BUILD_TIMEOUT = 600  # 10 minutes
 DEFAULT_TEST_TIMEOUT = 600   # 10 minutes
@@ -405,7 +405,7 @@ def migrate_db(conn):
         """)
         conn.commit()
 
-def init_db(phase=DEFAULT_PHASE, import_solutions_from=None):
+def init_db(phase=DEFAULT_PHASE, import_solutions_from=None, setup_agents=True):
     """Initialize the database with schema."""
     dial_dir = get_dial_dir()
     dial_dir.mkdir(exist_ok=True)
@@ -490,6 +490,110 @@ def init_db(phase=DEFAULT_PHASE, import_solutions_from=None):
     set_current_phase(phase)
 
     print(green(f"Initialized DIAL database: {db_path}"))
+
+    # Setup AGENTS.md with DIAL instructions
+    if setup_agents:
+        setup_agents_md(skip_if_exists=True)
+
+    return True
+
+# ============================================================
+# AGENTS.MD SETUP
+# ============================================================
+
+DIAL_AGENTS_SECTION = '''
+---
+
+## DIAL — Autonomous Development Loop
+
+This project uses **DIAL** (Deterministic Iterative Agent Loop) for autonomous development.
+
+### Get Full Instructions
+
+```bash
+sqlite3 ~/projects/dial/dial_guide.db "SELECT content FROM sections WHERE section_id LIKE '2.%' ORDER BY sort_order;"
+```
+
+### Quick Reference
+
+```bash
+dial status           # Current state
+dial task list        # Show pending tasks
+dial task next        # Show next task
+dial iterate          # Start next task, get context
+dial validate         # Run tests, commit on success
+dial learn "text" -c category  # Record a learning
+dial stats            # Statistics dashboard
+```
+
+### The DIAL Loop
+
+1. `dial iterate` → Get task + context
+2. Implement (one task only, no placeholders, search before creating)
+3. `dial validate` → Test and commit
+4. On success: next task. On failure: retry (max 3).
+
+### Configuration
+
+```bash
+dial config set build_cmd "your build command"
+dial config set test_cmd "your test command"
+```
+'''
+
+def setup_agents_md(skip_if_exists=False):
+    """Add DIAL section to project's AGENTS.md."""
+    agents_files = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md']
+    project_root = Path.cwd()
+
+    # Find existing AGENTS.md or create new one
+    agents_path = None
+    for name in agents_files:
+        path = project_root / name
+        if path.exists() and not path.is_symlink():
+            agents_path = path
+            break
+        elif path.exists() and path.is_symlink():
+            # Follow symlink to find the real file
+            real_path = path.resolve()
+            if real_path.exists():
+                agents_path = real_path
+                break
+
+    if agents_path is None:
+        # Create new AGENTS.md
+        agents_path = project_root / 'AGENTS.md'
+        project_name = project_root.name
+        content = f"# Project: {project_name}\n\n## On Entry (MANDATORY)\n\n```bash\nsession-context\n```\n"
+        content += DIAL_AGENTS_SECTION
+        agents_path.write_text(content)
+        print(green(f"Created {agents_path} with DIAL instructions."))
+        return True
+
+    # Check if DIAL section already exists
+    existing_content = agents_path.read_text()
+    if '## DIAL' in existing_content or 'dial iterate' in existing_content:
+        if skip_if_exists:
+            print(dim("DIAL section already exists in AGENTS.md."))
+            return True
+        print(yellow("DIAL section already exists in AGENTS.md."))
+        response = input("Replace it? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("Skipped AGENTS.md update.")
+            return True
+        # Remove existing DIAL section
+        import re
+        existing_content = re.sub(
+            r'\n---\n\n## DIAL.*?(?=\n---\n|\n## [^D]|\Z)',
+            '',
+            existing_content,
+            flags=re.DOTALL
+        )
+
+    # Append DIAL section
+    new_content = existing_content.rstrip() + '\n' + DIAL_AGENTS_SECTION
+    agents_path.write_text(new_content)
+    print(green(f"Added DIAL instructions to {agents_path}"))
     return True
 
 # ============================================================
@@ -1941,6 +2045,8 @@ def main():
     init_parser.add_argument('--phase', default=DEFAULT_PHASE, help='Phase name')
     init_parser.add_argument('--import-solutions', dest='import_solutions',
                             help='Import trusted solutions from another phase')
+    init_parser.add_argument('--no-agents', dest='no_agents', action='store_true',
+                            help='Skip adding DIAL instructions to AGENTS.md')
 
     # index
     index_parser = subparsers.add_parser('index', help='Index spec files')
@@ -2058,7 +2164,7 @@ def main():
 
     # Commands that don't need initialization
     if args.command == 'init':
-        init_db(args.phase, args.import_solutions)
+        init_db(args.phase, args.import_solutions, setup_agents=not args.no_agents)
         return
 
     # Check if initialized
