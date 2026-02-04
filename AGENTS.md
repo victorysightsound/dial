@@ -1,71 +1,96 @@
-# Project Context & Rules
-This file is the single source of truth for Gemini, Claude, and Codex agents.
+# Project: DIAL
 
+## On Entry (MANDATORY)
 
-## Project Tracking
-
-This project uses `proj` for session and decision tracking. Follow these instructions to maintain project continuity.
-
-### Session Management
-
-**At session start:**
 ```bash
-proj status
+session-context
 ```
-This shows current project state and automatically starts a session if needed. Review the output to understand:
-- Where the last session left off
-- Current active tasks
-- Recent decisions
-- Any open blockers or questions
 
-**During the session:**
-- Log significant decisions: `proj log decision "topic" "what was decided" "why"`
-- Update task status: `proj task update <id> --status in_progress`
-- Note blockers: `proj log blocker "description"`
-- Add context notes: `proj log note "category" "title" "content"`
+---
 
-**At session end:**
-```bash
-proj session end "Implemented X, fixed Y, updated Z"
-```
-Write substantive summaries (1-3 sentences) that answer "what was accomplished?" Avoid generic summaries like "reviewed status" - future sessions need specific context to resume effectively.
+## Project Documentation
 
-### Quick Reference
+**DIAL Guide Database:** `./dial_guide.db`
 
-| Command | Purpose |
-|---------|---------|
-| `proj status` | Current state + auto-start session |
-| `proj resume` | Detailed "where we left off" context |
-| `proj context <topic>` | Query decisions/notes about a topic |
-| `proj tasks` | List current tasks |
-| `proj log decision "topic" "decision" "rationale"` | Record a decision |
-| `proj session end "summary"` | Close session with summary |
+This database contains the complete DIAL methodology and AI agent instructions.
 
-### Database Queries (for AI agents)
-
-For direct database access when more efficient:
+### Query Instructions
 
 ```sql
--- Get last session summary
-SELECT summary FROM sessions WHERE status = 'completed' ORDER BY ended_at DESC LIMIT 1;
+-- List all sections
+SELECT section_id, title FROM sections ORDER BY sort_order;
 
--- Get active tasks
-SELECT task_id, description, status, priority FROM tasks WHERE status NOT IN ('completed', 'cancelled') ORDER BY priority, created_at;
+-- Read AI agent workflow
+SELECT content FROM sections WHERE section_id LIKE '2.%' ORDER BY sort_order;
 
--- Get recent decisions on a topic
-SELECT decision, rationale, created_at FROM decisions WHERE topic LIKE '%auth%' AND status = 'active';
+-- Search for topic
+SELECT heading_path, content FROM sections_fts WHERE sections_fts MATCH 'your topic';
 
--- Search all tracked content
-SELECT * FROM tracking_fts WHERE tracking_fts MATCH 'search term';
+-- Get PRD format specification
+SELECT content FROM sections WHERE section_id = '2.4';
+
+-- Get task extraction guide
+SELECT content FROM sections WHERE section_id = '2.5';
 ```
 
-Tracking database: `.tracking/tracking.db`
-Project database: `./{project_name}_{type}.db` (in project root)
+---
 
-### Principles
+## What is DIAL?
 
-1. **Start with `proj status`** - never guess project state
-2. **Log decisions when made** - not later when you might forget the rationale
-3. **Keep task status current** - update as you work, not in batches
-4. **End sessions with summaries** - future you (or another agent) will thank you
-5. **Query before re-reading** - a SQL query uses fewer tokens than re-reading files
+**DIAL** = **Deterministic Iterative Agent Loop**
+
+A methodology and toolset for autonomous AI development:
+
+- **Problem:** Markdown-based memory causes context bloat as iterations grow
+- **Solution:** SQLite + FTS5 for selective recall, trust-based solution learning
+
+### Core Components
+
+| Component | Location |
+|-----------|----------|
+| DIAL CLI | `~/.dial/dial.py` (symlinked to `~/bin/dial`) |
+| Methodology guide | `./dial_guide.db` |
+| Upgrade plan | `./DIAL_UPGRADE_PLAN.md` |
+| Memory proposal | `./DIAL_Memory_System_Proposal.md` |
+| AGENTS.md template | `./templates/AGENTS_DIAL_TEMPLATE.md` |
+
+---
+
+## Using DIAL in Other Projects
+
+1. Copy `templates/AGENTS_DIAL_TEMPLATE.md` to your project as `AGENTS.md`
+2. Initialize: `dial init --phase mvp`
+3. Configure build/test commands
+4. Put your PRD in `specs/`
+5. Run `dial index`
+6. Tell the AI: "Use DIAL to build this project from the PRD"
+
+---
+
+## The 10 Failure Modes
+
+DIAL addresses these predictable agent failures:
+
+1. Duplicate Implementation
+2. Placeholder/Minimal Implementation
+3. Context Window Exhaustion
+4. Reasoning Loss Between Loops
+5. Cascading Failures
+6. Overnight Breakage
+7. Validation Backpressure Chaos
+8. Specification Drift
+9. Test Amnesia
+10. Learning Loss
+
+Query `dial_guide.db` section 1.4 for full details and countermeasures.
+
+---
+
+## Memory Commands
+
+```bash
+memory-log decision "topic" "what was decided and why"
+memory-log note "topic" "content"
+memory-log blocker "topic" "what is blocking"
+task add "description" [priority]
+```
