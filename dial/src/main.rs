@@ -117,6 +117,12 @@ enum Commands {
 
     /// Reset current iteration
     Reset,
+
+    /// Show fresh context for current/next task (Ralph-style)
+    Context,
+
+    /// Generate sub-agent prompt for orchestrator mode (Ralph-style)
+    Orchestrate,
 }
 
 #[derive(Subcommand)]
@@ -325,6 +331,14 @@ fn run_command(command: Commands) -> Result<()> {
 
         Commands::Reset => {
             iteration::reset_current()?;
+        }
+
+        Commands::Context => {
+            iteration::show_context()?;
+        }
+
+        Commands::Orchestrate => {
+            iteration::orchestrate()?;
         }
     }
 

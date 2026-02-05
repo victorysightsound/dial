@@ -2,6 +2,8 @@
 
 ## Status: COMPLETE (Feb 2026)
 
+**Current Version:** 2.1.0
+
 ## Overview
 
 DIAL (Deterministic Iterative Agent Loop) rewritten from Python to Rust for:
@@ -9,11 +11,24 @@ DIAL (Deterministic Iterative Agent Loop) rewritten from Python to Rust for:
 - Single binary distribution (4.0MB, no runtime dependencies)
 - Alignment with preferred tech stack (Rust core)
 
+## Version History
+
+### v2.1.0 (Feb 2026) - Ralph-Style Improvements
+- Added behavioral "signs" (guardrails) to context output
+- Added `dial context` for fresh context regeneration
+- Added `dial orchestrate` for sub-agent prompt generation
+- Added learning capture prompts after successful validation
+- Total commands: 24
+
+### v2.0.0 (Feb 2026) - Initial Rust Rewrite
+- Complete rewrite from Python to Rust
+- 22 commands with identical behavior to Python
+
 ## Implementation Results
 
 | Metric | Python | Rust |
 |--------|--------|------|
-| Lines of code | 2,271 | 3,309 |
+| Lines of code | 2,271 | ~4,300 |
 | Startup time | ~190ms | ~14ms |
 | Binary size | N/A | 4.0MB |
 | Dependencies | Python 3.x | None (static) |
@@ -25,9 +40,9 @@ DIAL (Deterministic Iterative Agent Loop) rewritten from Python to Rust for:
 - **Symlink:** `~/bin/dial` → `~/projects/dial/dial/target/release/dial`
 - **Guide DB:** `~/projects/dial/dial_guide.db`
 
-## CLI Commands (22 total)
+## CLI Commands (24 total)
 
-All commands implemented with identical behavior to Python:
+All commands implemented with identical behavior to Python, plus Ralph-style additions:
 
 | Command | Subcommands |
 |---------|-------------|
@@ -49,6 +64,8 @@ All commands implemented with identical behavior to Python:
 | stats | |
 | revert | |
 | reset | |
+| context | Fresh context regeneration (v2.1) |
+| orchestrate | Sub-agent prompt generation (v2.1) |
 
 ## Technical Design
 
@@ -110,7 +127,7 @@ No async/tokio - DIAL is synchronous.
 ### Constants
 
 ```rust
-pub const VERSION: &str = "2.0.0";
+pub const VERSION: &str = "2.1.0";
 pub const MAX_FIX_ATTEMPTS: u32 = 3;
 pub const TRUST_THRESHOLD: f64 = 0.6;
 pub const TRUST_INCREMENT: f64 = 0.15;

@@ -12,7 +12,7 @@ use chrono::Local;
 use rusqlite::Connection;
 use std::fs;
 
-pub use context::gather_context;
+pub use context::{gather_context, generate_subagent_prompt};
 pub use validation::run_validation;
 
 pub fn create_iteration(conn: &Connection, task_id: i64, attempt_number: i32) -> Result<i64> {
@@ -197,6 +197,14 @@ pub fn validate_current() -> Result<bool> {
 
         println!("{}", green(&format!("\nIteration #{} completed successfully!", iteration_id)));
         println!("{}", green(&format!("Task #{} marked as completed.", task_id)));
+
+        // Ralph-style: Prompt for learning capture after success
+        println!();
+        println!("{}", bold("📝 Learning Capture"));
+        println!("{}", dim("Did you learn something during this task? Record it now:"));
+        println!("{}", yellow("  dial learn \"what you learned\" -c <category>"));
+        println!("{}", dim("Categories: build, test, setup, gotcha, pattern, tool, other"));
+        println!();
 
         Ok(true)
     } else {
@@ -425,5 +433,111 @@ pub fn stop_loop() -> Result<()> {
     let stop_file = get_dial_dir().join("stop");
     fs::write(&stop_file, "")?;
     println!("{}", yellow("Stop flag created. DIAL will stop after current iteration."));
+    Ok(())
+}
+
+/// Show fresh context for current or next task (Ralph-style context regeneration)
+pub fn show_context() -> Result<()> {
+    let conn = get_db(None)?;
+
+    // Try to find current in-progress task first
+    let task: Option<Task> = conn
+        .query_row(
+            "SELECT t.id, t.description, t.status, t.priority, t.blocked_by, t.spec_section_id, t.created_at, t.started_at, t.completed_at
+             FROM tasks t
+             INNER JOIN iterations i ON i.task_id = t.id
+             WHERE i.status = 'in_progress'
+             ORDER BY i.id DESC LIMIT 1",
+            [],
+            |row| Task::from_row(row),
+        )
+        .ok();
+
+    // If no in-progress task, get next pending task
+    let task = match task {
+        Some(t) => t,
+        None => {
+            let mut stmt = conn.prepare(
+                "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+                 FROM tasks WHERE status = 'pending'
+                 ORDER BY priority, id LIMIT 1",
+            )?;
+
+            match stmt.query_row([], |row| Task::from_row(row)).ok() {
+                Some(t) => t,
+                None => {
+                    println!("{}", dim("No pending tasks. Task queue empty."));
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    println!("{}", bold(&"=".repeat(60)));
+    println!("{}", bold(&format!("Fresh Context: Task #{}", task.id)));
+    println!("{}", bold(&"=".repeat(60)));
+    println!();
+
+    let context = gather_context(&conn, &task)?;
+    let full_context = format!("# Task: {}\n\n{}", task.description, context);
+
+    println!("{}", full_context);
+
+    // Also write to file
+    let context_file = get_dial_dir().join("current_context.md");
+    fs::write(&context_file, &full_context)?;
+    println!("\n{}", dim(&format!("Context written to: {}", context_file.display())));
+
+    Ok(())
+}
+
+/// Generate orchestrator prompt for running tasks with fresh sub-agents
+pub fn orchestrate() -> Result<()> {
+    let conn = get_db(None)?;
+
+    // Get next pending task
+    let mut stmt = conn.prepare(
+        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+         FROM tasks WHERE status = 'pending'
+         ORDER BY priority, id LIMIT 1",
+    )?;
+
+    let task = match stmt.query_row([], |row| Task::from_row(row)).ok() {
+        Some(t) => t,
+        None => {
+            println!("{}", green("All tasks completed! Nothing to orchestrate."));
+            return Ok(());
+        }
+    };
+
+    // Generate the sub-agent prompt
+    let prompt = generate_subagent_prompt(&conn, &task)?;
+
+    println!("{}", bold(&"=".repeat(70)));
+    println!("{}", bold("DIAL Orchestrator Mode"));
+    println!("{}", bold(&"=".repeat(70)));
+    println!();
+    println!("{}", dim("Copy the prompt below to spawn a fresh sub-agent for this task."));
+    println!("{}", dim("After the sub-agent completes, run `dial validate` to commit."));
+    println!();
+    println!("{}", bold("--- SUB-AGENT PROMPT START ---"));
+    println!();
+    println!("{}", prompt);
+    println!("{}", bold("--- SUB-AGENT PROMPT END ---"));
+    println!();
+
+    // Write prompt to file for easy access
+    let prompt_file = get_dial_dir().join("subagent_prompt.md");
+    fs::write(&prompt_file, &prompt)?;
+    println!("{}", dim(&format!("Prompt also saved to: {}", prompt_file.display())));
+
+    // Platform hints
+    println!();
+    println!("{}", bold("Platform Commands:"));
+    println!("  {}", dim("Claude Code: claude -p \"$(cat .dial/subagent_prompt.md)\""));
+    println!("  {}", dim("Codex CLI:   codex --task \"$(cat .dial/subagent_prompt.md)\""));
+    println!("  {}", dim("Gemini:      Copy prompt to new Gemini session"));
+    println!();
+
     Ok(())
 }

@@ -4,8 +4,36 @@ use crate::task::models::Task;
 use crate::TRUST_THRESHOLD;
 use rusqlite::Connection;
 
+/// Behavioral guardrails ("signs") from Ralph Loop methodology.
+/// These prevent context rot by reminding the agent of critical rules.
+const SIGNS: &[&str] = &[
+    "ONE TASK ONLY: Complete exactly this task. No scope creep.",
+    "SEARCH BEFORE CREATE: Always search for existing files/functions before creating new ones.",
+    "NO PLACEHOLDERS: Every implementation must be complete. No TODO, FIXME, or stub code.",
+    "VALIDATE BEFORE DONE: Run `dial validate` after implementing. Don't mark complete without testing.",
+    "RECORD LEARNINGS: After success, capture what you learned with `dial learn \"...\" -c category`.",
+    "FAIL FAST: If blocked or confused, stop and ask rather than guessing.",
+];
+
 pub fn gather_context(conn: &Connection, task: &Task) -> Result<String> {
+    gather_context_impl(conn, task, true)
+}
+
+pub fn gather_context_without_signs(conn: &Connection, task: &Task) -> Result<String> {
+    gather_context_impl(conn, task, false)
+}
+
+fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> Result<String> {
     let mut context = Vec::new();
+
+    // Add behavioral signs first (most important for context rot prevention)
+    if include_signs {
+        context.push("## ⚠️ SIGNS (Critical Rules)\n".to_string());
+        for sign in SIGNS {
+            context.push(format!("- **{}**", sign));
+        }
+        context.push(String::new());
+    }
 
     // Get relevant spec sections
     if let Some(spec_id) = task.spec_section_id {
@@ -115,4 +143,37 @@ pub fn gather_context(conn: &Connection, task: &Task) -> Result<String> {
     }
 
     Ok(context.join("\n\n"))
+}
+
+/// Generate a fresh context prompt for spawning a sub-agent (orchestrator mode).
+/// This produces a self-contained prompt that can be used to spawn a fresh AI session.
+pub fn generate_subagent_prompt(conn: &Connection, task: &Task) -> Result<String> {
+    let context = gather_context(conn, task)?;
+
+    let prompt = format!(
+        r#"# DIAL Sub-Agent Task
+
+You are a fresh AI agent spawned by DIAL to complete ONE task with clean context.
+
+## Your Task
+**Task #{id}:** {description}
+
+{context}
+
+## Instructions
+
+1. **Implement** the task completely (no placeholders)
+2. **Test** your implementation locally if possible
+3. When done, output: `DIAL_COMPLETE: <summary of what was done>`
+4. If blocked, output: `DIAL_BLOCKED: <what is blocking>`
+5. If you learned something valuable, output: `DIAL_LEARNING: <category>: <what you learned>`
+
+Do NOT deviate from this task. Do NOT start other tasks.
+"#,
+        id = task.id,
+        description = task.description,
+        context = context
+    );
+
+    Ok(prompt)
 }

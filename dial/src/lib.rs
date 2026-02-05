@@ -14,7 +14,7 @@ pub use db::{get_current_phase, get_db, get_dial_dir, init_db, DEFAULT_PHASE};
 pub use errors::{DialError, Result};
 
 // Constants
-pub const VERSION: &str = "2.0.0";
+pub const VERSION: &str = "2.1.0";
 pub const MAX_FIX_ATTEMPTS: u32 = 3;
 pub const TRUST_THRESHOLD: f64 = 0.6;
 pub const TRUST_INCREMENT: f64 = 0.15;

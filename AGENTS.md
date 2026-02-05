@@ -124,6 +124,8 @@ dial iterate          # Start next task, get context
 dial validate         # Run tests, commit on success
 dial learn "text" -c category  # Record a learning
 dial stats            # Statistics dashboard
+dial context          # Fresh context (Ralph-style)
+dial orchestrate      # Sub-agent prompt (Ralph-style)
 ```
 
 ### The DIAL Loop
@@ -132,6 +134,31 @@ dial stats            # Statistics dashboard
 2. Implement (one task only, no placeholders, search before creating)
 3. `dial validate` → Test and commit
 4. On success: next task. On failure: retry (max 3).
+
+### Ralph-Style Context Rot Prevention (v2.1)
+
+DIAL v2.1 adds features from the Ralph Loop methodology to combat context rot:
+
+1. **Signs (Behavioral Guardrails):** Context now includes critical rules:
+   - ONE TASK ONLY - No scope creep
+   - SEARCH BEFORE CREATE - Don't duplicate
+   - NO PLACEHOLDERS - Complete implementations only
+   - VALIDATE BEFORE DONE - Always test
+   - RECORD LEARNINGS - Capture insights
+   - FAIL FAST - Ask don't guess
+
+2. **Fresh Context:** Run `dial context` anytime to regenerate clean context
+
+3. **Orchestrator Mode:** Run `dial orchestrate` to get a prompt for spawning fresh sub-agents:
+   ```bash
+   # Claude Code
+   claude -p "$(cat .dial/subagent_prompt.md)"
+
+   # Codex CLI
+   codex --task "$(cat .dial/subagent_prompt.md)"
+   ```
+
+4. **Learning Prompts:** After successful validation, DIAL reminds you to capture learnings
 
 ### Configuration
 
