@@ -47,6 +47,9 @@ pub enum DialError {
     #[error("Invalid config key: {0}")]
     InvalidConfigKey(String),
 
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
     #[error("Specs directory '{0}' not found")]
     SpecsDirNotFound(String),
 

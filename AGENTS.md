@@ -126,6 +126,7 @@ dial learn "text" -c category  # Record a learning
 dial stats            # Statistics dashboard
 dial context          # Fresh context (Ralph-style)
 dial orchestrate      # Sub-agent prompt (Ralph-style)
+dial auto-run         # Automated orchestration (Ralph-style)
 ```
 
 ### The DIAL Loop
@@ -135,9 +136,9 @@ dial orchestrate      # Sub-agent prompt (Ralph-style)
 3. `dial validate` → Test and commit
 4. On success: next task. On failure: retry (max 3).
 
-### Ralph-Style Context Rot Prevention (v2.1)
+### Ralph-Style Context Rot Prevention (v2.1+)
 
-DIAL v2.1 adds features from the Ralph Loop methodology to combat context rot:
+DIAL includes features from the Ralph Loop methodology to combat context rot:
 
 1. **Signs (Behavioral Guardrails):** Context now includes critical rules:
    - ONE TASK ONLY - No scope creep
@@ -149,7 +150,7 @@ DIAL v2.1 adds features from the Ralph Loop methodology to combat context rot:
 
 2. **Fresh Context:** Run `dial context` anytime to regenerate clean context
 
-3. **Orchestrator Mode:** Run `dial orchestrate` to get a prompt for spawning fresh sub-agents:
+3. **Manual Orchestrator Mode:** Run `dial orchestrate` to get a prompt for spawning fresh sub-agents:
    ```bash
    # Claude Code
    claude -p "$(cat .dial/subagent_prompt.md)"
@@ -158,7 +159,13 @@ DIAL v2.1 adds features from the Ralph Loop methodology to combat context rot:
    codex --task "$(cat .dial/subagent_prompt.md)"
    ```
 
-4. **Learning Prompts:** After successful validation, DIAL reminds you to capture learnings
+4. **Automated Orchestration (v2.2):** Run `dial auto-run` for fully automated task execution:
+   ```bash
+   dial auto-run --cli claude --max 10
+   ```
+   This spawns a fresh AI subprocess for each task, parses DIAL signals, runs validation, and loops.
+
+5. **Learning Prompts:** After successful validation, DIAL reminds you to capture learnings
 
 ### Configuration
 

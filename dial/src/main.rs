@@ -123,6 +123,17 @@ enum Commands {
 
     /// Generate sub-agent prompt for orchestrator mode (Ralph-style)
     Orchestrate,
+
+    /// Run automated orchestration with fresh AI subprocesses per task
+    AutoRun {
+        /// Max iterations before stopping
+        #[arg(long)]
+        max: Option<u32>,
+
+        /// AI CLI to use (claude, codex, gemini)
+        #[arg(long, default_value = "claude")]
+        cli: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -339,6 +350,10 @@ fn run_command(command: Commands) -> Result<()> {
 
         Commands::Orchestrate => {
             iteration::orchestrate()?;
+        }
+
+        Commands::AutoRun { max, cli } => {
+            iteration::auto_run(max, Some(&cli))?;
         }
     }
 

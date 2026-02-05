@@ -1,4 +1,5 @@
 pub mod context;
+pub mod orchestrator;
 pub mod validation;
 
 use crate::db::{get_db, get_dial_dir};
@@ -13,6 +14,7 @@ use rusqlite::Connection;
 use std::fs;
 
 pub use context::{gather_context, generate_subagent_prompt};
+pub use orchestrator::auto_run;
 pub use validation::run_validation;
 
 pub fn create_iteration(conn: &Connection, task_id: i64, attempt_number: i32) -> Result<i64> {

@@ -2,7 +2,7 @@
 
 ## Status: COMPLETE (Feb 2026)
 
-**Current Version:** 2.1.0
+**Current Version:** 2.2.0
 
 ## Overview
 
@@ -12,6 +12,12 @@ DIAL (Deterministic Iterative Agent Loop) rewritten from Python to Rust for:
 - Alignment with preferred tech stack (Rust core)
 
 ## Version History
+
+### v2.2.0 (Feb 2026) - Automated Orchestration
+- Added `dial auto-run` for fully automated orchestration with fresh AI subprocesses
+- Supports Claude Code, Codex CLI, and Gemini CLI
+- Parses DIAL signals: `DIAL_COMPLETE`, `DIAL_BLOCKED`, `DIAL_LEARNING`
+- Total commands: 25
 
 ### v2.1.0 (Feb 2026) - Ralph-Style Improvements
 - Added behavioral "signs" (guardrails) to context output
@@ -40,7 +46,7 @@ DIAL (Deterministic Iterative Agent Loop) rewritten from Python to Rust for:
 - **Symlink:** `~/bin/dial` → `~/projects/dial/dial/target/release/dial`
 - **Guide DB:** `~/projects/dial/dial_guide.db`
 
-## CLI Commands (24 total)
+## CLI Commands (25 total)
 
 All commands implemented with identical behavior to Python, plus Ralph-style additions:
 
@@ -66,6 +72,7 @@ All commands implemented with identical behavior to Python, plus Ralph-style add
 | reset | |
 | context | Fresh context regeneration (v2.1) |
 | orchestrate | Sub-agent prompt generation (v2.1) |
+| auto-run | Automated orchestration (--max, --cli) (v2.2) |
 
 ## Technical Design
 
