@@ -8,6 +8,7 @@ use crate::output::{bold, dim, green, red, yellow};
 use crate::task::models::Task;
 use crate::MAX_FIX_ATTEMPTS;
 use chrono::Local;
+use regex::Regex;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -34,25 +35,24 @@ impl AiCli {
         }
     }
 
-    pub fn command_args(&self, prompt_file: &str) -> Vec<String> {
+    /// Build the shell command to run this AI CLI with a prompt file
+    pub fn build_command(&self, prompt_file: &str) -> String {
         match self {
-            AiCli::ClaudeCode => vec![
-                "claude".to_string(),
-                "-p".to_string(),
-                format!("$(cat {})", prompt_file),
-                "--no-input".to_string(),
-            ],
-            AiCli::Codex => vec![
-                "codex".to_string(),
-                "--task".to_string(),
-                format!("$(cat {})", prompt_file),
-                "--quiet".to_string(),
-            ],
-            AiCli::Gemini => vec![
-                "gemini".to_string(),
-                "--prompt-file".to_string(),
-                prompt_file.to_string(),
-            ],
+            // claude -p "prompt" (reads prompt, outputs response, exits)
+            AiCli::ClaudeCode => format!(
+                "claude -p \"$(cat {})\" 2>&1",
+                prompt_file
+            ),
+            // codex exec "prompt" (non-interactive mode, skip git check for temp dirs)
+            AiCli::Codex => format!(
+                "cat {} | codex exec --skip-git-repo-check 2>&1",
+                prompt_file
+            ),
+            // gemini -p "prompt" (reads from stdin with -)
+            AiCli::Gemini => format!(
+                "cat {} | gemini -p - 2>&1",
+                prompt_file
+            ),
         }
     }
 
@@ -77,33 +77,76 @@ pub struct SubagentResult {
 }
 
 impl SubagentResult {
-    /// Parse AI output for DIAL signals
+    /// Parse AI output for DIAL signals using robust regex matching
+    /// Handles variations like:
+    /// - DIAL_COMPLETE: message
+    /// - DIAL COMPLETE: message
+    /// - **DIAL_COMPLETE:** message
+    /// - `DIAL_COMPLETE: message`
+    ///
+    /// Ignores template placeholders like `<summary>` or `<category>`
     pub fn parse(output: &str) -> Self {
         let mut result = SubagentResult {
             raw_output: output.to_string(),
             ..Default::default()
         };
 
+        // Regex patterns for signal detection (case-insensitive, flexible formatting)
+        // Handles: DIAL_COMPLETE:, DIAL COMPLETE:, **DIAL_COMPLETE:**, `DIAL_COMPLETE:`
+        let complete_re = Regex::new(r"(?i)[\*`]*DIAL[_\s]COMPLETE[\*`:]+\s*(.+)").unwrap();
+        let blocked_re = Regex::new(r"(?i)[\*`]*DIAL[_\s]BLOCKED[\*`:]+\s*(.+)").unwrap();
+        let learning_re = Regex::new(r"(?i)[\*`]*DIAL[_\s]LEARNING[\*`:]+\s*(.+)").unwrap();
+
+        // Pattern to detect template placeholders like <summary>, <category>, <reason>
+        let placeholder_re = Regex::new(r"<[a-z_\s]+>").unwrap();
+
         for line in output.lines() {
             let line = line.trim();
 
+            // Skip lines that look like instructions/templates (contain placeholders)
+            if placeholder_re.is_match(line) {
+                continue;
+            }
+
+            // Skip lines that are inside code blocks or are quoting the format
+            if line.contains("output:") || line.contains("output `") || line.starts_with("#") {
+                continue;
+            }
+
             // DIAL_COMPLETE: <summary>
-            if let Some(msg) = line.strip_prefix("DIAL_COMPLETE:") {
-                result.complete = true;
-                result.complete_message = Some(msg.trim().to_string());
+            if let Some(caps) = complete_re.captures(line) {
+                let msg = caps[1].trim().to_string();
+                // Only accept if it's real content, not a placeholder
+                if !msg.is_empty() && !msg.starts_with('<') {
+                    result.complete = true;
+                    result.complete_message = Some(msg);
+                }
             }
             // DIAL_BLOCKED: <reason>
-            else if let Some(msg) = line.strip_prefix("DIAL_BLOCKED:") {
-                result.blocked = true;
-                result.blocked_message = Some(msg.trim().to_string());
+            else if let Some(caps) = blocked_re.captures(line) {
+                let msg = caps[1].trim().to_string();
+                if !msg.is_empty() && !msg.starts_with('<') {
+                    result.blocked = true;
+                    result.blocked_message = Some(msg);
+                }
             }
             // DIAL_LEARNING: <category>: <description>
-            else if let Some(rest) = line.strip_prefix("DIAL_LEARNING:") {
-                if let Some((cat, desc)) = rest.trim().split_once(':') {
-                    result.learnings.push((cat.trim().to_string(), desc.trim().to_string()));
-                } else {
+            else if let Some(caps) = learning_re.captures(line) {
+                let rest = caps[1].trim();
+                // Skip if it looks like a template
+                if rest.starts_with('<') {
+                    continue;
+                }
+                if let Some((cat, desc)) = rest.split_once(':') {
+                    let cat = cat.trim();
+                    let desc = desc.trim();
+                    // Skip if either part is a placeholder
+                    if !cat.starts_with('<') && !desc.starts_with('<') && !desc.is_empty() {
+                        result.learnings.push((cat.to_string(), desc.to_string()));
+                    }
+                } else if !rest.is_empty() {
                     // No category specified, use "other"
-                    result.learnings.push(("other".to_string(), rest.trim().to_string()));
+                    result.learnings.push(("other".to_string(), rest.to_string()));
                 }
             }
         }
@@ -116,21 +159,8 @@ impl SubagentResult {
 fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<SubagentResult> {
     println!("{}", dim(&format!("Spawning {} subprocess...", ai_cli.name())));
 
-    // Build the command based on CLI type
-    let shell_cmd = match ai_cli {
-        AiCli::ClaudeCode => format!(
-            "claude -p \"$(cat {})\" --no-input 2>&1",
-            prompt_file
-        ),
-        AiCli::Codex => format!(
-            "codex --task \"$(cat {})\" --quiet 2>&1",
-            prompt_file
-        ),
-        AiCli::Gemini => format!(
-            "gemini --prompt-file {} 2>&1",
-            prompt_file
-        ),
-    };
+    let shell_cmd = ai_cli.build_command(prompt_file);
+    println!("{}", dim(&format!("Command: {}", shell_cmd)));
 
     let mut child = Command::new("sh")
         .arg("-c")
@@ -158,21 +188,28 @@ fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<S
 
         match line {
             Ok(line) => {
-                println!("  {}", dim(&line));
+                // Print output in real-time (dimmed for visual separation)
+                println!("  │ {}", dim(&line));
                 output.push_str(&line);
                 output.push('\n');
-
-                // Check for early exit signals
-                if line.contains("DIAL_COMPLETE:") || line.contains("DIAL_BLOCKED:") {
-                    // Give it a moment to finish cleanly
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
             }
             Err(_) => break,
         }
     }
 
-    let _ = child.wait();
+    // Wait for process to complete
+    let status = child.wait();
+    match status {
+        Ok(s) if s.success() => {
+            println!("{}", dim("  └─ Process exited successfully"));
+        }
+        Ok(s) => {
+            println!("{}", yellow(&format!("  └─ Process exited with code: {}", s)));
+        }
+        Err(e) => {
+            println!("{}", red(&format!("  └─ Process error: {}", e)));
+        }
+    }
 
     Ok(SubagentResult::parse(&output))
 }
@@ -462,4 +499,114 @@ fn show_auto_run_summary(completed: u32, failed: u32) -> Result<()> {
 
     println!();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_complete_signal() {
+        let output = "Some output\nDIAL_COMPLETE: Task done successfully\nMore output";
+        let result = SubagentResult::parse(output);
+        assert!(result.complete);
+        assert_eq!(result.complete_message, Some("Task done successfully".to_string()));
+    }
+
+    #[test]
+    fn test_parse_complete_with_spaces() {
+        let output = "DIAL COMPLETE: Also works with space";
+        let result = SubagentResult::parse(output);
+        assert!(result.complete);
+        assert_eq!(result.complete_message, Some("Also works with space".to_string()));
+    }
+
+    #[test]
+    fn test_parse_complete_with_markdown() {
+        let output = "**DIAL_COMPLETE:** Markdown formatted";
+        let result = SubagentResult::parse(output);
+        assert!(result.complete);
+        assert_eq!(result.complete_message, Some("Markdown formatted".to_string()));
+    }
+
+    #[test]
+    fn test_parse_blocked_signal() {
+        let output = "DIAL_BLOCKED: Missing credentials";
+        let result = SubagentResult::parse(output);
+        assert!(result.blocked);
+        assert_eq!(result.blocked_message, Some("Missing credentials".to_string()));
+    }
+
+    #[test]
+    fn test_parse_learning_with_category() {
+        let output = "DIAL_LEARNING: pattern: Always use parameterized SQL";
+        let result = SubagentResult::parse(output);
+        assert_eq!(result.learnings.len(), 1);
+        assert_eq!(result.learnings[0].0, "pattern");
+        assert_eq!(result.learnings[0].1, "Always use parameterized SQL");
+    }
+
+    #[test]
+    fn test_parse_learning_without_category() {
+        let output = "DIAL_LEARNING: This is a general learning";
+        let result = SubagentResult::parse(output);
+        assert_eq!(result.learnings.len(), 1);
+        assert_eq!(result.learnings[0].0, "other");
+        assert_eq!(result.learnings[0].1, "This is a general learning");
+    }
+
+    #[test]
+    fn test_parse_multiple_signals() {
+        let output = r#"
+Starting task...
+DIAL_LEARNING: gotcha: Watch out for null pointers
+Doing work...
+DIAL_LEARNING: pattern: Use Option<T> instead of nulls
+DIAL_COMPLETE: Implemented the feature
+"#;
+        let result = SubagentResult::parse(output);
+        assert!(result.complete);
+        assert_eq!(result.learnings.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_case_insensitive() {
+        let output = "dial_complete: lowercase works too";
+        let result = SubagentResult::parse(output);
+        assert!(result.complete);
+    }
+
+    #[test]
+    fn test_parse_no_signals() {
+        let output = "Just regular output without any DIAL signals";
+        let result = SubagentResult::parse(output);
+        assert!(!result.complete);
+        assert!(!result.blocked);
+        assert!(result.learnings.is_empty());
+    }
+
+    #[test]
+    fn test_parse_ignores_template_placeholders() {
+        // This is what the prompt instructions look like - should be ignored
+        let output = r#"
+3. When done, output: `DIAL_COMPLETE: <summary of what was done>`
+4. If blocked, output: `DIAL_BLOCKED: <what is blocking>`
+5. If you learned something valuable, output: `DIAL_LEARNING: <category>: <what you learned>`
+
+Now doing actual work...
+DIAL_COMPLETE: Implemented the feature successfully
+"#;
+        let result = SubagentResult::parse(output);
+        assert!(result.complete);
+        assert_eq!(result.complete_message, Some("Implemented the feature successfully".to_string()));
+        assert!(!result.blocked); // Should NOT match the template
+        assert!(result.learnings.is_empty()); // Should NOT match the template
+    }
+
+    #[test]
+    fn test_parse_ignores_instruction_lines() {
+        let output = "When done, output: DIAL_COMPLETE: your message here";
+        let result = SubagentResult::parse(output);
+        assert!(!result.complete); // Should be ignored as it contains "output:"
+    }
 }
