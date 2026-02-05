@@ -357,6 +357,8 @@ def get_db(phase=None):
         print(red(f"Error: DIAL not initialized. Run 'dial init' first."))
         sys.exit(1)
     conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     # Run migrations for schema updates
     migrate_db(conn)
@@ -421,6 +423,8 @@ def init_db(phase=DEFAULT_PHASE, import_solutions_from=None, setup_agents=True):
         db_path.unlink()
 
     conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
 
     # Set default config
@@ -449,6 +453,8 @@ def init_db(phase=DEFAULT_PHASE, import_solutions_from=None, setup_agents=True):
             return False
 
         source_conn = sqlite3.connect(str(source_db_path))
+        source_conn.execute("PRAGMA journal_mode=WAL")
+        source_conn.execute("PRAGMA busy_timeout=5000")
         source_conn.row_factory = sqlite3.Row
 
         # Copy trusted solutions and their failure patterns

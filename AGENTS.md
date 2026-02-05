@@ -48,11 +48,18 @@ A methodology and toolset for autonomous AI development:
 
 | Component | Location |
 |-----------|----------|
-| DIAL CLI | `~/projects/dial/dial.py` (symlinked to `~/bin/dial`) |
+| DIAL CLI (Rust) | `./dial/` → symlinked to `~/bin/dial` |
+| Legacy CLI (Python) | `./dial_legacy.py` |
 | Methodology guide | `./dial_guide.db` |
-| Upgrade plan | `./DIAL_UPGRADE_PLAN.md` |
-| Memory proposal | `./DIAL_Memory_System_Proposal.md` |
+| Implementation docs | `./specs/DIAL_RUST_PRD.md` |
 | AGENTS.md template | `./templates/AGENTS_DIAL_TEMPLATE.md` |
+
+### Build Commands
+
+```bash
+cd dial && cargo build --release    # Build Rust binary
+cd dial && cargo test               # Run tests
+```
 
 ---
 
@@ -93,4 +100,42 @@ memory-log decision "topic" "what was decided and why"
 memory-log note "topic" "content"
 memory-log blocker "topic" "what is blocking"
 task add "description" [priority]
+```
+
+---
+
+## DIAL — Autonomous Development Loop
+
+This project uses **DIAL** (Deterministic Iterative Agent Loop) for autonomous development.
+
+### Get Full Instructions
+
+```bash
+sqlite3 ~/projects/dial/dial_guide.db "SELECT content FROM sections WHERE section_id LIKE '2.%' ORDER BY sort_order;"
+```
+
+### Quick Reference
+
+```bash
+dial status           # Current state
+dial task list        # Show pending tasks
+dial task next        # Show next task
+dial iterate          # Start next task, get context
+dial validate         # Run tests, commit on success
+dial learn "text" -c category  # Record a learning
+dial stats            # Statistics dashboard
+```
+
+### The DIAL Loop
+
+1. `dial iterate` → Get task + context
+2. Implement (one task only, no placeholders, search before creating)
+3. `dial validate` → Test and commit
+4. On success: next task. On failure: retry (max 3).
+
+### Configuration
+
+```bash
+dial config set build_cmd "your build command"
+dial config set test_cmd "your test command"
 ```
