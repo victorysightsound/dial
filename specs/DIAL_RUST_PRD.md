@@ -34,7 +34,7 @@ DIAL (Deterministic Iterative Agent Loop) rewritten from Python to Rust for:
 
 | Metric | Python | Rust |
 |--------|--------|------|
-| Lines of code | 2,271 | ~4,300 |
+| Lines of code | 2,271 | ~4,800 |
 | Startup time | ~190ms | ~14ms |
 | Binary size | N/A | 4.0MB |
 | Dependencies | Python 3.x | None (static) |
@@ -102,7 +102,8 @@ dial/
 │   │   └── solutions.rs  # Trust scoring
 │   ├── iteration/
 │   │   ├── mod.rs        # iterate_once(), run loop
-│   │   ├── context.rs    # gather_context() algorithm
+│   │   ├── context.rs    # gather_context(), signs, subagent prompts
+│   │   ├── orchestrator.rs # auto_run(), subprocess spawning
 │   │   └── validation.rs # run_build(), run_test()
 │   ├── learning/
 │   │   └── mod.rs        # Learning CRUD
@@ -134,7 +135,7 @@ No async/tokio - DIAL is synchronous.
 ### Constants
 
 ```rust
-pub const VERSION: &str = "2.1.0";
+pub const VERSION: &str = "2.2.0";
 pub const MAX_FIX_ATTEMPTS: u32 = 3;
 pub const TRUST_THRESHOLD: f64 = 0.6;
 pub const TRUST_INCREMENT: f64 = 0.15;
@@ -172,7 +173,67 @@ cd ~/projects/dial/dial
 cargo test
 ```
 
+## Tested AI CLI Commands
+
+All three supported CLIs have been tested with `dial auto-run`:
+
+| CLI | Command | Notes |
+|-----|---------|-------|
+| Claude Code | `claude -p "prompt"` | Works directly |
+| Codex CLI | `codex exec --skip-git-repo-check` | Pipe stdin |
+| Gemini CLI | `gemini -p -` | Pipe stdin |
+
+## DIAL Signals
+
+Subagents should output these signals for orchestrator parsing:
+
+```
+DIAL_COMPLETE: <summary of what was done>
+DIAL_BLOCKED: <reason for blockage>
+DIAL_LEARNING: <category>: <what was learned>
+```
+
+Signal parsing is regex-based, case-insensitive, and ignores template placeholders.
+
+## Unit Tests
+
+15 tests covering:
+- Failure pattern detection (4 tests)
+- Signal parsing with various formats (11 tests)
+  - Standard signals
+  - Case variations
+  - Markdown formatting
+  - Template placeholder filtering
+
 ## Key Learnings
 
 1. Use `COALESCE` in SQL SUM queries to handle NULL when aggregating empty tables
 2. rusqlite's `query_map` borrows the statement - extract results to a variable before if-else block ends
+3. Template placeholders in prompts can false-match signal parsing - filter lines containing `<placeholder>`
+4. Context rot is a real problem - behavioral "signs" help remind agents of critical rules
+
+## Future Roadmap
+
+Features not yet implemented (planned for future versions):
+
+### v2.3 - Task Dependencies
+- Add `--depends-on` flag to `dial task add`
+- Block tasks until dependencies complete
+- Topological sort for task ordering
+
+### v2.4 - Parallel Execution
+- Run independent tasks in parallel
+- Configure max concurrent subagents
+- Aggregate results from parallel runs
+
+### v2.5 - Enhanced Reliability
+- Dry-run mode (`dial auto-run --dry-run`)
+- Rate limit detection and automatic backoff
+- Cost tracking and budget limits
+- Progress webhooks for monitoring
+
+### v2.6 - Advanced Features
+- Web UI dashboard for monitoring runs
+- MCP server integration
+- Custom signal definitions
+- Plugin system for custom validators
