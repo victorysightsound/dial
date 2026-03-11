@@ -1,6 +1,7 @@
 use crate::config;
 use crate::db::{self, migrations};
 use crate::errors::{DialError, Result};
+use crate::event::{Event, EventHandler};
 use crate::failure;
 use crate::iteration;
 use crate::learning;
@@ -9,6 +10,7 @@ use crate::task;
 use crate::task::models::Task;
 use rusqlite::Connection;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Configuration for the DIAL engine.
 #[derive(Debug, Clone)]
@@ -36,6 +38,7 @@ impl Default for EngineConfig {
 /// migration to async DB or wrapping with spawn_blocking as needed.
 pub struct Engine {
     config: EngineConfig,
+    handlers: Vec<Arc<dyn EventHandler>>,
 }
 
 impl Engine {
@@ -49,7 +52,7 @@ impl Engine {
         // Verify DB exists and run migrations
         let _conn = db::get_db(config.phase.as_deref())?;
 
-        Ok(Self { config })
+        Ok(Self { config, handlers: Vec::new() })
     }
 
     /// Initialize a new DIAL project.
@@ -65,7 +68,20 @@ impl Engine {
                 work_dir: std::env::current_dir().unwrap_or_default(),
                 phase: Some(phase.to_string()),
             },
+            handlers: Vec::new(),
         })
+    }
+
+    /// Register an event handler.
+    pub fn on_event(&mut self, handler: Arc<dyn EventHandler>) {
+        self.handlers.push(handler);
+    }
+
+    /// Emit an event to all registered handlers.
+    pub fn emit(&self, event: Event) {
+        for handler in &self.handlers {
+            handler.handle(&event);
+        }
     }
 
     /// Get the .dial directory path.
