@@ -1123,3 +1123,166 @@ async fn test_solution_refresh_resets_decay() {
 
     env::set_current_dir(original_dir).unwrap();
 }
+
+// --- Approval Gate Tests ---
+
+#[tokio::test]
+async fn test_approval_mode_default_is_auto() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    assert_eq!(engine.approval_mode(), &dial_core::ApprovalMode::Auto);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_set_approval_mode() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    engine.set_approval_mode(dial_core::ApprovalMode::Review);
+    assert_eq!(engine.approval_mode(), &dial_core::ApprovalMode::Review);
+
+    engine.set_approval_mode(dial_core::ApprovalMode::Manual);
+    assert_eq!(engine.approval_mode(), &dial_core::ApprovalMode::Manual);
+
+    engine.set_approval_mode(dial_core::ApprovalMode::Auto);
+    assert_eq!(engine.approval_mode(), &dial_core::ApprovalMode::Auto);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_approval_mode_from_str() {
+    assert_eq!(
+        dial_core::ApprovalMode::from_str("auto"),
+        Some(dial_core::ApprovalMode::Auto),
+    );
+    assert_eq!(
+        dial_core::ApprovalMode::from_str("review"),
+        Some(dial_core::ApprovalMode::Review),
+    );
+    assert_eq!(
+        dial_core::ApprovalMode::from_str("manual"),
+        Some(dial_core::ApprovalMode::Manual),
+    );
+    assert_eq!(
+        dial_core::ApprovalMode::from_str("REVIEW"),
+        Some(dial_core::ApprovalMode::Review),
+    );
+    assert_eq!(
+        dial_core::ApprovalMode::from_str("unknown"),
+        None,
+    );
+}
+
+#[tokio::test]
+async fn test_approve_no_pending_iteration_fails() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let result = engine.approve().await;
+    assert!(result.is_err(), "approve() should fail when no iteration is awaiting approval");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_reject_no_pending_iteration_fails() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let result = engine.reject("no reason").await;
+    assert!(result.is_err(), "reject() should fail when no iteration is awaiting approval");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_reject_resets_task_to_pending() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let task_id = engine.task_add("Rejection test task", 5, None).await.unwrap();
+    let conn = dial_core::get_db(None).unwrap();
+
+    conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?1", [task_id]).unwrap();
+
+    conn.execute(
+        "INSERT INTO iterations (task_id, status, started_at, attempt_number) VALUES (?1, 'awaiting_approval', datetime('now'), 1)",
+        [task_id],
+    ).unwrap();
+
+    engine.reject("Code quality issues").await.unwrap();
+
+    let task = engine.task_get(task_id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Pending);
+
+    let status: String = conn.query_row(
+        "SELECT status FROM iterations WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+        [task_id],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(status, "rejected");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_approval_events_emitted() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    struct ApprovalEventCapture {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+    impl EventHandler for ApprovalEventCapture {
+        fn handle(&self, event: &Event) {
+            match event {
+                Event::Rejected { iteration_id, reason } => {
+                    self.events.lock().unwrap().push(
+                        format!("rejected:{}:{}", iteration_id, reason),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    engine.on_event(Arc::new(ApprovalEventCapture { events: events_clone }));
+
+    let task_id = engine.task_add("Event test task", 5, None).await.unwrap();
+    let conn = dial_core::get_db(None).unwrap();
+
+    conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?1", [task_id]).unwrap();
+    let iter_id: i64 = conn.query_row(
+        "INSERT INTO iterations (task_id, status, started_at, attempt_number) VALUES (?1, 'awaiting_approval', datetime('now'), 1) RETURNING id",
+        [task_id],
+        |row| row.get(0),
+    ).unwrap();
+
+    engine.reject("Not ready").await.unwrap();
+
+    let captured = events.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert!(captured[0].contains("rejected"));
+    assert!(captured[0].contains("Not ready"));
+    assert!(captured[0].contains(&iter_id.to_string()));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_diff_summary_returns_string() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let summary = engine.diff_summary().unwrap();
+    assert!(!summary.is_empty(), "diff_summary should return a non-empty string");
+
+    env::set_current_dir(original_dir).unwrap();
+}

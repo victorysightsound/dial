@@ -48,6 +48,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Add solution provenance columns and solution_history table",
         apply: migrate_007_solution_provenance,
     },
+    Migration {
+        version: 8,
+        description: "Expand iterations status CHECK to include awaiting_approval and rejected",
+        apply: migrate_008_iterations_approval_status,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -311,6 +316,32 @@ fn migrate_005_seed_failure_patterns(conn: &Connection) -> Result<()> {
         stmt.execute(rusqlite::params![key, desc, cat])?;
     }
 
+    Ok(())
+}
+
+fn migrate_008_iterations_approval_status(conn: &Connection) -> Result<()> {
+    // SQLite doesn't support ALTER TABLE to modify CHECK constraints.
+    // Recreate the iterations table with the expanded CHECK constraint.
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS iterations_new (
+            id INTEGER PRIMARY KEY,
+            task_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'in_progress'
+                CHECK(status IN ('in_progress', 'completed', 'failed', 'reverted', 'awaiting_approval', 'rejected')),
+            attempt_number INTEGER DEFAULT 1,
+            started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            ended_at TEXT,
+            duration_seconds REAL,
+            commit_hash TEXT,
+            notes TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks(id)
+        );
+        INSERT OR IGNORE INTO iterations_new SELECT * FROM iterations;
+        DROP TABLE iterations;
+        ALTER TABLE iterations_new RENAME TO iterations;
+        "#,
+    )?;
     Ok(())
 }
 

@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS iterations (
     id INTEGER PRIMARY KEY,
     task_id INTEGER NOT NULL,
     status TEXT DEFAULT 'in_progress'
-        CHECK(status IN ('in_progress', 'completed', 'failed', 'reverted')),
+        CHECK(status IN ('in_progress', 'completed', 'failed', 'reverted', 'awaiting_approval', 'rejected')),
     attempt_number INTEGER DEFAULT 1,
     started_at TEXT DEFAULT CURRENT_TIMESTAMP,
     ended_at TEXT,
