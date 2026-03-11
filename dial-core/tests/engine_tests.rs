@@ -940,3 +940,97 @@ async fn test_token_estimation_consistency() {
     assert!(long > short, "Longer text should have more tokens");
     assert_eq!(long, 250, "1000 chars / 4 = 250 tokens");
 }
+
+// --- Pattern Management Tests ---
+
+#[tokio::test]
+async fn test_patterns_list_includes_seeded() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let patterns = engine.patterns_list().await.unwrap();
+    assert!(!patterns.is_empty(), "Seeded patterns should exist after migration");
+
+    // Check that some known patterns exist
+    let keys: Vec<&str> = patterns.iter().map(|p| p.pattern_key.as_str()).collect();
+    assert!(keys.contains(&"RustCompileError"));
+    assert!(keys.contains(&"TestFailure"));
+    assert!(keys.contains(&"ImportError"));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_patterns_add_and_list() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let id = engine.patterns_add(
+        "CustomError",
+        "Custom test error",
+        "custom",
+        "(?i)CustomError",
+        "suggested",
+    ).await.unwrap();
+    assert!(id > 0);
+
+    let patterns = engine.patterns_list().await.unwrap();
+    let custom = patterns.iter().find(|p| p.pattern_key == "CustomError");
+    assert!(custom.is_some());
+    assert_eq!(custom.unwrap().status, "suggested");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_patterns_promotion_lifecycle() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let id = engine.patterns_add(
+        "PromoteTest",
+        "Test promotion",
+        "test",
+        "(?i)PromoteTest",
+        "suggested",
+    ).await.unwrap();
+
+    // suggested -> confirmed
+    let status = engine.patterns_promote(id).await.unwrap();
+    assert_eq!(status, "confirmed");
+
+    // confirmed -> trusted
+    let status = engine.patterns_promote(id).await.unwrap();
+    assert_eq!(status, "trusted");
+
+    // trusted -> error (already at max)
+    let result = engine.patterns_promote(id).await;
+    assert!(result.is_err());
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_patterns_db_regex_has_values() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let patterns = engine.patterns_list().await.unwrap();
+    // Seeded patterns should have regex_pattern set
+    let rust_error = patterns.iter().find(|p| p.pattern_key == "RustCompileError");
+    assert!(rust_error.is_some());
+    assert!(rust_error.unwrap().regex_pattern.is_some(), "Seeded patterns should have regex");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_patterns_suggest_empty_with_no_unknown_errors() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let suggestions = engine.patterns_suggest().await.unwrap();
+    assert!(suggestions.is_empty(), "No suggestions without UnknownError failures");
+
+    env::set_current_dir(original_dir).unwrap();
+}
