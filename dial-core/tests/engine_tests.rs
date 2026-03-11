@@ -1286,3 +1286,110 @@ async fn test_diff_summary_returns_string() {
 
     env::set_current_dir(original_dir).unwrap();
 }
+
+// --- Metrics Tests ---
+
+#[tokio::test]
+async fn test_stats_empty_project() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let report = engine.stats().await.unwrap();
+    assert_eq!(report.total_iterations, 0);
+    assert_eq!(report.completed_iterations, 0);
+    assert_eq!(report.failed_iterations, 0);
+    assert_eq!(report.success_rate, 0.0);
+    assert_eq!(report.total_tasks, 0);
+    assert_eq!(report.total_cost_usd, 0.0);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_stats_with_tasks() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    engine.task_add("Task one", 5, None).await.unwrap();
+    engine.task_add("Task two", 3, None).await.unwrap();
+
+    let report = engine.stats().await.unwrap();
+    assert_eq!(report.total_tasks, 2);
+    assert_eq!(report.pending_tasks, 2);
+    assert_eq!(report.completed_tasks, 0);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_record_metric_and_stats() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let task_id = engine.task_add("Metric task", 5, None).await.unwrap();
+
+    // Create iterations so FK constraints pass
+    let conn = dial_core::get_db(None).unwrap();
+    conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?1", [task_id]).unwrap();
+    conn.execute(
+        "INSERT INTO iterations (id, task_id, status, started_at) VALUES (1, ?1, 'completed', datetime('now'))",
+        [task_id],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO iterations (id, task_id, status, started_at) VALUES (2, ?1, 'failed', datetime('now'))",
+        [task_id],
+    ).unwrap();
+
+    // Record metric snapshots
+    engine.record_metric(1, task_id, true, 10.5, 1000, 500, 0.05).unwrap();
+    engine.record_metric(2, task_id, false, 5.0, 200, 100, 0.01).unwrap();
+
+    // Verify metrics were recorded
+    let conn = dial_core::get_db(None).unwrap();
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM metrics", [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(count, 2);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_stats_json_format() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let report = engine.stats().await.unwrap();
+    let json = report.to_json();
+    assert!(json.starts_with('{'));
+    assert!(json.ends_with('}'));
+    assert!(json.contains("\"total_iterations\""));
+    assert!(json.contains("\"success_rate\""));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_stats_csv_format() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let report = engine.stats().await.unwrap();
+    let csv = report.to_csv();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines.len(), 2, "CSV should have header + 1 data row");
+    assert!(lines[0].contains("total_iterations"));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_trends_empty() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let trends = engine.trends(30).await.unwrap();
+    assert!(trends.is_empty(), "No trends without iteration data");
+
+    env::set_current_dir(original_dir).unwrap();
+}
