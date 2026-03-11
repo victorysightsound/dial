@@ -28,6 +28,12 @@ pub enum Event {
     TestPassed,
     TestFailed { output: String },
 
+    // --- Pipeline Step Events ---
+    StepStarted { name: String, command: String, required: bool },
+    StepPassed { name: String, duration_secs: f64 },
+    StepFailed { name: String, required: bool, output: String, duration_secs: f64 },
+    StepSkipped { name: String, reason: String },
+
     // --- Learning Events ---
     LearningAdded { id: i64, description: String, category: Option<String> },
     LearningDeleted { id: i64 },

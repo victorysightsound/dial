@@ -15,7 +15,7 @@ use std::fs;
 
 pub use context::{gather_context, generate_subagent_prompt};
 pub use orchestrator::auto_run;
-pub use validation::run_validation;
+pub use validation::{run_validation, run_validation_with_details, PipelineStepResult, ValidationResult};
 
 pub fn create_iteration(conn: &Connection, task_id: i64, attempt_number: i32) -> Result<i64> {
     let now = Local::now().to_rfc3339();
@@ -150,7 +150,18 @@ pub fn iterate_once() -> Result<(bool, String)> {
     Ok((true, "awaiting_work".to_string()))
 }
 
+/// Result of validate_current including per-step details.
+pub struct ValidateResult {
+    pub success: bool,
+    pub step_results: Vec<PipelineStepResult>,
+}
+
 pub fn validate_current() -> Result<bool> {
+    let result = validate_current_with_details()?;
+    Ok(result.success)
+}
+
+pub fn validate_current_with_details() -> Result<ValidateResult> {
     let conn = get_db(None)?;
 
     // Find current in-progress iteration
@@ -175,8 +186,11 @@ pub fn validate_current() -> Result<bool> {
 
     println!("Validating iteration #{} for task #{}", iteration_id, task_id);
 
-    // Run validation
-    let (success, error_output) = run_validation(&conn, iteration_id)?;
+    // Run validation with detailed step results
+    let validation = run_validation_with_details(&conn, iteration_id)?;
+    let success = validation.success;
+    let error_output = validation.error_output;
+    let step_results = validation.step_results;
 
     if success {
         // Commit changes
@@ -216,7 +230,7 @@ pub fn validate_current() -> Result<bool> {
         println!("{}", dim("Categories: build, test, setup, gotcha, pattern, tool, other"));
         println!();
 
-        Ok(true)
+        Ok(ValidateResult { success: true, step_results })
     } else {
         // Record failure
         let (failure_id, pattern_id) = record_failure(&conn, iteration_id, &error_output, None, None)?;
@@ -282,7 +296,7 @@ pub fn validate_current() -> Result<bool> {
             println!("{}", yellow(&format!("\nTask reset to pending. {} attempts remaining.", remaining)));
         }
 
-        Ok(false)
+        Ok(ValidateResult { success: false, step_results })
     }
 }
 

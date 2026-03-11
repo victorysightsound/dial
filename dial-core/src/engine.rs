@@ -296,8 +296,33 @@ impl Engine {
     }
 
     /// Validate the current iteration (run build + test).
+    /// Emits per-step events (StepPassed, StepFailed, StepSkipped) to registered handlers.
     pub async fn validate(&self) -> Result<bool> {
-        iteration::validate_current()
+        let result = iteration::validate_current_with_details()?;
+
+        // Emit per-step events
+        for step in &result.step_results {
+            if step.skipped {
+                self.emit(Event::StepSkipped {
+                    name: step.name.clone(),
+                    reason: "prior required step failed".to_string(),
+                });
+            } else if step.passed {
+                self.emit(Event::StepPassed {
+                    name: step.name.clone(),
+                    duration_secs: step.duration_secs,
+                });
+            } else {
+                self.emit(Event::StepFailed {
+                    name: step.name.clone(),
+                    required: step.required,
+                    output: step.output.clone(),
+                    duration_secs: step.duration_secs,
+                });
+            }
+        }
+
+        Ok(result.success)
     }
 
     /// Run the iteration loop until tasks are exhausted or stopped.

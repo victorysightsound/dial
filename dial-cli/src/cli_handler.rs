@@ -95,6 +95,46 @@ impl EventHandler for CliEventHandler {
             Event::ConfigSet { key, value } => {
                 output::print_success(&format!("Config set: {} = {}", key, value));
             }
+            Event::StepStarted { name, command, required } => {
+                println!(
+                    "{}",
+                    output::dim(&format!(
+                        "  Step '{}'{}: {}",
+                        name,
+                        if *required { "" } else { " (optional)" },
+                        command,
+                    ))
+                );
+            }
+            Event::StepPassed { name, duration_secs } => {
+                println!(
+                    "    {}",
+                    output::green(&format!("{} passed ({:.1}s)", name, duration_secs))
+                );
+            }
+            Event::StepFailed { name, required, output: out, duration_secs } => {
+                if *required {
+                    println!(
+                        "    {}",
+                        output::red(&format!("{} FAILED ({:.1}s)", name, duration_secs))
+                    );
+                    let preview = if out.len() > 200 { &out[..200] } else { out.as_str() };
+                    if !preview.is_empty() {
+                        println!("    {}", output::dim(preview));
+                    }
+                } else {
+                    println!(
+                        "    {}",
+                        output::dim(&format!("{} failed (optional, {:.1}s)", name, duration_secs))
+                    );
+                }
+            }
+            Event::StepSkipped { name, reason } => {
+                println!(
+                    "    {}",
+                    output::dim(&format!("{} skipped: {}", name, reason))
+                );
+            }
             Event::Info(msg) => {
                 println!("{}", msg);
             }

@@ -98,7 +98,7 @@ pub fn record_outcome(
 }
 
 /// Result of a single pipeline step execution.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PipelineStepResult {
     pub name: String,
     pub command: String,
@@ -106,11 +106,26 @@ pub struct PipelineStepResult {
     pub required: bool,
     pub output: String,
     pub duration_secs: f64,
+    /// true if step was skipped (e.g. due to fail-fast from prior required failure)
+    pub skipped: bool,
+}
+
+/// Validation result including per-step details.
+pub struct ValidationResult {
+    pub success: bool,
+    pub error_output: String,
+    pub step_results: Vec<PipelineStepResult>,
 }
 
 /// Run validation using the configurable pipeline if steps are configured,
 /// otherwise fall back to build_cmd/test_cmd from config.
 pub fn run_validation(conn: &Connection, iteration_id: i64) -> Result<(bool, String)> {
+    let result = run_validation_with_details(conn, iteration_id)?;
+    Ok((result.success, result.error_output))
+}
+
+/// Run validation and return detailed per-step results.
+pub fn run_validation_with_details(conn: &Connection, iteration_id: i64) -> Result<ValidationResult> {
     // Check for configured pipeline steps
     let pipeline_steps = load_pipeline_steps(conn)?;
 
@@ -172,10 +187,11 @@ fn run_pipeline_validation(
     conn: &Connection,
     iteration_id: i64,
     steps: &[PipelineStep],
-) -> Result<(bool, String)> {
+) -> Result<ValidationResult> {
     let mut all_passed = true;
     let mut error_outputs = Vec::new();
     let mut step_results: Vec<PipelineStepResult> = Vec::new();
+    let mut failed_fast = false;
 
     println!(
         "{}",
@@ -183,6 +199,20 @@ fn run_pipeline_validation(
     );
 
     for step in steps {
+        // If a required step already failed, mark remaining steps as skipped
+        if failed_fast {
+            step_results.push(PipelineStepResult {
+                name: step.name.clone(),
+                command: step.command.clone(),
+                passed: false,
+                required: step.required,
+                output: String::new(),
+                duration_secs: 0.0,
+                skipped: true,
+            });
+            continue;
+        }
+
         let timeout = step
             .timeout_secs
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
@@ -234,6 +264,7 @@ fn run_pipeline_validation(
             required: step.required,
             output: result.output.clone(),
             duration_secs: result.duration,
+            skipped: false,
         };
 
         if result.success {
@@ -242,21 +273,16 @@ fn run_pipeline_validation(
                 green(&format!("{} passed", step.name)),
                 format!("{:.1}", result.duration)
             );
+        } else if step.required {
+            println!("    {}", red(&format!("{} FAILED (required)", step.name)));
+            all_passed = false;
+            error_outputs.push(format!("[{}] {}", step.name, result.output));
+            failed_fast = true;
         } else {
-            if step.required {
-                println!("    {}", red(&format!("{} FAILED (required)", step.name)));
-                all_passed = false;
-                error_outputs.push(format!("[{}] {}", step.name, result.output));
-                step_results.push(step_result);
-                // Fail-fast: stop pipeline on required step failure
-                break;
-            } else {
-                println!(
-                    "    {}",
-                    dim(&format!("{} failed (optional, continuing)", step.name))
-                );
-                // Optional step failure doesn't stop pipeline or mark overall as failed
-            }
+            println!(
+                "    {}",
+                dim(&format!("{} failed (optional, continuing)", step.name))
+            );
         }
 
         step_results.push(step_result);
@@ -264,15 +290,18 @@ fn run_pipeline_validation(
 
     if all_passed {
         println!("{}", green("Pipeline passed."));
-        Ok((true, String::new()))
-    } else {
-        let combined_errors = error_outputs.join("\n\n");
-        Ok((false, combined_errors))
     }
+
+    let combined_errors = error_outputs.join("\n\n");
+    Ok(ValidationResult {
+        success: all_passed,
+        error_output: combined_errors,
+        step_results,
+    })
 }
 
 /// Legacy validation using build_cmd/test_cmd config values.
-fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<(bool, String)> {
+fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<ValidationResult> {
     let build_cmd = config_get("build_cmd")?.unwrap_or_default();
     let test_cmd = config_get("test_cmd")?.unwrap_or_default();
     let build_timeout: u64 = config_get("build_timeout")?
@@ -281,6 +310,8 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<(bool, 
     let test_timeout: u64 = config_get("test_timeout")?
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_TIMEOUT_SECS);
+
+    let mut step_results = Vec::new();
 
     // Run build
     if !build_cmd.is_empty() {
@@ -300,9 +331,35 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<(bool, 
             Some(result.duration),
         )?;
 
+        step_results.push(PipelineStepResult {
+            name: "build".to_string(),
+            command: build_cmd.clone(),
+            passed: result.success,
+            required: true,
+            output: result.output.clone(),
+            duration_secs: result.duration,
+            skipped: false,
+        });
+
         if !result.success {
             println!("{}", red("Build failed."));
-            return Ok((false, result.output));
+            // Mark test as skipped if build failed
+            if !test_cmd.is_empty() {
+                step_results.push(PipelineStepResult {
+                    name: "test".to_string(),
+                    command: test_cmd.clone(),
+                    passed: false,
+                    required: true,
+                    output: String::new(),
+                    duration_secs: 0.0,
+                    skipped: true,
+                });
+            }
+            return Ok(ValidationResult {
+                success: false,
+                error_output: result.output,
+                step_results,
+            });
         }
         println!("{}", green("Build passed."));
     }
@@ -325,14 +382,32 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<(bool, 
             Some(result.duration),
         )?;
 
+        step_results.push(PipelineStepResult {
+            name: "test".to_string(),
+            command: test_cmd.clone(),
+            passed: result.success,
+            required: true,
+            output: result.output.clone(),
+            duration_secs: result.duration,
+            skipped: false,
+        });
+
         if !result.success {
             println!("{}", red("Tests failed."));
-            return Ok((false, result.output));
+            return Ok(ValidationResult {
+                success: false,
+                error_output: result.output,
+                step_results,
+            });
         }
         println!("{}", green("Tests passed."));
     }
 
-    Ok((true, String::new()))
+    Ok(ValidationResult {
+        success: true,
+        error_output: String::new(),
+        step_results,
+    })
 }
 
 /// Truncate a string to max_len, returning a &str slice.
