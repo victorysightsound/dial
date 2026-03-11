@@ -2,6 +2,7 @@ pub mod config;
 pub mod db;
 pub mod engine;
 pub mod errors;
+pub mod event;
 pub mod failure;
 pub mod git;
 pub mod iteration;
@@ -14,6 +15,7 @@ pub mod task;
 pub use db::{get_current_phase, get_db, get_dial_dir, init_db, DEFAULT_PHASE};
 pub use engine::{Engine, EngineConfig};
 pub use errors::{DialError, Result};
+pub use event::{Event, EventHandler};
 
 // Constants
 pub const VERSION: &str = "3.0.0";
