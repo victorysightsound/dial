@@ -79,4 +79,4 @@ Open an issue at [github.com/victorysightsound/dial/issues](https://github.com/v
 
 ## License
 
-MIT. By contributing, you agree your contributions are licensed under the same terms.
+MIT OR Apache-2.0. By contributing, you agree your contributions are dual-licensed under the same terms.
