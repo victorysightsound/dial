@@ -118,10 +118,10 @@ enum Commands {
     /// Reset current iteration
     Reset,
 
-    /// Show fresh context for current/next task (Ralph-style)
+    /// Show fresh context for current/next task
     Context,
 
-    /// Generate sub-agent prompt for orchestrator mode (Ralph-style)
+    /// Generate sub-agent prompt for orchestrator mode
     Orchestrate,
 
     /// Run automated orchestration with fresh AI subprocesses per task

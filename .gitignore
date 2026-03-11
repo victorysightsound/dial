@@ -1,5 +1,6 @@
 .DS_Store
-.tracking/
+.claude/
 .dial/
+.tracking/
 test-projects/
 dial/target/

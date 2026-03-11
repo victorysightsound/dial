@@ -1,37 +1,8 @@
 # Project: PROJECT_NAME
 
-## On Entry (MANDATORY)
-
-```bash
-session-context
-```
-
----
-
 ## DIAL-Enabled Project
 
-This project uses DIAL for autonomous iterative development.
-
-### Get Full Instructions
-
-DIAL guide database: `~/projects/dial/dial_guide.db`
-
-```bash
-# Quick reference (start here)
-sqlite3 ~/projects/dial/dial_guide.db "SELECT content FROM sections WHERE section_id = '2.1';"
-
-# Full AI workflow
-sqlite3 ~/projects/dial/dial_guide.db "SELECT content FROM sections WHERE section_id LIKE '2.%' ORDER BY sort_order;"
-
-# PRD format specification
-sqlite3 ~/projects/dial/dial_guide.db "SELECT content FROM sections WHERE section_id = '2.4';"
-
-# Task extraction guide
-sqlite3 ~/projects/dial/dial_guide.db "SELECT content FROM sections WHERE section_id = '2.5';"
-
-# Search for any topic
-sqlite3 ~/projects/dial/dial_guide.db "SELECT s.section_id, s.title, s.content FROM sections s INNER JOIN sections_fts fts ON s.id = fts.rowid WHERE sections_fts MATCH 'your topic' LIMIT 5;"
-```
+This project uses [DIAL](https://github.com/victorysightsound/dial) for autonomous iterative development.
 
 ### Quick Start
 
@@ -62,6 +33,8 @@ dial stats
 | `dial task list` | Show pending tasks |
 | `dial iterate` | Start next task, get context |
 | `dial validate` | Run build/test, commit on success |
+| `dial context` | Regenerate fresh context |
+| `dial auto-run --cli claude` | Fully automated orchestration |
 | `dial status` | Current state |
 | `dial stats` | Statistics dashboard |
 
@@ -72,18 +45,25 @@ dial config set build_cmd "YOUR_BUILD_COMMAND"
 dial config set test_cmd "YOUR_TEST_COMMAND"
 ```
 
+### The DIAL Loop
+
+1. `dial iterate` - Get task + context from database
+2. Implement the task (one task only, no placeholders, search before creating)
+3. `dial validate` - Run build/test, commit on success
+4. On success: next task. On failure: retry (max 3 attempts).
+
+### DIAL Signals (for automated mode)
+
+When running under `dial auto-run`, output these signals:
+
+```
+DIAL_COMPLETE: <summary of what was done>
+DIAL_BLOCKED: <reason the task can't be completed>
+DIAL_LEARNING: <category>: <what was learned>
+```
+
 ---
 
 ## Project-Specific Notes
 
-<!-- Add project-specific instructions here -->
-
----
-
-## Memory Commands
-
-```bash
-memory-log decision "topic" "what was decided and why"
-memory-log note "topic" "content"
-task add "description" [priority]
-```
+<!-- Add project-specific instructions, architecture notes, conventions here -->

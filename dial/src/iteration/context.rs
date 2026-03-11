@@ -4,8 +4,8 @@ use crate::task::models::Task;
 use crate::TRUST_THRESHOLD;
 use rusqlite::Connection;
 
-/// Behavioral guardrails ("signs") from Ralph Loop methodology.
-/// These prevent context rot by reminding the agent of critical rules.
+/// Behavioral guardrails ("signs") that prevent context rot
+/// by reminding the agent of critical rules at the start of each task.
 const SIGNS: &[&str] = &[
     "ONE TASK ONLY: Complete exactly this task. No scope creep.",
     "SEARCH BEFORE CREATE: Always search for existing files/functions before creating new ones.",

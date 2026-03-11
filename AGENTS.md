@@ -1,45 +1,10 @@
 # Project: DIAL
 
-## On Entry (MANDATORY)
-
-```bash
-session-context
-```
-
----
-
-## Project Documentation
-
-**DIAL Guide Database:** `./dial_guide.db`
-
-This database contains the complete DIAL methodology and AI agent instructions.
-
-### Query Instructions
-
-```sql
--- List all sections
-SELECT section_id, title FROM sections ORDER BY sort_order;
-
--- Read AI agent workflow
-SELECT content FROM sections WHERE section_id LIKE '2.%' ORDER BY sort_order;
-
--- Search for topic
-SELECT heading_path, content FROM sections_fts WHERE sections_fts MATCH 'your topic';
-
--- Get PRD format specification
-SELECT content FROM sections WHERE section_id = '2.4';
-
--- Get task extraction guide
-SELECT content FROM sections WHERE section_id = '2.5';
-```
-
----
-
 ## What is DIAL?
 
 **DIAL** = **Deterministic Iterative Agent Loop**
 
-A methodology and toolset for autonomous AI development:
+A CLI tool and methodology for autonomous AI-assisted software development. DIAL gives AI coding agents persistent memory, failure pattern detection, and structured task execution.
 
 - **Problem:** Markdown-based memory causes context bloat as iterations grow
 - **Solution:** SQLite + FTS5 for selective recall, trust-based solution learning
@@ -48,11 +13,10 @@ A methodology and toolset for autonomous AI development:
 
 | Component | Location |
 |-----------|----------|
-| DIAL CLI (Rust) | `./dial/` → symlinked to `~/bin/dial` |
-| Legacy CLI (Python) | `./dial_legacy.py` |
+| DIAL CLI (Rust) | `./dial/` |
 | Methodology guide | `./dial_guide.db` |
-| Implementation docs | `./specs/DIAL_RUST_PRD.md` |
 | AGENTS.md template | `./templates/AGENTS_DIAL_TEMPLATE.md` |
+| Documentation | `./docs/` |
 
 ### Build Commands
 
@@ -93,28 +57,7 @@ Query `dial_guide.db` section 1.4 for full details and countermeasures.
 
 ---
 
-## Memory Commands
-
-```bash
-memory-log decision "topic" "what was decided and why"
-memory-log note "topic" "content"
-memory-log blocker "topic" "what is blocking"
-task add "description" [priority]
-```
-
----
-
-## DIAL — Autonomous Development Loop
-
-This project uses **DIAL** (Deterministic Iterative Agent Loop) for autonomous development.
-
-### Get Full Instructions
-
-```bash
-sqlite3 ~/projects/dial/dial_guide.db "SELECT content FROM sections WHERE section_id LIKE '2.%' ORDER BY sort_order;"
-```
-
-### Quick Reference
+## Quick Reference
 
 ```bash
 dial status           # Current state
@@ -124,48 +67,25 @@ dial iterate          # Start next task, get context
 dial validate         # Run tests, commit on success
 dial learn "text" -c category  # Record a learning
 dial stats            # Statistics dashboard
-dial context          # Fresh context (Ralph-style)
-dial orchestrate      # Sub-agent prompt (Ralph-style)
-dial auto-run         # Automated orchestration (Ralph-style)
+dial context          # Fresh context regeneration
+dial orchestrate      # Sub-agent prompt generation
+dial auto-run         # Automated orchestration
 ```
 
 ### The DIAL Loop
 
-1. `dial iterate` → Get task + context
+1. `dial iterate` - Get task + context
 2. Implement (one task only, no placeholders, search before creating)
-3. `dial validate` → Test and commit
+3. `dial validate` - Test and commit
 4. On success: next task. On failure: retry (max 3).
 
-### Ralph-Style Context Rot Prevention (v2.1+)
+### Automated Orchestration
 
-DIAL includes features from the Ralph Loop methodology to combat context rot:
+```bash
+dial auto-run --cli claude --max 10
+```
 
-1. **Signs (Behavioral Guardrails):** Context now includes critical rules:
-   - ONE TASK ONLY - No scope creep
-   - SEARCH BEFORE CREATE - Don't duplicate
-   - NO PLACEHOLDERS - Complete implementations only
-   - VALIDATE BEFORE DONE - Always test
-   - RECORD LEARNINGS - Capture insights
-   - FAIL FAST - Ask don't guess
-
-2. **Fresh Context:** Run `dial context` anytime to regenerate clean context
-
-3. **Manual Orchestrator Mode:** Run `dial orchestrate` to get a prompt for spawning fresh sub-agents:
-   ```bash
-   # Claude Code
-   claude -p "$(cat .dial/subagent_prompt.md)"
-
-   # Codex CLI
-   codex --task "$(cat .dial/subagent_prompt.md)"
-   ```
-
-4. **Automated Orchestration (v2.2):** Run `dial auto-run` for fully automated task execution:
-   ```bash
-   dial auto-run --cli claude --max 10
-   ```
-   This spawns a fresh AI subprocess for each task, parses DIAL signals, runs validation, and loops.
-
-5. **Learning Prompts:** After successful validation, DIAL reminds you to capture learnings
+Spawns a fresh AI subprocess for each task, parses DIAL signals, runs validation, and loops.
 
 ### Configuration
 

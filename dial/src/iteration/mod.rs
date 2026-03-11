@@ -200,7 +200,7 @@ pub fn validate_current() -> Result<bool> {
         println!("{}", green(&format!("\nIteration #{} completed successfully!", iteration_id)));
         println!("{}", green(&format!("Task #{} marked as completed.", task_id)));
 
-        // Ralph-style: Prompt for learning capture after success
+        // Prompt for learning capture after success
         println!();
         println!("{}", bold("📝 Learning Capture"));
         println!("{}", dim("Did you learn something during this task? Record it now:"));
@@ -438,7 +438,7 @@ pub fn stop_loop() -> Result<()> {
     Ok(())
 }
 
-/// Show fresh context for current or next task (Ralph-style context regeneration)
+/// Show fresh context for current or next task
 pub fn show_context() -> Result<()> {
     let conn = get_db(None)?;
 
