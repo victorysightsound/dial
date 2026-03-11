@@ -55,6 +55,12 @@ pub enum DialError {
 
     #[error("{0}")]
     UserError(String),
+
+    #[error("Cyclic dependency detected: task #{0} would create a cycle")]
+    CyclicDependency(i64),
+
+    #[error("Self-dependency: task #{0} cannot depend on itself")]
+    SelfDependency(i64),
 }
 
 pub type Result<T> = std::result::Result<T, DialError>;

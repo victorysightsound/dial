@@ -199,3 +199,152 @@ pub fn get_task_by_id(task_id: i64) -> Result<Task> {
     stmt.query_row([task_id], |row| Task::from_row(row))
         .map_err(|_| DialError::TaskNotFound(task_id))
 }
+
+// --- Dependency Management ---
+
+/// Add a dependency: task_id depends on depends_on_id.
+/// Checks for self-dependency and cycles before inserting.
+pub fn task_depends(task_id: i64, depends_on_id: i64) -> Result<()> {
+    if task_id == depends_on_id {
+        return Err(DialError::SelfDependency(task_id));
+    }
+
+    let conn = get_db(None)?;
+
+    // Verify both tasks exist
+    let _t1 = conn
+        .query_row("SELECT id FROM tasks WHERE id = ?1", [task_id], |row| row.get::<_, i64>(0))
+        .map_err(|_| DialError::TaskNotFound(task_id))?;
+    let _t2 = conn
+        .query_row("SELECT id FROM tasks WHERE id = ?1", [depends_on_id], |row| row.get::<_, i64>(0))
+        .map_err(|_| DialError::TaskNotFound(depends_on_id))?;
+
+    // Check for cycles: would adding this edge create a path from depends_on_id back to task_id?
+    if would_create_cycle(&conn, task_id, depends_on_id)? {
+        return Err(DialError::CyclicDependency(task_id));
+    }
+
+    conn.execute(
+        "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+        rusqlite::params![task_id, depends_on_id],
+    )?;
+
+    print_success(&format!("Task #{} now depends on task #{}", task_id, depends_on_id));
+    Ok(())
+}
+
+/// Remove a dependency.
+pub fn task_undepend(task_id: i64, depends_on_id: i64) -> Result<()> {
+    let conn = get_db(None)?;
+    conn.execute(
+        "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
+        rusqlite::params![task_id, depends_on_id],
+    )?;
+    print_success(&format!("Removed dependency: task #{} no longer depends on #{}", task_id, depends_on_id));
+    Ok(())
+}
+
+/// Get all tasks that task_id depends on (its prerequisites).
+pub fn task_get_dependencies(task_id: i64) -> Result<Vec<i64>> {
+    let conn = get_db(None)?;
+    let mut stmt = conn.prepare(
+        "SELECT depends_on_id FROM task_dependencies WHERE task_id = ?1"
+    )?;
+    let deps: Vec<i64> = stmt
+        .query_map([task_id], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(deps)
+}
+
+/// Get all tasks that depend on task_id (its dependents).
+pub fn task_get_dependents(task_id: i64) -> Result<Vec<i64>> {
+    let conn = get_db(None)?;
+    let mut stmt = conn.prepare(
+        "SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1"
+    )?;
+    let deps: Vec<i64> = stmt
+        .query_map([task_id], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(deps)
+}
+
+/// Show dependency info for a task.
+pub fn task_show_deps(task_id: i64) -> Result<()> {
+    let deps = task_get_dependencies(task_id)?;
+    let dependents = task_get_dependents(task_id)?;
+
+    println!("{}", bold(&format!("Dependencies for task #{}", task_id)));
+
+    if deps.is_empty() {
+        println!("  {}", dim("No prerequisites (can run immediately)"));
+    } else {
+        println!("  Depends on:");
+        for dep_id in &deps {
+            let task = get_task_by_id(*dep_id)?;
+            let status_str = match task.status.to_string().as_str() {
+                "completed" => green("[completed]"),
+                "pending" => dim("[pending]"),
+                _ => yellow(&format!("[{}]", task.status)),
+            };
+            println!("    #{} {} {}", dep_id, status_str, task.description);
+        }
+    }
+
+    if !dependents.is_empty() {
+        println!("  Depended on by:");
+        for dep_id in &dependents {
+            let task = get_task_by_id(*dep_id)?;
+            println!("    #{} {}", dep_id, task.description);
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if all dependencies of a task are completed.
+pub fn task_deps_satisfied(task_id: i64) -> Result<bool> {
+    let conn = get_db(None)?;
+    let unsatisfied: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM task_dependencies td
+         INNER JOIN tasks t ON t.id = td.depends_on_id
+         WHERE td.task_id = ?1 AND t.status != 'completed'",
+        [task_id],
+        |row| row.get(0),
+    )?;
+    Ok(unsatisfied == 0)
+}
+
+/// Check if adding an edge (task_id -> depends_on_id) would create a cycle.
+/// A cycle exists if there's already a path from depends_on_id to task_id.
+fn would_create_cycle(conn: &rusqlite::Connection, task_id: i64, depends_on_id: i64) -> Result<bool> {
+    // BFS from depends_on_id following dependency edges to see if we reach task_id
+    let mut visited = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(depends_on_id);
+
+    while let Some(current) = queue.pop_front() {
+        if current == task_id {
+            return Ok(true); // Cycle detected
+        }
+        if !visited.insert(current) {
+            continue;
+        }
+        // Get what `current` depends on
+        let mut stmt = conn.prepare(
+            "SELECT depends_on_id FROM task_dependencies WHERE task_id = ?1"
+        )?;
+        let deps: Vec<i64> = stmt
+            .query_map([current], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for dep in deps {
+            if !visited.contains(&dep) {
+                queue.push_back(dep);
+            }
+        }
+    }
+
+    Ok(false)
+}

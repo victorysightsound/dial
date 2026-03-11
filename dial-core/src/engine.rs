@@ -153,6 +153,36 @@ impl Engine {
         task::get_task_by_id(task_id)
     }
 
+    /// Add a dependency: task_id depends on depends_on_id.
+    pub async fn task_depends(&self, task_id: i64, depends_on_id: i64) -> Result<()> {
+        task::task_depends(task_id, depends_on_id)
+    }
+
+    /// Remove a dependency.
+    pub async fn task_undepend(&self, task_id: i64, depends_on_id: i64) -> Result<()> {
+        task::task_undepend(task_id, depends_on_id)
+    }
+
+    /// Get all tasks that task_id depends on.
+    pub async fn task_get_dependencies(&self, task_id: i64) -> Result<Vec<i64>> {
+        task::task_get_dependencies(task_id)
+    }
+
+    /// Get all tasks that depend on task_id.
+    pub async fn task_get_dependents(&self, task_id: i64) -> Result<Vec<i64>> {
+        task::task_get_dependents(task_id)
+    }
+
+    /// Check if all dependencies of a task are satisfied.
+    pub async fn task_deps_satisfied(&self, task_id: i64) -> Result<bool> {
+        task::task_deps_satisfied(task_id)
+    }
+
+    /// Show dependency info for a task.
+    pub async fn task_show_deps(&self, task_id: i64) -> Result<()> {
+        task::task_show_deps(task_id)
+    }
+
     // --- Iteration ---
 
     /// Run one iteration (pick next task, set up context).
