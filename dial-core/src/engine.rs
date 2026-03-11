@@ -355,6 +355,24 @@ impl Engine {
         iteration::orchestrate()
     }
 
+    /// Gather context items for a task with a token budget.
+    /// Returns the formatted context and any excluded item labels.
+    pub async fn gather_context_budgeted(
+        &self,
+        task: &crate::task::models::Task,
+        token_budget: usize,
+    ) -> Result<(String, Vec<String>)> {
+        let conn = self.conn()?;
+        let (context, excluded) = iteration::gather_context_budgeted(&conn, task, token_budget)?;
+
+        // Emit warnings for excluded items
+        for label in &excluded {
+            self.emit(Event::Warning(format!("Context truncated: '{}' excluded (budget exceeded)", label)));
+        }
+
+        Ok((context, excluded))
+    }
+
     /// Run automated orchestration with fresh AI subprocesses.
     pub async fn auto_run(&self, max_iterations: Option<u32>, cli: Option<&str>) -> Result<()> {
         iteration::auto_run(max_iterations, cli)

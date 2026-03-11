@@ -1,3 +1,4 @@
+use crate::budget::{self, ContextItem};
 use crate::errors::Result;
 use crate::learning::increment_learning_reference;
 use crate::task::models::Task;
@@ -143,6 +144,151 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
     }
 
     Ok(context.join("\n\n"))
+}
+
+/// Priority levels for context items (lower = higher priority).
+pub const PRIORITY_SIGNS: u32 = 0;
+pub const PRIORITY_TASK_SPEC: u32 = 5;
+pub const PRIORITY_FTS_SPECS: u32 = 10;
+pub const PRIORITY_TRUSTED_SOLUTIONS: u32 = 20;
+pub const PRIORITY_FAILURES: u32 = 30;
+pub const PRIORITY_LEARNINGS: u32 = 40;
+
+/// Gather context as priority-ranked ContextItems for budget-aware assembly.
+/// This is the structured alternative to `gather_context()`.
+pub fn gather_context_items(conn: &Connection, task: &Task) -> Result<Vec<ContextItem>> {
+    let mut items = Vec::new();
+
+    // Signs (highest priority)
+    let signs_content = SIGNS.iter()
+        .map(|s| format!("- **{}**", s))
+        .collect::<Vec<_>>()
+        .join("\n");
+    items.push(ContextItem::new("Signs (Critical Rules)", &signs_content, PRIORITY_SIGNS));
+
+    // Task-linked spec section
+    if let Some(spec_id) = task.spec_section_id {
+        let mut stmt = conn.prepare(
+            "SELECT content FROM spec_sections WHERE id = ?1",
+        )?;
+
+        if let Ok(content) = stmt.query_row([spec_id], |row| row.get::<_, String>(0)) {
+            items.push(ContextItem::new("Task Specification", &content, PRIORITY_TASK_SPEC));
+        }
+    }
+
+    // FTS-matched spec sections
+    let mut stmt = conn.prepare(
+        "SELECT s.heading_path, s.content
+         FROM spec_sections s
+         INNER JOIN spec_sections_fts fts ON s.id = fts.rowid
+         WHERE spec_sections_fts MATCH ?1
+         ORDER BY rank LIMIT 3",
+    )?;
+
+    let related_specs: Vec<(String, String)> = stmt
+        .query_map([&task.description], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (heading, content) in related_specs {
+        let preview = if content.len() > 500 { &content[..500] } else { &content };
+        items.push(ContextItem::new(
+            &format!("Spec: {}", heading),
+            preview,
+            PRIORITY_FTS_SPECS,
+        ));
+    }
+
+    // Trusted solutions
+    let mut stmt = conn.prepare(
+        "SELECT s.description, fp.pattern_key
+         FROM solutions s
+         INNER JOIN failure_patterns fp ON s.pattern_id = fp.id
+         WHERE s.confidence >= ?1
+         ORDER BY fp.occurrence_count DESC LIMIT 5",
+    )?;
+
+    let solutions: Vec<(String, String)> = stmt
+        .query_map([TRUST_THRESHOLD], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !solutions.is_empty() {
+        let content = solutions.iter()
+            .map(|(desc, key)| format!("- **{}**: {}", key, desc))
+            .collect::<Vec<_>>()
+            .join("\n");
+        items.push(ContextItem::new("Trusted Solutions", &content, PRIORITY_TRUSTED_SOLUTIONS));
+    }
+
+    // Recent failures
+    let mut stmt = conn.prepare(
+        "SELECT f.error_text, fp.pattern_key
+         FROM failures f
+         INNER JOIN failure_patterns fp ON f.pattern_id = fp.id
+         WHERE f.resolved = 0
+         ORDER BY f.created_at DESC LIMIT 5",
+    )?;
+
+    let failures: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !failures.is_empty() {
+        let content = failures.iter()
+            .map(|(error_text, key)| {
+                let preview = if error_text.len() > 200 { &error_text[..200] } else { error_text };
+                format!("- **{}**: {}", key, preview)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        items.push(ContextItem::new("Recent Failures", &content, PRIORITY_FAILURES));
+    }
+
+    // Learnings
+    let mut stmt = conn.prepare(
+        "SELECT id, category, description
+         FROM learnings
+         ORDER BY times_referenced DESC, discovered_at DESC
+         LIMIT 10",
+    )?;
+
+    let learnings: Vec<(i64, Option<String>, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !learnings.is_empty() {
+        let content = learnings.iter()
+            .map(|(id, category, description)| {
+                let _ = increment_learning_reference(conn, *id);
+                let cat_str = category.as_ref().map(|c| format!("[{}]", c)).unwrap_or_default();
+                format!("- {} {}", cat_str, description)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        items.push(ContextItem::new("Project Learnings", &content, PRIORITY_LEARNINGS));
+    }
+
+    Ok(items)
+}
+
+/// Gather context with a token budget. Returns the formatted context string
+/// and a list of excluded items (for warning events).
+pub fn gather_context_budgeted(
+    conn: &Connection,
+    task: &Task,
+    token_budget: usize,
+) -> Result<(String, Vec<String>)> {
+    let items = gather_context_items(conn, task)?;
+    let (included, excluded) = budget::assemble_context(&items, token_budget);
+
+    let formatted = budget::format_context(&included);
+    let excluded_labels: Vec<String> = excluded.iter().map(|item| item.label.clone()).collect();
+
+    Ok((formatted, excluded_labels))
 }
 
 /// Generate a fresh context prompt for spawning a sub-agent (orchestrator mode).
