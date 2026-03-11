@@ -550,6 +550,33 @@ impl Engine {
         Ok(new_status.to_string())
     }
 
+    // --- Solutions ---
+
+    /// Apply confidence decay to stale solutions.
+    /// Decays by 0.05 per 30 days without validation.
+    pub async fn solutions_decay(&self) -> Result<usize> {
+        let conn = self.conn()?;
+        let count = crate::failure::apply_confidence_decay(&conn, 0.05, 30)?;
+        if count > 0 {
+            self.emit(Event::Info(format!("Decayed confidence on {} stale solutions", count)));
+        }
+        Ok(count)
+    }
+
+    /// Refresh/validate a solution (resets its decay clock).
+    pub async fn solutions_refresh(&self, solution_id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        crate::failure::validate_solution(&conn, solution_id)?;
+        self.emit(Event::Info(format!("Solution #{} re-validated", solution_id)));
+        Ok(())
+    }
+
+    /// Get history for a solution.
+    pub async fn solutions_history(&self, solution_id: i64) -> Result<Vec<crate::failure::SolutionEvent>> {
+        let conn = self.conn()?;
+        crate::failure::get_solution_history(&conn, solution_id)
+    }
+
     // --- Learnings ---
 
     /// Add a learning. Returns the learning ID.

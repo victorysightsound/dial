@@ -43,6 +43,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Add regex_pattern and status columns to failure_patterns for DB-driven detection",
         apply: migrate_006_pattern_regex_and_status,
     },
+    Migration {
+        version: 7,
+        description: "Add solution provenance columns and solution_history table",
+        apply: migrate_007_solution_provenance,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -245,6 +250,28 @@ fn migrate_006_pattern_regex_and_status(conn: &Connection) -> Result<()> {
         stmt.execute(rusqlite::params![key, regex])?;
     }
 
+    Ok(())
+}
+
+fn migrate_007_solution_provenance(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE solutions ADD COLUMN source TEXT NOT NULL DEFAULT 'auto-learned';
+        ALTER TABLE solutions ADD COLUMN last_validated_at TEXT;
+        ALTER TABLE solutions ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+
+        CREATE TABLE IF NOT EXISTS solution_history (
+            id INTEGER PRIMARY KEY,
+            solution_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            old_confidence REAL,
+            new_confidence REAL,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (solution_id) REFERENCES solutions(id) ON DELETE CASCADE
+        );
+        "#,
+    )?;
     Ok(())
 }
 

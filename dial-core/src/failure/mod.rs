@@ -9,7 +9,11 @@ use chrono::Local;
 use rusqlite::Connection;
 
 pub use patterns::{detect_failure_pattern, detect_failure_pattern_from_db, suggest_patterns_from_clustering, SuggestedPattern};
-pub use solutions::{apply_solution_failure, apply_solution_success, find_trusted_solutions, record_solution, Solution};
+pub use solutions::{
+    apply_confidence_decay, apply_solution_failure, apply_solution_success,
+    find_trusted_solutions, get_solution_history, record_solution,
+    record_solution_with_source, validate_solution, Solution, SolutionEvent,
+};
 
 pub fn get_or_create_failure_pattern(conn: &Connection, pattern_key: &str, category: &str) -> Result<i64> {
     let mut stmt = conn.prepare("SELECT id FROM failure_patterns WHERE pattern_key = ?1")?;
