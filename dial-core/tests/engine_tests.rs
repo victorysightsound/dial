@@ -1034,3 +1034,90 @@ async fn test_patterns_suggest_empty_with_no_unknown_errors() {
 
     env::set_current_dir(original_dir).unwrap();
 }
+
+// --- Solution Provenance & Decay Tests ---
+
+#[tokio::test]
+async fn test_solutions_decay_with_no_solutions() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let count = engine.solutions_decay().await.unwrap();
+    assert_eq!(count, 0, "No solutions to decay");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_solutions_history_empty() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    // No solution exists, should return empty (or error gracefully)
+    let events = engine.solutions_history(99999).await.unwrap();
+    assert!(events.is_empty());
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_solution_provenance_source_tracking() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let conn = dial_core::get_db(None).unwrap();
+
+    // Create a pattern and solution with source tracking
+    let pattern_id = dial_core::failure::get_or_create_failure_pattern(&conn, "TestPattern", "test").unwrap();
+    let solution_id = dial_core::failure::record_solution_with_source(
+        &conn, pattern_id, "Test solution", None, "human",
+    ).unwrap();
+
+    assert!(solution_id > 0);
+
+    // Check source column
+    let source: String = conn.query_row(
+        "SELECT source FROM solutions WHERE id = ?1",
+        [solution_id],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(source, "human");
+
+    // Check history was recorded
+    let events = engine.solutions_history(solution_id).await.unwrap();
+    assert!(!events.is_empty(), "Creation should be recorded in history");
+    assert_eq!(events[0].event_type, "created");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_solution_refresh_resets_decay() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let conn = dial_core::get_db(None).unwrap();
+
+    let pattern_id = dial_core::failure::get_or_create_failure_pattern(&conn, "RefreshTest", "test").unwrap();
+    let solution_id = dial_core::failure::record_solution_with_source(
+        &conn, pattern_id, "Refresh test", None, "auto-learned",
+    ).unwrap();
+
+    // Refresh the solution
+    engine.solutions_refresh(solution_id).await.unwrap();
+
+    // Check that last_validated_at is set
+    let validated: Option<String> = conn.query_row(
+        "SELECT last_validated_at FROM solutions WHERE id = ?1",
+        [solution_id],
+        |row| row.get(0),
+    ).unwrap();
+    assert!(validated.is_some(), "last_validated_at should be set after refresh");
+
+    // Check history
+    let events = engine.solutions_history(solution_id).await.unwrap();
+    let validated_events: Vec<_> = events.iter().filter(|e| e.event_type == "validated").collect();
+    assert!(!validated_events.is_empty(), "Validation event should be in history");
+
+    env::set_current_dir(original_dir).unwrap();
+}
