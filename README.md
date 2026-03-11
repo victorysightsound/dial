@@ -3,12 +3,12 @@
   <h1>DIAL</h1>
   <p><strong>Deterministic Iterative Agent Loop</strong></p>
   <p>
-    A CLI tool and methodology for autonomous AI-assisted software development.<br>
+    A Rust library and CLI for autonomous AI-assisted software development.<br>
     Persistent memory. Failure pattern detection. Structured task execution.<br>
     Build entire projects iteratively without losing context or repeating mistakes.
   </p>
   <p>
-    <a href="#quick-start">Quick Start</a>&ensp;&middot;&ensp;<a href="docs/methodology.md">Methodology</a>&ensp;&middot;&ensp;<a href="docs/cli-reference.md">CLI Reference</a>&ensp;&middot;&ensp;<a href="docs/ai-integration.md">AI Integration</a>
+    <a href="#quick-start">Quick Start</a>&ensp;&middot;&ensp;<a href="#library-usage">Library</a>&ensp;&middot;&ensp;<a href="docs/cli-reference.md">CLI Reference</a>&ensp;&middot;&ensp;<a href="docs/ai-integration.md">AI Integration</a>
   </p>
 </div>
 
@@ -27,11 +27,20 @@ When you use AI coding assistants (Claude Code, Codex, Gemini) to build software
 
 DIAL solves these by externalizing memory to SQLite, detecting failure patterns automatically, building a trust-scored solution database, and enforcing one-task-at-a-time discipline.
 
-## Why Not Just Use More Context?
+## Architecture
 
-Bigger context windows don't solve this. An AI with 200k tokens of conversation history doesn't have better *recall* — it has more noise. Important decisions from iteration 3 get buried under build logs from iteration 15. DIAL takes the opposite approach: each task gets a **fresh subprocess** with only the relevant specs, trusted solutions, and learnings assembled from a database. The AI starts clean but informed. Solutions build trust through a scoring system — a fix that worked twice is worth more than one mentioned 200 messages ago.
+DIAL v3.0.0 is structured as a Rust workspace with three crates:
 
-## How It Works
+```
+dial/
+├── dial-core/       # Library crate — Engine, events, providers, persistence
+├── dial-cli/        # Binary crate — CLI interface
+└── dial-providers/  # Provider implementations (Claude, Codex, etc.)
+```
+
+The core library (`dial-core`) is embeddable — you can build custom tools, dashboards, or CI integrations on top of it. The CLI is one consumer of the library.
+
+### The Loop
 
 ```
                     dial iterate
@@ -53,32 +62,22 @@ Bigger context windows don't solve this. An AI with 200k tokens of conversation 
                              Retry (max 3)
 ```
 
-DIAL maintains a per-project SQLite database with FTS5 full-text search. Each project gets:
-- **Task queue** with priorities and status tracking
-- **Indexed specifications** parsed from your PRD/spec markdown files (optional)
-- **Failure pattern catalog** that auto-categorizes errors (21 built-in patterns)
-- **Trust-scored solutions** that earn confidence through repeated success
-- **Project learnings** that persist across sessions
-
 ## Quick Start
 
 ### Install
 
 ```bash
-# Quick install (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/victorysightsound/dial/main/install.sh | sh
-
 # Via Cargo
 cargo install dial-cli
 
 # From source
 git clone https://github.com/victorysightsound/dial.git
-cd dial/dial
+cd dial
 cargo build --release
 cp target/release/dial /usr/local/bin/
 ```
 
-**Requirements:** No runtime dependencies. The binary is fully self-contained (~4MB). Building from source requires Rust 1.70+.
+**Requirements:** Rust 1.70+. No runtime dependencies. The binary is fully self-contained.
 
 ### Start a Project
 
@@ -91,8 +90,6 @@ dial config set test_cmd "cargo test"
 ```
 
 ### Add Tasks
-
-You don't need a spec to get started. Just add tasks:
 
 ```bash
 dial task add "Set up project structure" -p 1
@@ -117,33 +114,59 @@ dial validate         # Build, test, commit on success
 dial auto-run --cli claude --max 10
 ```
 
-This spawns a fresh AI subprocess per task, parses completion signals, runs validation, and loops until done. Supports Claude Code, Codex CLI, and Gemini CLI.
+This spawns a fresh AI subprocess per task, parses completion signals, runs validation, and loops until done.
 
-**Tip:** Keep tasks small enough to complete within the timeout (default 30 min). One feature or function per task, not "build the entire module."
+## Library Usage
 
-### Add a Specification (Optional)
+Add `dial-core` to your `Cargo.toml`:
 
-For richer context, write a spec and let DIAL link tasks to it:
-
-```bash
-mkdir specs
-# Write your PRD in specs/PRD.md
-dial index
-dial task add "Implement user auth" -p 2 --spec 1
+```toml
+[dependencies]
+dial-core = "3.0"
+tokio = { version = "1", features = ["full"] }
 ```
 
-DIAL parses markdown headers into searchable sections and surfaces relevant ones automatically when working on related tasks.
+### Basic Example
 
-## Documentation
+```rust
+use dial_core::{Engine, Event, EventHandler};
+use std::sync::Arc;
 
-| Document | Description |
-|----------|-------------|
-| [Getting Started](docs/getting-started.md) | Detailed setup and first project walkthrough |
-| [CLI Reference](docs/cli-reference.md) | Complete command reference with all flags and options |
-| [Methodology](docs/methodology.md) | The DIAL methodology: failure modes, countermeasures, the loop |
-| [AI Integration](docs/ai-integration.md) | Using DIAL with Claude Code, Codex, Gemini, and other AI tools |
-| [Configuration](docs/configuration.md) | All configuration keys, database schema, and project structure |
-| [Architecture](docs/architecture.md) | Source code architecture for contributors |
+struct Logger;
+impl EventHandler for Logger {
+    fn handle(&self, event: &Event) {
+        println!("{:?}", event);
+    }
+}
+
+#[tokio::main]
+async fn main() -> dial_core::Result<()> {
+    let mut engine = Engine::init("mvp", None, false).await?;
+    engine.on_event(Arc::new(Logger));
+
+    // Add tasks with priorities and dependencies
+    let t1 = engine.task_add("Build core module", 8, None).await?;
+    let t2 = engine.task_add("Write tests", 5, None).await?;
+    engine.task_depends(t2, t1).await?;
+
+    // Configure validation
+    engine.config_set("build_cmd", "cargo build").await?;
+    engine.config_set("test_cmd", "cargo test").await?;
+
+    // Or use the configurable pipeline
+    engine.pipeline_add("lint", "cargo clippy", 0, false, Some(60)).await?;
+    engine.pipeline_add("build", "cargo build", 1, true, Some(300)).await?;
+    engine.pipeline_add("test", "cargo test", 2, true, Some(600)).await?;
+
+    // Get structured metrics
+    let report = engine.stats().await?;
+    println!("Success rate: {:.1}%", report.success_rate * 100.0);
+
+    Ok(())
+}
+```
+
+See [`dial-core/examples/`](dial-core/examples/) for more: custom providers, event handlers, and validation pipelines.
 
 ## Features
 
@@ -154,67 +177,73 @@ dial task list                      # Show active tasks
 dial task next                      # Preview next task
 dial task done 5                    # Mark complete
 dial task block 3 "waiting on API"  # Block with reason
-dial task search "auth"             # Full-text search
+dial task depends 5 3               # Task 5 depends on task 3
+```
+
+### Configurable Validation Pipeline
+```bash
+dial pipeline add "lint" "cargo clippy" --sort 0 --optional --timeout 60
+dial pipeline add "build" "cargo build" --sort 1 --required --timeout 300
+dial pipeline add "test" "cargo test" --sort 2 --required --timeout 600
+dial pipeline show
+```
+
+Steps run in order. Required steps abort on failure. Optional steps log and continue.
+
+### Approval Gates
+```bash
+dial config set approval_mode review   # auto | review | manual
+dial approve                           # Accept a paused iteration
+dial reject "needs error handling"     # Reject with reason
 ```
 
 ### Failure Pattern Detection
 
-DIAL automatically categorizes build/test errors into 21 patterns across 5 categories (import, syntax, runtime, test, build). When a failure recurs, DIAL surfaces previously successful solutions.
+DIAL categorizes build/test errors into 21 patterns across 5 categories (import, syntax, runtime, test, build). When a failure recurs, DIAL surfaces previously successful solutions.
+
+```bash
+dial patterns list                     # Show all patterns
+dial patterns add "MyError" "desc" "cat" "(?i)myerror" suggested
+dial patterns promote 42               # suggested -> confirmed -> trusted
+dial patterns suggest                  # Cluster unknown errors
+```
 
 ### Trust-Scored Solutions
 
-Solutions start at 0.3 confidence. Each successful application adds +0.15; each failure subtracts -0.20. Solutions reaching 0.6 confidence become "trusted" and are automatically included in context for future tasks.
-
-### Specification Search
+Solutions start at 0.3 confidence. Success adds +0.15; failure subtracts -0.20. Solutions at 0.6+ are "trusted" and automatically included in context.
 
 ```bash
-dial index                     # Index specs/ directory
-dial spec search "auth"        # Full-text search
-dial spec show 5               # Show full section
+dial solutions list                    # Show all solutions
+dial solutions refresh 5               # Reset decay timer
+dial solutions history 5               # View confidence changes
+dial solutions decay                   # Apply confidence decay
+```
+
+### Metrics & Trends
+```bash
+dial stats                             # Summary dashboard
+dial stats --format json               # Machine-readable output
+dial stats --format csv                # Export for spreadsheets
+dial stats --trend 30                  # Daily trends over 30 days
+```
+
+### Crash Recovery
+```bash
+dial recover                           # Reset dangling iterations
 ```
 
 ### Project Learnings
-
 ```bash
 dial learn "Always run migrations before tests" -c setup
 dial learnings list -c gotcha
 dial learnings search "database"
 ```
 
-Categories: `build`, `test`, `setup`, `gotcha`, `pattern`, `tool`, `other`
-
-### Statistics Dashboard
-
+### Specification Search
 ```bash
-dial stats
-```
-
-Shows iteration counts, success rates, task progress, time spent, top failure patterns, solution hit rates, and learning counts.
-
-## Example Workflow
-
-```bash
-# 1. Start a new project
-mkdir my-app && cd my-app
-git init
-dial init --phase mvp
-
-# 2. Configure
-dial config set build_cmd "npm run build"
-dial config set test_cmd "npm test"
-
-# 3. Create tasks (no spec required)
-dial task add "Set up Next.js project with TypeScript" -p 1
-dial task add "Implement user auth with email/password" -p 2
-dial task add "Build dashboard page with stats" -p 3
-dial task add "Add E2E tests for auth flow" -p 4
-
-# 4. Run with AI
-dial auto-run --cli claude --max 10
-
-# 5. Check progress
-dial status
-dial stats
+dial index                     # Index specs/ directory
+dial spec search "auth"        # Full-text search
+dial spec show 5               # Show full section
 ```
 
 ## Project Structure
@@ -238,7 +267,7 @@ your-project/
 | Startup time | ~14ms |
 | Binary size | ~4MB |
 | Dependencies | None (static binary) |
-| Database | SQLite with WAL mode |
+| Database | SQLite with WAL mode + FTS5 |
 
 ## License
 
