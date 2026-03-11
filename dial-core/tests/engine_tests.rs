@@ -833,3 +833,110 @@ async fn test_pipeline_step_events_emitted() {
 
     env::set_current_dir(original_dir).unwrap();
 }
+
+// --- Budget / Token Counting Tests ---
+
+#[tokio::test]
+async fn test_gather_context_budgeted_within_budget() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let _task_id = engine.task_add("Test budget gathering", 5, None).await.unwrap();
+    let task = engine.task_get(_task_id).await.unwrap();
+
+    // Large budget — everything fits
+    let (context, excluded) = engine.gather_context_budgeted(&task, 100_000).await.unwrap();
+    assert!(!context.is_empty(), "Context should not be empty");
+    assert!(excluded.is_empty(), "Nothing should be excluded with large budget");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_gather_context_budgeted_truncation() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let _task_id = engine.task_add("Test truncation", 5, None).await.unwrap();
+    let task = engine.task_get(_task_id).await.unwrap();
+
+    // Add some learnings to create more context to be truncated
+    engine.learn("Learning one about patterns", Some("pattern")).await.unwrap();
+    engine.learn("Learning two about testing", Some("test")).await.unwrap();
+
+    // Very small budget — should exclude lower-priority items
+    let (_context, excluded) = engine.gather_context_budgeted(&task, 5).await.unwrap();
+    assert!(!excluded.is_empty(), "Some items should be excluded with tiny budget");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_gather_context_budgeted_emits_warnings() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    let handler = Arc::new(RecordingHandler::new());
+    engine.on_event(handler.clone());
+
+    let _task_id = engine.task_add("Test warnings", 5, None).await.unwrap();
+    let task = engine.task_get(_task_id).await.unwrap();
+
+    engine.learn("Some learning", Some("test")).await.unwrap();
+
+    // Very small budget to trigger truncation warnings
+    let (_context, excluded) = engine.gather_context_budgeted(&task, 5).await.unwrap();
+
+    if !excluded.is_empty() {
+        let events = handler.events();
+        let warning_events: Vec<&String> = events.iter()
+            .filter(|e| e.starts_with("Warning"))
+            .collect();
+        assert!(!warning_events.is_empty(), "Truncation should emit warning events");
+    }
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_gather_context_budgeted_priority_ordering() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let _task_id = engine.task_add("Test priority order", 5, None).await.unwrap();
+    let task = engine.task_get(_task_id).await.unwrap();
+
+    // Add learnings (low priority items)
+    for i in 0..5 {
+        engine.learn(&format!("Learning {}", i), Some("test")).await.unwrap();
+    }
+
+    // With a moderate budget, signs (priority 0) should always be included.
+    // Learnings (priority 40) should be the first to get dropped.
+    let (context, excluded) = engine.gather_context_budgeted(&task, 200).await.unwrap();
+
+    // Signs should always be in context
+    assert!(context.contains("Critical Rules") || context.contains("SIGNS"),
+        "Signs (highest priority) should be included");
+
+    // If anything was excluded, it should be lower-priority items
+    if !excluded.is_empty() {
+        for label in &excluded {
+            assert!(!label.contains("Signs"),
+                "Signs should never be excluded - they have highest priority");
+        }
+    }
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_token_estimation_consistency() {
+    // Test that token estimation is consistent and reasonable
+    let short = dial_core::budget::estimate_tokens("hello");
+    let long = dial_core::budget::estimate_tokens(&"a".repeat(1000));
+
+    assert!(short > 0, "Non-empty text should have > 0 tokens");
+    assert!(long > short, "Longer text should have more tokens");
+    assert_eq!(long, 250, "1000 chars / 4 = 250 tokens");
+}

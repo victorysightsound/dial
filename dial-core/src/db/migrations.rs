@@ -33,6 +33,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Add validation_steps table for configurable pipeline",
         apply: migrate_004_validation_steps,
     },
+    Migration {
+        version: 5,
+        description: "Seed failure_patterns from hardcoded patterns",
+        apply: migrate_005_seed_failure_patterns,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -191,6 +196,45 @@ fn migrate_004_validation_steps(conn: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    Ok(())
+}
+
+fn migrate_005_seed_failure_patterns(conn: &Connection) -> Result<()> {
+    // Seed hardcoded patterns into the failure_patterns table.
+    // Uses INSERT OR IGNORE to avoid duplicates if patterns already exist.
+    let patterns = [
+        ("ImportError", "Import/module error in Python", "import"),
+        ("ModuleNotFoundError", "Module not found in Python", "import"),
+        ("SyntaxError", "Syntax error", "syntax"),
+        ("IndentationError", "Indentation error in Python", "syntax"),
+        ("NameError", "Name not defined error", "runtime"),
+        ("TypeError", "Type error", "runtime"),
+        ("ValueError", "Value error", "runtime"),
+        ("AttributeError", "Attribute error", "runtime"),
+        ("KeyError", "Key error in dict/map", "runtime"),
+        ("IndexError", "Index out of range", "runtime"),
+        ("FileNotFoundError", "File not found", "runtime"),
+        ("PermissionError", "Permission denied", "runtime"),
+        ("ConnectionError", "Connection error", "runtime"),
+        ("TimeoutError", "Timeout error", "runtime"),
+        ("TestFailure", "Test case failure", "test"),
+        ("AssertionError", "Assertion failed", "test"),
+        ("RustCompileError", "Rust compilation error", "build"),
+        ("CargoBuildError", "Cargo build failure", "build"),
+        ("NpmError", "NPM error", "build"),
+        ("TypeScriptError", "TypeScript compilation error", "build"),
+        ("UnknownError", "Unrecognized error pattern", "unknown"),
+    ];
+
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO failure_patterns (pattern_key, description, category)
+         VALUES (?1, ?2, ?3)",
+    )?;
+
+    for (key, desc, cat) in &patterns {
+        stmt.execute(rusqlite::params![key, desc, cat])?;
+    }
+
     Ok(())
 }
 
