@@ -5,6 +5,7 @@ use crate::event::{Event, EventHandler};
 use crate::failure;
 use crate::iteration;
 use crate::learning;
+use crate::provider::{Provider, ProviderResponse};
 use crate::spec;
 use crate::task;
 use crate::task::models::Task;
@@ -39,6 +40,7 @@ impl Default for EngineConfig {
 pub struct Engine {
     config: EngineConfig,
     handlers: Vec<Arc<dyn EventHandler>>,
+    provider: Option<Arc<dyn Provider>>,
 }
 
 impl Engine {
@@ -52,7 +54,7 @@ impl Engine {
         // Verify DB exists and run migrations
         let _conn = db::get_db(config.phase.as_deref())?;
 
-        Ok(Self { config, handlers: Vec::new() })
+        Ok(Self { config, handlers: Vec::new(), provider: None })
     }
 
     /// Initialize a new DIAL project.
@@ -69,6 +71,7 @@ impl Engine {
                 phase: Some(phase.to_string()),
             },
             handlers: Vec::new(),
+            provider: None,
         })
     }
 
@@ -77,11 +80,54 @@ impl Engine {
         self.handlers.push(handler);
     }
 
+    /// Set the AI provider for automated operations.
+    pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
+        self.provider = Some(provider);
+    }
+
+    /// Get the configured provider, if any.
+    pub fn provider(&self) -> Option<&Arc<dyn Provider>> {
+        self.provider.as_ref()
+    }
+
     /// Emit an event to all registered handlers.
     pub fn emit(&self, event: Event) {
         for handler in &self.handlers {
             handler.handle(&event);
         }
+    }
+
+    /// Record provider usage for an iteration.
+    pub fn record_usage(
+        &self,
+        iteration_id: Option<i64>,
+        response: &ProviderResponse,
+        provider_name: &str,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        let (tokens_in, tokens_out, cost_usd) = match &response.usage {
+            Some(usage) => (
+                usage.tokens_in as i64,
+                usage.tokens_out as i64,
+                usage.cost_usd.unwrap_or(0.0),
+            ),
+            None => (0, 0, 0.0),
+        };
+
+        conn.execute(
+            "INSERT INTO provider_usage (iteration_id, provider, model, tokens_in, tokens_out, cost_usd, duration_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                iteration_id,
+                provider_name,
+                response.model,
+                tokens_in,
+                tokens_out,
+                cost_usd,
+                response.duration_secs,
+            ],
+        )?;
+        Ok(())
     }
 
     /// Get the .dial directory path.
