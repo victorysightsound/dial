@@ -203,10 +203,11 @@ enum LearningsCommands {
     Delete { id: i64 },
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
-    let result = run_command(cli.command);
+    let result = run_command(cli.command).await;
 
     if let Err(e) = result {
         output::print_error(&e.to_string());
@@ -214,87 +215,85 @@ fn main() {
     }
 }
 
-fn run_command(command: Commands) -> Result<()> {
-    // Commands that don't need initialization
+async fn run_command(command: Commands) -> Result<()> {
+    // Init creates a new engine — handled separately
     if let Commands::Init { phase, import_solutions, no_agents } = command {
-        init_db(&phase, import_solutions.as_deref(), !no_agents)?;
+        Engine::init(&phase, import_solutions.as_deref(), !no_agents).await?;
         return Ok(());
     }
 
-    // Check if initialized (for all other commands)
-    if !get_dial_dir().exists() {
-        return Err(DialError::NotInitialized);
-    }
+    // All other commands require an initialized project
+    let engine = Engine::open(EngineConfig::default()).await?;
 
     match command {
         Commands::Init { .. } => unreachable!(),
 
         Commands::Index { dir } => {
-            spec::index_specs(&dir)?;
+            engine.index_specs(&dir).await?;
         }
 
         Commands::Config { command } => match command {
             Some(ConfigCommands::Set { key, value }) => {
-                config::config_set(&key, &value)?;
+                engine.config_set(&key, &value).await?;
             }
             Some(ConfigCommands::Show) | None => {
-                config::config_show()?;
+                engine.config_show().await?;
             }
         },
 
         Commands::Task { command } => match command {
             Some(TaskCommands::Add { description, priority, spec }) => {
-                task::task_add(&description, priority, spec)?;
+                engine.task_add(&description, priority, spec).await?;
             }
             Some(TaskCommands::List { all }) => {
-                task::task_list(all)?;
+                engine.task_list(all).await?;
             }
             Some(TaskCommands::Next) => {
-                task::task_next()?;
+                engine.task_next().await?;
             }
             Some(TaskCommands::Done { id }) => {
-                task::task_done(id)?;
+                engine.task_done(id).await?;
             }
             Some(TaskCommands::Block { id, reason }) => {
-                task::task_block(id, &reason)?;
+                engine.task_block(id, &reason).await?;
             }
             Some(TaskCommands::Cancel { id }) => {
-                task::task_cancel(id)?;
+                engine.task_cancel(id).await?;
             }
             Some(TaskCommands::Search { query }) => {
-                task::task_search(&query)?;
+                engine.task_search(&query).await?;
             }
             None => {
-                task::task_list(false)?;
+                engine.task_list(false).await?;
             }
         },
 
         Commands::Spec { command } => match command {
             Some(SpecCommands::Search { query }) => {
-                spec::spec_search(&query)?;
+                engine.spec_search(&query).await?;
             }
             Some(SpecCommands::Show { id }) => {
-                spec::spec_show(id)?;
+                engine.spec_show(id).await?;
             }
             Some(SpecCommands::List) | None => {
-                spec::spec_list()?;
+                engine.spec_list().await?;
             }
         },
 
         Commands::Iterate => {
-            iteration::iterate_once()?;
+            engine.iterate().await?;
         }
 
         Commands::Validate => {
-            iteration::validate_current()?;
+            engine.validate().await?;
         }
 
         Commands::Run { max } => {
-            iteration::run_loop(max)?;
+            engine.run(max).await?;
         }
 
         Commands::Stop => {
-            iteration::stop_loop()?;
+            engine.stop().await?;
         }
 
         Commands::Status => {
@@ -306,29 +305,29 @@ fn run_command(command: Commands) -> Result<()> {
         }
 
         Commands::Failures { all } => {
-            failure::show_failures(!all)?;
+            engine.show_failures(!all).await?;
         }
 
         Commands::Solutions { trusted } => {
-            failure::show_solutions(trusted)?;
+            engine.show_solutions(trusted).await?;
         }
 
         Commands::Learn { description, category } => {
-            learning::add_learning(&description, category.as_deref())?;
+            engine.learn(&description, category.as_deref()).await?;
         }
 
         Commands::Learnings { command } => match command {
             Some(LearningsCommands::List { category }) => {
-                learning::list_learnings(category.as_deref())?;
+                engine.learnings_list(category.as_deref()).await?;
             }
             Some(LearningsCommands::Search { query }) => {
-                learning::search_learnings(&query)?;
+                engine.learnings_search(&query).await?;
             }
             Some(LearningsCommands::Delete { id }) => {
-                learning::delete_learning(id)?;
+                engine.learnings_delete(id).await?;
             }
             None => {
-                learning::list_learnings(None)?;
+                engine.learnings_list(None).await?;
             }
         },
 
@@ -337,28 +336,32 @@ fn run_command(command: Commands) -> Result<()> {
         }
 
         Commands::Revert => {
-            iteration::revert_to_last_good()?;
+            engine.revert().await?;
         }
 
         Commands::Reset => {
-            iteration::reset_current()?;
+            engine.reset().await?;
         }
 
         Commands::Context => {
-            iteration::show_context()?;
+            engine.show_context().await?;
         }
 
         Commands::Orchestrate => {
-            iteration::orchestrate()?;
+            engine.orchestrate().await?;
         }
 
         Commands::AutoRun { max, cli } => {
-            iteration::auto_run(max, Some(&cli))?;
+            engine.auto_run(max, Some(&cli)).await?;
         }
     }
 
     Ok(())
 }
+
+// --- CLI-specific display functions ---
+// These access the DB directly for presentation. They'll be refactored
+// to use structured Engine returns when the event system is added (Phase 2).
 
 fn show_status() -> Result<()> {
     let conn = get_db(None)?;
@@ -368,7 +371,6 @@ fn show_status() -> Result<()> {
     println!("{}", output::bold(&format!("DIAL Status: {} (phase: {})", project, phase)));
     println!("{}", "=".repeat(60));
 
-    // Current iteration
     let current: Option<(i64, i64, String, i32)> = conn
         .query_row(
             "SELECT i.id, i.task_id, t.description, i.attempt_number
@@ -392,7 +394,6 @@ fn show_status() -> Result<()> {
         }
     }
 
-    // Task counts
     let mut stmt = conn.prepare("SELECT status, COUNT(*) FROM tasks GROUP BY status")?;
     let task_counts: std::collections::HashMap<String, i64> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -404,7 +405,6 @@ fn show_status() -> Result<()> {
     println!("  Completed: {}", task_counts.get("completed").unwrap_or(&0));
     println!("  Blocked:   {}", task_counts.get("blocked").unwrap_or(&0));
 
-    // Recent iterations
     let mut stmt = conn.prepare(
         "SELECT i.id, i.status, i.duration_seconds, t.description
          FROM iterations i
@@ -505,7 +505,6 @@ fn show_stats() -> Result<()> {
     println!("{}", output::bold(&format!("\nDIAL Statistics: {} (phase: {})", project, phase)));
     println!("{}", "=".repeat(60));
 
-    // Iterations
     let (total, completed, failed, total_duration, avg_duration, max_duration): (
         i64, i64, i64, Option<f64>, Option<f64>, Option<f64>
     ) = conn.query_row(
@@ -536,7 +535,6 @@ fn show_stats() -> Result<()> {
         println!("  Failed:     {}", failed);
     }
 
-    // Tasks
     let mut stmt = conn.prepare("SELECT status, COUNT(*) FROM tasks GROUP BY status")?;
     let task_counts: std::collections::HashMap<String, i64> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -549,7 +547,6 @@ fn show_stats() -> Result<()> {
     println!("  Blocked:    {}", task_counts.get("blocked").unwrap_or(&0));
     println!("  Cancelled:  {}", task_counts.get("cancelled").unwrap_or(&0));
 
-    // Time
     if let Some(total_dur) = total_duration {
         let total_mins = total_dur / 60.0;
         let avg_mins = avg_duration.unwrap_or(0.0) / 60.0;
@@ -565,7 +562,6 @@ fn show_stats() -> Result<()> {
         println!("  Longest:          {:.1}m", max_mins);
     }
 
-    // Failure patterns
     let mut stmt = conn.prepare(
         "SELECT pattern_key, occurrence_count
          FROM failure_patterns
@@ -584,7 +580,6 @@ fn show_stats() -> Result<()> {
         }
     }
 
-    // Solutions
     let (sol_total, sol_trusted, sol_success, sol_failure): (i64, i64, i64, i64) = conn.query_row(
         "SELECT
             COUNT(*),
@@ -612,7 +607,6 @@ fn show_stats() -> Result<()> {
         }
     }
 
-    // Learnings
     let (learn_total, learn_refs): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(times_referenced), 0) FROM learnings",
         [],
@@ -624,7 +618,6 @@ fn show_stats() -> Result<()> {
         println!("  Total:            {}", learn_total);
         println!("  Total references: {}", learn_refs);
 
-        // Breakdown by category
         let mut stmt = conn.prepare(
             "SELECT category, COUNT(*) FROM learnings GROUP BY category ORDER BY COUNT(*) DESC",
         )?;
