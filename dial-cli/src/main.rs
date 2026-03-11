@@ -91,9 +91,8 @@ enum Commands {
 
     /// Show solutions
     Solutions {
-        /// Show only trusted solutions
-        #[arg(short, long)]
-        trusted: bool,
+        #[command(subcommand)]
+        command: Option<SolutionCommands>,
     },
 
     /// Add a learning
@@ -222,6 +221,22 @@ enum SpecCommands {
     Show { id: i64 },
     /// List spec sections
     List,
+}
+
+#[derive(Subcommand)]
+enum SolutionCommands {
+    /// List solutions (default: all)
+    List {
+        /// Show only trusted solutions
+        #[arg(short, long)]
+        trusted: bool,
+    },
+    /// Refresh/re-validate a solution (resets decay clock)
+    Refresh { id: i64 },
+    /// Show history for a solution
+    History { id: i64 },
+    /// Apply confidence decay to stale solutions
+    Decay,
 }
 
 #[derive(Subcommand)]
@@ -404,9 +419,40 @@ async fn run_command(command: Commands) -> Result<()> {
             engine.show_failures(!all).await?;
         }
 
-        Commands::Solutions { trusted } => {
-            engine.show_solutions(trusted).await?;
-        }
+        Commands::Solutions { command } => match command {
+            Some(SolutionCommands::List { trusted }) => {
+                engine.show_solutions(trusted).await?;
+            }
+            None => {
+                engine.show_solutions(false).await?;
+            }
+            Some(SolutionCommands::Refresh { id }) => {
+                engine.solutions_refresh(id).await?;
+            }
+            Some(SolutionCommands::History { id }) => {
+                let events = engine.solutions_history(id).await?;
+                if events.is_empty() {
+                    println!("{}", output::dim("No history for this solution."));
+                } else {
+                    println!("{}", output::bold(&format!("Solution #{} History", id)));
+                    println!("{}", "=".repeat(60));
+                    for event in events {
+                        let conf_str = match (event.old_confidence, event.new_confidence) {
+                            (Some(old), Some(new)) => format!(" ({:.2} -> {:.2})", old, new),
+                            _ => String::new(),
+                        };
+                        let notes_str = event.notes.map(|n| format!(" - {}", n)).unwrap_or_default();
+                        println!("  {} {}{}{}", event.created_at, event.event_type, conf_str, notes_str);
+                    }
+                }
+            }
+            Some(SolutionCommands::Decay) => {
+                let count = engine.solutions_decay().await?;
+                if count == 0 {
+                    println!("{}", output::dim("No solutions needed decay."));
+                }
+            }
+        },
 
         Commands::Learn { description, category } => {
             engine.learn(&description, category.as_deref()).await?;
