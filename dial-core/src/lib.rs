@@ -8,6 +8,7 @@ pub mod git;
 pub mod iteration;
 pub mod learning;
 pub mod output;
+pub mod provider;
 pub mod spec;
 pub mod task;
 
@@ -16,6 +17,7 @@ pub use db::{get_current_phase, get_db, get_dial_dir, init_db, DEFAULT_PHASE};
 pub use engine::{Engine, EngineConfig};
 pub use errors::{DialError, Result};
 pub use event::{Event, EventHandler};
+pub use provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 
 // Constants
 pub const VERSION: &str = "3.0.0";
