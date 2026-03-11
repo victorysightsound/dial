@@ -5,6 +5,7 @@ use crate::failure::{find_trusted_solutions, record_failure};
 use crate::git::{git_commit, git_has_changes, git_is_repo};
 use crate::learning::add_learning;
 use crate::output::{bold, dim, green, red, yellow};
+use crate::task::auto_unblock_dependents;
 use crate::task::models::Task;
 use crate::MAX_FIX_ATTEMPTS;
 use chrono::Local;
@@ -283,10 +284,15 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
 
         let conn = get_db(None)?;
 
-        // Get next pending task
+        // Get next pending task (dependency-aware)
         let mut stmt = conn.prepare(
             "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
              FROM tasks WHERE status = 'pending'
+             AND id NOT IN (
+                 SELECT td.task_id FROM task_dependencies td
+                 INNER JOIN tasks dep ON dep.id = td.depends_on_id
+                 WHERE dep.status != 'completed'
+             )
              ORDER BY priority, id LIMIT 1",
         )?;
 
@@ -404,6 +410,9 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                     "UPDATE tasks SET status = 'completed', completed_at = ?1 WHERE id = ?2",
                     rusqlite::params![now, task.id],
                 )?;
+
+                // Auto-unblock dependents
+                auto_unblock_dependents(&conn, task.id)?;
 
                 println!("{}", green(&format!("Task #{} completed successfully!", task.id)));
                 completed_count += 1;
