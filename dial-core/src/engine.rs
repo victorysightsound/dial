@@ -786,6 +786,115 @@ impl Engine {
         spec::spec_list()
     }
 
+    // --- Migration ---
+
+    /// Migrate data from a v2 DIAL database (best-effort).
+    pub async fn migrate_v2(&self, v2_path: &str) -> Result<()> {
+        use std::path::Path;
+
+        let path = Path::new(v2_path);
+        if !path.exists() {
+            return Err(DialError::UserError(format!("V2 database not found: {}", v2_path)));
+        }
+
+        let v2_conn = rusqlite::Connection::open(path)
+            .map_err(DialError::Database)?;
+        let conn = self.conn()?;
+
+        let mut migrated = 0;
+
+        // Migrate tasks if the table exists
+        let has_tasks: bool = v2_conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tasks'",
+            [], |row| row.get(0),
+        ).unwrap_or(false);
+
+        if has_tasks {
+            let mut stmt = v2_conn.prepare(
+                "SELECT description, priority, status FROM tasks",
+            ).map_err(DialError::Database)?;
+
+            let tasks = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1).unwrap_or(5),
+                    row.get::<_, String>(2).unwrap_or_else(|_| "pending".to_string()),
+                ))
+            }).map_err(DialError::Database)?;
+
+            for task in tasks {
+                if let Ok((desc, priority, status)) = task {
+                    let result = conn.execute(
+                        "INSERT OR IGNORE INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![desc, priority, status],
+                    );
+                    if result.is_ok() {
+                        migrated += 1;
+                    }
+                }
+            }
+        }
+
+        // Migrate learnings if the table exists
+        let has_learnings: bool = v2_conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='learnings'",
+            [], |row| row.get(0),
+        ).unwrap_or(false);
+
+        if has_learnings {
+            let mut stmt = v2_conn.prepare(
+                "SELECT description, category FROM learnings",
+            ).map_err(DialError::Database)?;
+
+            let learnings = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            }).map_err(DialError::Database)?;
+
+            for learning in learnings {
+                if let Ok((desc, cat)) = learning {
+                    let result = conn.execute(
+                        "INSERT OR IGNORE INTO learnings (description, category) VALUES (?1, ?2)",
+                        rusqlite::params![desc, cat],
+                    );
+                    if result.is_ok() {
+                        migrated += 1;
+                    }
+                }
+            }
+        }
+
+        // Migrate config if the table exists
+        let has_config: bool = v2_conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='config'",
+            [], |row| row.get(0),
+        ).unwrap_or(false);
+
+        if has_config {
+            let mut stmt = v2_conn.prepare(
+                "SELECT key, value FROM config",
+            ).map_err(DialError::Database)?;
+
+            let configs = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }).map_err(DialError::Database)?;
+
+            for config in configs {
+                if let Ok((key, value)) = config {
+                    let _ = conn.execute(
+                        "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
+                        rusqlite::params![key, value],
+                    );
+                }
+            }
+        }
+
+        self.emit(Event::Info(format!("Migrated {} records from v2 database: {}", migrated, v2_path)));
+        Ok(())
+    }
+
     // --- Metrics ---
 
     /// Compute a structured metrics report.

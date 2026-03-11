@@ -143,6 +143,12 @@ enum Commands {
         reason: String,
     },
 
+    /// Migrate data from a v2 DIAL database
+    MigrateV2 {
+        /// Path to the v2 database file
+        path: String,
+    },
+
     /// Revert to last good commit
     Revert,
 
@@ -609,6 +615,10 @@ async fn run_command(command: Commands) -> Result<()> {
                     }
                 }
             }
+        }
+
+        Commands::MigrateV2 { path } => {
+            engine.migrate_v2(&path).await?;
         }
 
         Commands::Approve => {
