@@ -160,6 +160,10 @@ enum TaskCommands {
         /// Spec section ID
         #[arg(long)]
         spec: Option<i64>,
+
+        /// Task ID this new task depends on (can be repeated)
+        #[arg(long = "after")]
+        after: Vec<i64>,
     },
     /// List tasks
     List {
@@ -177,6 +181,22 @@ enum TaskCommands {
     Cancel { id: i64 },
     /// Search tasks
     Search { query: String },
+    /// Add a dependency (task depends on another)
+    Depend {
+        /// Task ID
+        id: i64,
+        /// Task ID it depends on
+        on: i64,
+    },
+    /// Remove a dependency
+    Undepend {
+        /// Task ID
+        id: i64,
+        /// Task ID to remove dependency on
+        on: i64,
+    },
+    /// Show dependency info for a task
+    Deps { id: i64 },
 }
 
 #[derive(Subcommand)]
@@ -242,8 +262,11 @@ async fn run_command(command: Commands) -> Result<()> {
         },
 
         Commands::Task { command } => match command {
-            Some(TaskCommands::Add { description, priority, spec }) => {
-                engine.task_add(&description, priority, spec).await?;
+            Some(TaskCommands::Add { description, priority, spec, after }) => {
+                let task_id = engine.task_add(&description, priority, spec).await?;
+                for dep_id in after {
+                    engine.task_depends(task_id, dep_id).await?;
+                }
             }
             Some(TaskCommands::List { all }) => {
                 engine.task_list(all).await?;
@@ -262,6 +285,15 @@ async fn run_command(command: Commands) -> Result<()> {
             }
             Some(TaskCommands::Search { query }) => {
                 engine.task_search(&query).await?;
+            }
+            Some(TaskCommands::Depend { id, on }) => {
+                engine.task_depends(id, on).await?;
+            }
+            Some(TaskCommands::Undepend { id, on }) => {
+                engine.task_undepend(id, on).await?;
+            }
+            Some(TaskCommands::Deps { id }) => {
+                engine.task_show_deps(id).await?;
             }
             None => {
                 engine.task_list(false).await?;
