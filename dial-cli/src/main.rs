@@ -112,6 +112,18 @@ enum Commands {
         command: Option<LearningsCommands>,
     },
 
+    /// Manage failure patterns
+    Patterns {
+        #[command(subcommand)]
+        command: Option<PatternCommands>,
+    },
+
+    /// Manage validation pipeline
+    Pipeline {
+        #[command(subcommand)]
+        command: Option<PipelineCommands>,
+    },
+
     /// Show statistics
     Stats,
 
@@ -210,6 +222,53 @@ enum SpecCommands {
     Show { id: i64 },
     /// List spec sections
     List,
+}
+
+#[derive(Subcommand)]
+enum PatternCommands {
+    /// List all failure patterns
+    List,
+    /// Add a new pattern
+    Add {
+        /// Pattern key (unique identifier)
+        key: String,
+        /// Description
+        description: String,
+        /// Category (import, syntax, runtime, test, build)
+        #[arg(short, long)]
+        category: String,
+        /// Regex pattern for matching
+        #[arg(short, long)]
+        regex: String,
+    },
+    /// Promote a pattern (suggested -> confirmed -> trusted)
+    Promote { id: i64 },
+    /// Suggest new patterns from unknown error clustering
+    Suggest,
+}
+
+#[derive(Subcommand)]
+enum PipelineCommands {
+    /// Show configured pipeline steps
+    Show,
+    /// Add a pipeline step
+    Add {
+        /// Step name
+        name: String,
+        /// Command to run
+        command: String,
+        /// Sort order (lower runs first)
+        #[arg(short, long, default_value = "0")]
+        order: i32,
+        /// Whether this step is optional (default: required)
+        #[arg(long)]
+        optional: bool,
+        /// Timeout in seconds
+        #[arg(short, long)]
+        timeout: Option<u64>,
+    },
+    /// Remove a pipeline step
+    Remove { id: i64 },
 }
 
 #[derive(Subcommand)]
@@ -365,6 +424,72 @@ async fn run_command(command: Commands) -> Result<()> {
             }
             None => {
                 engine.learnings_list(None).await?;
+            }
+        },
+
+        Commands::Patterns { command } => match command {
+            Some(PatternCommands::List) | None => {
+                let patterns = engine.patterns_list().await?;
+                if patterns.is_empty() {
+                    println!("{}", output::dim("No patterns configured."));
+                } else {
+                    println!("{}", output::bold("Failure Patterns"));
+                    println!("{}", "=".repeat(80));
+                    for p in patterns {
+                        let regex_str = p.regex_pattern.as_deref().unwrap_or("(no regex)");
+                        let cat = p.category.as_deref().unwrap_or("unknown");
+                        println!(
+                            "  #{:<4} [{}] {:20} {:15} {} ({}x)",
+                            p.id, p.status, p.pattern_key, cat, regex_str, p.occurrence_count
+                        );
+                    }
+                }
+            }
+            Some(PatternCommands::Add { key, description, category, regex }) => {
+                engine.patterns_add(&key, &description, &category, &regex, "suggested").await?;
+            }
+            Some(PatternCommands::Promote { id }) => {
+                let new_status = engine.patterns_promote(id).await?;
+                println!("Pattern #{} promoted to {}", id, new_status);
+            }
+            Some(PatternCommands::Suggest) => {
+                let suggestions = engine.patterns_suggest().await?;
+                if suggestions.is_empty() {
+                    println!("{}", output::dim("No pattern suggestions (need 3+ UnknownError occurrences)."));
+                } else {
+                    println!("{}", output::bold("Suggested Patterns"));
+                    println!("{}", "=".repeat(60));
+                    for s in suggestions {
+                        println!("\n  Common: \"{}\" ({} occurrences)", s.common_substring, s.occurrence_count);
+                        for sample in &s.sample_errors {
+                            println!("    - {}", output::dim(sample));
+                        }
+                    }
+                    println!("\n{}", output::dim("Use `dial patterns add` to create a pattern from a suggestion."));
+                }
+            }
+        },
+
+        Commands::Pipeline { command } => match command {
+            Some(PipelineCommands::Show) | None => {
+                let steps = engine.pipeline_list().await?;
+                if steps.is_empty() {
+                    println!("{}", output::dim("No pipeline steps configured (using build_cmd/test_cmd fallback)."));
+                } else {
+                    println!("{}", output::bold("Validation Pipeline"));
+                    println!("{}", "=".repeat(60));
+                    for s in steps {
+                        let required_str = if s.required { "required" } else { "optional" };
+                        let timeout_str = s.timeout_secs.map(|t| format!(" ({}s timeout)", t)).unwrap_or_default();
+                        println!("  #{} [order:{}] {} [{}]{}: {}", s.id, s.sort_order, s.name, required_str, timeout_str, s.command);
+                    }
+                }
+            }
+            Some(PipelineCommands::Add { name, command, order, optional, timeout }) => {
+                engine.pipeline_add(&name, &command, order, !optional, timeout).await?;
+            }
+            Some(PipelineCommands::Remove { id }) => {
+                engine.pipeline_remove(id).await?;
             }
         },
 
