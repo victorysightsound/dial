@@ -28,6 +28,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Add provider_usage table for token and cost tracking",
         apply: migrate_003_provider_usage,
     },
+    Migration {
+        version: 4,
+        description: "Add validation_steps table for configurable pipeline",
+        apply: migrate_004_validation_steps,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -172,6 +177,23 @@ fn migrate_003_provider_usage(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_004_validation_steps(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS validation_steps (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            command TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            required INTEGER NOT NULL DEFAULT 1,
+            timeout_secs INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        "#,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +253,36 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert!(exists);
+    }
+
+    #[test]
+    fn test_validation_steps_table_created() {
+        let conn = setup_test_db();
+        run_migrations(&conn).unwrap();
+
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='validation_steps'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(exists);
+
+        // Verify we can insert and read back a step
+        conn.execute(
+            "INSERT INTO validation_steps (name, command, sort_order, required, timeout_secs) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["build", "cargo build", 0, 1, 300],
+        ).unwrap();
+
+        let (name, command, sort_order, required, timeout_secs): (String, String, i64, i64, Option<i64>) = conn.query_row(
+            "SELECT name, command, sort_order, required, timeout_secs FROM validation_steps WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        ).unwrap();
+
+        assert_eq!(name, "build");
+        assert_eq!(command, "cargo build");
+        assert_eq!(sort_order, 0);
+        assert_eq!(required, 1);
+        assert_eq!(timeout_secs, Some(300));
     }
 }

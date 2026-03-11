@@ -13,6 +13,17 @@ use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Configuration for a single validation pipeline step (from DB).
+#[derive(Debug, Clone)]
+pub struct PipelineStepConfig {
+    pub id: i64,
+    pub name: String,
+    pub command: String,
+    pub sort_order: i32,
+    pub required: bool,
+    pub timeout_secs: Option<u64>,
+}
+
 /// Configuration for the DIAL engine.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -322,6 +333,72 @@ impl Engine {
     /// Run automated orchestration with fresh AI subprocesses.
     pub async fn auto_run(&self, max_iterations: Option<u32>, cli: Option<&str>) -> Result<()> {
         iteration::auto_run(max_iterations, cli)
+    }
+
+    // --- Validation Pipeline ---
+
+    /// Add a step to the validation pipeline.
+    pub async fn pipeline_add(
+        &self,
+        name: &str,
+        command: &str,
+        sort_order: i32,
+        required: bool,
+        timeout_secs: Option<u64>,
+    ) -> Result<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO validation_steps (name, command, sort_order, required, timeout_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                name,
+                command,
+                sort_order,
+                if required { 1 } else { 0 },
+                timeout_secs.map(|t| t as i64),
+            ],
+        )?;
+        let id = conn.last_insert_rowid();
+        self.emit(Event::Info(format!("Added pipeline step '{}': {}", name, command)));
+        Ok(id)
+    }
+
+    /// Remove a step from the validation pipeline by ID.
+    pub async fn pipeline_remove(&self, step_id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        let affected = conn.execute(
+            "DELETE FROM validation_steps WHERE id = ?1",
+            [step_id],
+        )?;
+        if affected == 0 {
+            return Err(DialError::UserError(format!("Pipeline step #{} not found", step_id)));
+        }
+        self.emit(Event::Info(format!("Removed pipeline step #{}", step_id)));
+        Ok(())
+    }
+
+    /// List all configured validation pipeline steps.
+    pub async fn pipeline_list(&self) -> Result<Vec<PipelineStepConfig>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, command, sort_order, required, timeout_secs
+             FROM validation_steps ORDER BY sort_order, id",
+        )?;
+
+        let steps: Vec<PipelineStepConfig> = stmt
+            .query_map([], |row| {
+                Ok(PipelineStepConfig {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    command: row.get(2)?,
+                    sort_order: row.get(3)?,
+                    required: row.get::<_, i64>(4)? != 0,
+                    timeout_secs: row.get::<_, Option<i64>>(5)?.map(|t| t as u64),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(steps)
     }
 
     // --- Failures & Solutions ---
