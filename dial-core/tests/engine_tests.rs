@@ -1,4 +1,4 @@
-use dial_core::{Engine, EngineConfig, Event, EventHandler, PipelineStepConfig};
+use dial_core::{Engine, EngineConfig, Event, EventHandler};
 use dial_core::provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 use dial_core::task::models::TaskStatus;
 use async_trait::async_trait;
@@ -810,7 +810,7 @@ async fn test_pipeline_step_events_emitted() {
     engine.pipeline_add("echo_step", "echo hello", 0, true, None).await.unwrap();
 
     // We need an iteration in progress to validate
-    let task_id = engine.task_add("Test pipeline events", 5, None).await.unwrap();
+    let _task_id = engine.task_add("Test pipeline events", 5, None).await.unwrap();
     engine.config_set("build_cmd", "").await.unwrap();
     engine.config_set("test_cmd", "").await.unwrap();
 
