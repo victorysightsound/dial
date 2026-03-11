@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1E1B4B"/>
+      <stop offset="100%" stop-color="#312E81"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bg)"/>
+
+  <!-- Subtle grid pattern for texture -->
+  <g opacity="0.03">
+    <line x1="0" y1="160" x2="1280" y2="160" stroke="white" stroke-width="1"/>
+    <line x1="0" y1="320" x2="1280" y2="320" stroke="white" stroke-width="1"/>
+    <line x1="0" y1="480" x2="1280" y2="480" stroke="white" stroke-width="1"/>
+    <line x1="320" y1="0" x2="320" y2="640" stroke="white" stroke-width="1"/>
+    <line x1="640" y1="0" x2="640" y2="640" stroke="white" stroke-width="1"/>
+    <line x1="960" y1="0" x2="960" y2="640" stroke="white" stroke-width="1"/>
+  </g>
+
+  <!-- Icon (scaled down from 512 viewBox, positioned left-center) -->
+  <g transform="translate(280, 170) scale(0.42)">
+    <!-- Outer ring arc -->
+    <path d="M 68.1 324.4 A 200 200 0 1 1 187.6 443.9"
+          stroke="#818CF8" stroke-width="32" stroke-linecap="round"/>
+    <!-- Inner iteration ring -->
+    <path d="M 130.4 222.4 A 130 130 0 1 1 289.6 381.6"
+          stroke="#818CF8" stroke-width="6" stroke-linecap="round" opacity="0.35"/>
+    <!-- Pointer needle -->
+    <polygon points="379.7,132.3 265.9,265.9 224.2,287.8 246.1,246.1"
+             fill="#F59E0B"/>
+    <!-- Center hub -->
+    <circle cx="256" cy="256" r="24" fill="#F59E0B"/>
+  </g>
+
+  <!-- DIAL text -->
+  <text x="560" y="310" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="120" font-weight="800" fill="white" letter-spacing="8">DIAL</text>
+
+  <!-- Subtitle -->
+  <text x="564" y="365" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="24" font-weight="400" fill="#A5B4FC" letter-spacing="4">DETERMINISTIC ITERATIVE AGENT LOOP</text>
+
+  <!-- Tagline -->
+  <text x="564" y="420" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="22" font-weight="300" fill="#C7D2FE" opacity="0.8">Autonomous AI development with persistent memory</text>
+</svg>

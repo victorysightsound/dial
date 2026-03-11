@@ -1,6 +1,18 @@
-# DIAL - Deterministic Iterative Agent Loop
+<div align="center">
+  <img src="assets/dial-icon.svg" width="160" alt="DIAL">
+  <h1>DIAL</h1>
+  <p><strong>Deterministic Iterative Agent Loop</strong></p>
+  <p>
+    A CLI tool and methodology for autonomous AI-assisted software development.<br>
+    Persistent memory. Failure pattern detection. Structured task execution.<br>
+    Build entire projects iteratively without losing context or repeating mistakes.
+  </p>
+  <p>
+    <a href="#quick-start">Quick Start</a>&ensp;&middot;&ensp;<a href="docs/methodology.md">Methodology</a>&ensp;&middot;&ensp;<a href="docs/cli-reference.md">CLI Reference</a>&ensp;&middot;&ensp;<a href="docs/ai-integration.md">AI Integration</a>
+  </p>
+</div>
 
-A CLI tool and methodology for autonomous AI-assisted software development. DIAL gives AI coding agents persistent memory, failure pattern detection, and structured task execution so they can build entire projects iteratively without losing context or repeating mistakes.
+---
 
 ## The Problem
 

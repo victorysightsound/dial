@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- DIAL Icon — Deterministic Iterative Agent Loop -->
+
+  <!-- Outer ring: 310° arc, gap at lower-left (7:30 position) -->
+  <path d="M 68.1 324.4 A 200 200 0 1 1 187.6 443.9"
+        stroke="#3730A3" stroke-width="32" stroke-linecap="round"/>
+
+  <!-- Inner iteration ring: 240° arc, wider gap, subtle -->
+  <path d="M 130.4 222.4 A 130 130 0 1 1 289.6 381.6"
+        stroke="#3730A3" stroke-width="6" stroke-linecap="round" opacity="0.25"/>
+
+  <!-- Pointer needle: diamond pointing to 1:30 position -->
+  <polygon points="379.7,132.3 265.9,265.9 224.2,287.8 246.1,246.1"
+           fill="#F59E0B"/>
+
+  <!-- Center hub -->
+  <circle cx="256" cy="256" r="24" fill="#F59E0B"/>
+</svg>
