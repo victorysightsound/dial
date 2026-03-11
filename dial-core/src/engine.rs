@@ -114,7 +114,11 @@ impl Engine {
 
     /// Set a config value.
     pub async fn config_set(&self, key: &str, value: &str) -> Result<()> {
-        config::config_set(key, value)
+        let result = config::config_set(key, value);
+        if result.is_ok() {
+            self.emit(Event::ConfigSet { key: key.to_string(), value: value.to_string() });
+        }
+        result
     }
 
     /// Show all config (prints to stdout).
@@ -131,7 +135,15 @@ impl Engine {
         priority: i32,
         spec_section_id: Option<i64>,
     ) -> Result<i64> {
-        task::task_add(description, priority, spec_section_id)
+        let result = task::task_add(description, priority, spec_section_id);
+        if let Ok(id) = &result {
+            self.emit(Event::TaskAdded {
+                id: *id,
+                description: description.to_string(),
+                priority,
+            });
+        }
+        result
     }
 
     /// List tasks.
@@ -146,17 +158,29 @@ impl Engine {
 
     /// Mark a task as done.
     pub async fn task_done(&self, task_id: i64) -> Result<()> {
-        task::task_done(task_id)
+        let result = task::task_done(task_id);
+        if result.is_ok() {
+            self.emit(Event::TaskCompleted { id: task_id });
+        }
+        result
     }
 
     /// Block a task with a reason.
     pub async fn task_block(&self, task_id: i64, reason: &str) -> Result<()> {
-        task::task_block(task_id, reason)
+        let result = task::task_block(task_id, reason);
+        if result.is_ok() {
+            self.emit(Event::TaskBlocked { id: task_id, reason: reason.to_string() });
+        }
+        result
     }
 
     /// Cancel a task.
     pub async fn task_cancel(&self, task_id: i64) -> Result<()> {
-        task::task_cancel(task_id)
+        let result = task::task_cancel(task_id);
+        if result.is_ok() {
+            self.emit(Event::TaskCancelled { id: task_id });
+        }
+        result
     }
 
     /// Search tasks by query.
@@ -171,12 +195,20 @@ impl Engine {
 
     /// Add a dependency: task_id depends on depends_on_id.
     pub async fn task_depends(&self, task_id: i64, depends_on_id: i64) -> Result<()> {
-        task::task_depends(task_id, depends_on_id)
+        let result = task::task_depends(task_id, depends_on_id);
+        if result.is_ok() {
+            self.emit(Event::TaskDependencyAdded { task_id, depends_on_id });
+        }
+        result
     }
 
     /// Remove a dependency.
     pub async fn task_undepend(&self, task_id: i64, depends_on_id: i64) -> Result<()> {
-        task::task_undepend(task_id, depends_on_id)
+        let result = task::task_undepend(task_id, depends_on_id);
+        if result.is_ok() {
+            self.emit(Event::TaskDependencyRemoved { task_id, depends_on_id });
+        }
+        result
     }
 
     /// Get all tasks that task_id depends on.
@@ -262,7 +294,15 @@ impl Engine {
 
     /// Add a learning. Returns the learning ID.
     pub async fn learn(&self, description: &str, category: Option<&str>) -> Result<i64> {
-        learning::add_learning(description, category)
+        let result = learning::add_learning(description, category);
+        if let Ok(id) = &result {
+            self.emit(Event::LearningAdded {
+                id: *id,
+                description: description.to_string(),
+                category: category.map(|c| c.to_string()),
+            });
+        }
+        result
     }
 
     /// List learnings.
@@ -277,7 +317,11 @@ impl Engine {
 
     /// Delete a learning.
     pub async fn learnings_delete(&self, id: i64) -> Result<()> {
-        learning::delete_learning(id)
+        let result = learning::delete_learning(id);
+        if result.is_ok() {
+            self.emit(Event::LearningDeleted { id });
+        }
+        result
     }
 
     // --- Specs ---
