@@ -102,6 +102,89 @@ pub fn detect_failure_pattern_from_db(
     (key.to_string(), cat.to_string())
 }
 
+/// A suggested pattern derived from clustering unknown errors.
+#[derive(Debug, Clone)]
+pub struct SuggestedPattern {
+    pub common_substring: String,
+    pub occurrence_count: usize,
+    pub sample_errors: Vec<String>,
+}
+
+/// Cluster unknown errors by common substrings and suggest new patterns.
+/// Only considers errors where the pattern_key is "UnknownError" and
+/// the same substring appears in 3+ different errors.
+pub fn suggest_patterns_from_clustering(conn: &rusqlite::Connection) -> Vec<SuggestedPattern> {
+    // Get all UnknownError failure texts
+    let mut stmt = match conn.prepare(
+        "SELECT f.error_text FROM failures f
+         INNER JOIN failure_patterns fp ON f.pattern_id = fp.id
+         WHERE fp.pattern_key = 'UnknownError'
+         ORDER BY f.created_at DESC LIMIT 100",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let error_texts: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+
+    if error_texts.len() < 3 {
+        return Vec::new();
+    }
+
+    // Extract significant words/phrases (> 4 chars) from each error
+    let mut word_counts: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+
+    for (idx, text) in error_texts.iter().enumerate() {
+        // Extract words > 4 chars that look like error identifiers
+        let words: std::collections::HashSet<String> = text
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|w| w.len() > 4)
+            .map(|w| w.to_string())
+            .collect();
+
+        for word in words {
+            word_counts.entry(word).or_default().push(idx);
+        }
+    }
+
+    // Find words/phrases that appear in 3+ different errors
+    let mut suggestions = Vec::new();
+    let mut seen_indices: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
+
+    let mut entries: Vec<_> = word_counts.into_iter()
+        .filter(|(_, indices)| indices.len() >= 3)
+        .collect();
+    entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    for (word, indices) in entries {
+        // Deduplicate clusters with identical index sets
+        if seen_indices.contains(&indices) {
+            continue;
+        }
+        seen_indices.insert(indices.clone());
+
+        let samples: Vec<String> = indices.iter()
+            .take(3)
+            .map(|&i| {
+                let text = &error_texts[i];
+                if text.len() > 150 { format!("{}...", &text[..150]) } else { text.clone() }
+            })
+            .collect();
+
+        suggestions.push(SuggestedPattern {
+            common_substring: word,
+            occurrence_count: indices.len(),
+            sample_errors: samples,
+        });
+    }
+
+    suggestions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

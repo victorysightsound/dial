@@ -16,7 +16,7 @@ pub mod validation;
 
 // Re-export commonly used items
 pub use db::{get_current_phase, get_db, get_dial_dir, init_db, DEFAULT_PHASE};
-pub use engine::{Engine, EngineConfig, PipelineStepConfig};
+pub use engine::{Engine, EngineConfig, PatternInfo, PipelineStepConfig};
 pub use errors::{DialError, Result};
 pub use event::{Event, EventHandler};
 pub use provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};

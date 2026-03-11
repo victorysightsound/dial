@@ -8,7 +8,7 @@ use crate::TRUST_THRESHOLD;
 use chrono::Local;
 use rusqlite::Connection;
 
-pub use patterns::{detect_failure_pattern, detect_failure_pattern_from_db};
+pub use patterns::{detect_failure_pattern, detect_failure_pattern_from_db, suggest_patterns_from_clustering, SuggestedPattern};
 pub use solutions::{apply_solution_failure, apply_solution_success, find_trusted_solutions, record_solution, Solution};
 
 pub fn get_or_create_failure_pattern(conn: &Connection, pattern_key: &str, category: &str) -> Result<i64> {

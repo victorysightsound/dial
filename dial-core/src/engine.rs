@@ -24,6 +24,18 @@ pub struct PipelineStepConfig {
     pub timeout_secs: Option<u64>,
 }
 
+/// Info about a failure pattern from the DB.
+#[derive(Debug, Clone)]
+pub struct PatternInfo {
+    pub id: i64,
+    pub pattern_key: String,
+    pub description: String,
+    pub category: Option<String>,
+    pub regex_pattern: Option<String>,
+    pub status: String,
+    pub occurrence_count: i64,
+}
+
 /// Configuration for the DIAL engine.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -454,6 +466,88 @@ impl Engine {
     /// Show solutions.
     pub async fn show_solutions(&self, trusted_only: bool) -> Result<()> {
         failure::show_solutions(trusted_only)
+    }
+
+    // --- Patterns ---
+
+    /// Suggest new patterns by clustering unknown errors.
+    pub async fn patterns_suggest(&self) -> Result<Vec<crate::failure::SuggestedPattern>> {
+        let conn = self.conn()?;
+        Ok(crate::failure::suggest_patterns_from_clustering(&conn))
+    }
+
+    /// List all patterns from the DB.
+    pub async fn patterns_list(&self) -> Result<Vec<PatternInfo>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, pattern_key, description, category, regex_pattern, status, occurrence_count
+             FROM failure_patterns ORDER BY occurrence_count DESC",
+        )?;
+
+        let patterns = stmt
+            .query_map([], |row| {
+                Ok(PatternInfo {
+                    id: row.get(0)?,
+                    pattern_key: row.get(1)?,
+                    description: row.get(2)?,
+                    category: row.get(3)?,
+                    regex_pattern: row.get(4)?,
+                    status: row.get(5)?,
+                    occurrence_count: row.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(patterns)
+    }
+
+    /// Add a new pattern to the DB.
+    pub async fn patterns_add(
+        &self,
+        pattern_key: &str,
+        description: &str,
+        category: &str,
+        regex_pattern: &str,
+        status: &str,
+    ) -> Result<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category, regex_pattern, status)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![pattern_key, description, category, regex_pattern, status],
+        )?;
+        let id = conn.last_insert_rowid();
+        self.emit(Event::Info(format!("Added pattern '{}' [{}]", pattern_key, status)));
+        Ok(id)
+    }
+
+    /// Promote a pattern's status: suggested -> confirmed -> trusted.
+    pub async fn patterns_promote(&self, pattern_id: i64) -> Result<String> {
+        let conn = self.conn()?;
+        let current_status: String = conn.query_row(
+            "SELECT status FROM failure_patterns WHERE id = ?1",
+            [pattern_id],
+            |row| row.get(0),
+        ).map_err(|_| DialError::UserError(format!("Pattern #{} not found", pattern_id)))?;
+
+        let new_status = match current_status.as_str() {
+            "suggested" => "confirmed",
+            "confirmed" => "trusted",
+            "trusted" => {
+                return Err(DialError::UserError("Pattern is already trusted".to_string()));
+            }
+            other => {
+                return Err(DialError::UserError(format!("Unknown status: {}", other)));
+            }
+        };
+
+        conn.execute(
+            "UPDATE failure_patterns SET status = ?1 WHERE id = ?2",
+            rusqlite::params![new_status, pattern_id],
+        )?;
+
+        self.emit(Event::Info(format!("Pattern #{} promoted: {} -> {}", pattern_id, current_status, new_status)));
+        Ok(new_status.to_string())
     }
 
     // --- Learnings ---
