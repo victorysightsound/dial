@@ -255,3 +255,182 @@ async fn test_migration_version_matches_latest() {
 
     env::set_current_dir(original_dir).unwrap();
 }
+
+// --- Dependency Graph Tests ---
+
+#[tokio::test]
+async fn test_task_dependency_basic() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 5, None).await.unwrap();
+
+    engine.task_depends(b, a).await.unwrap();
+
+    let deps = engine.task_get_dependencies(b).await.unwrap();
+    assert_eq!(deps, vec![a]);
+
+    let dependents = engine.task_get_dependents(a).await.unwrap();
+    assert_eq!(dependents, vec![b]);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_task_self_dependency_rejected() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let result = engine.task_depends(a, a).await;
+    assert!(result.is_err());
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_task_cycle_rejected() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 5, None).await.unwrap();
+    let c = engine.task_add("Task C", 5, None).await.unwrap();
+
+    // A -> B -> C, then try C -> A (cycle)
+    engine.task_depends(b, a).await.unwrap();
+    engine.task_depends(c, b).await.unwrap();
+    let result = engine.task_depends(a, c).await;
+    assert!(result.is_err());
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_task_next_respects_dependencies() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    // B (priority 1) depends on A (priority 5)
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 1, None).await.unwrap();
+    engine.task_depends(b, a).await.unwrap();
+
+    // Even though B has higher priority, A should come first (B's deps not met)
+    let next = engine.task_next().await.unwrap();
+    assert!(next.is_some());
+    assert_eq!(next.unwrap().id, a);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_task_next_after_dependency_completed() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 5, None).await.unwrap();
+    engine.task_depends(b, a).await.unwrap();
+
+    // Complete A
+    engine.task_done(a).await.unwrap();
+
+    // Now B should be available
+    let next = engine.task_next().await.unwrap();
+    assert!(next.is_some());
+    assert_eq!(next.unwrap().id, b);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_task_deps_satisfied() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 5, None).await.unwrap();
+    engine.task_depends(b, a).await.unwrap();
+
+    assert!(!engine.task_deps_satisfied(b).await.unwrap());
+
+    engine.task_done(a).await.unwrap();
+    assert!(engine.task_deps_satisfied(b).await.unwrap());
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_auto_unblock_on_dependency_completion() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 5, None).await.unwrap();
+    engine.task_depends(b, a).await.unwrap();
+
+    // Block B manually (simulating what happens when deps aren't met)
+    engine.task_block(b, "waiting on Task A").await.unwrap();
+    let task_b = engine.task_get(b).await.unwrap();
+    assert_eq!(task_b.status, TaskStatus::Blocked);
+
+    // Complete A — should auto-unblock B
+    engine.task_done(a).await.unwrap();
+    let task_b = engine.task_get(b).await.unwrap();
+    assert_eq!(task_b.status, TaskStatus::Pending);
+    assert_eq!(task_b.blocked_by, None);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_auto_unblock_partial_deps() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 5, None).await.unwrap();
+    let c = engine.task_add("Task C", 5, None).await.unwrap();
+
+    // C depends on both A and B
+    engine.task_depends(c, a).await.unwrap();
+    engine.task_depends(c, b).await.unwrap();
+    engine.task_block(c, "waiting on A and B").await.unwrap();
+
+    // Complete only A — C should stay blocked
+    engine.task_done(a).await.unwrap();
+    let task_c = engine.task_get(c).await.unwrap();
+    assert_eq!(task_c.status, TaskStatus::Blocked);
+
+    // Complete B — now C should be unblocked
+    engine.task_done(b).await.unwrap();
+    let task_c = engine.task_get(c).await.unwrap();
+    assert_eq!(task_c.status, TaskStatus::Pending);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_undepend_removes_dependency() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 1, None).await.unwrap();
+    engine.task_depends(b, a).await.unwrap();
+
+    // B should not be next (blocked by dep)
+    let next = engine.task_next().await.unwrap();
+    assert_eq!(next.unwrap().id, a);
+
+    // Remove the dependency
+    engine.task_undepend(b, a).await.unwrap();
+
+    // Now B should be next (higher priority)
+    let next = engine.task_next().await.unwrap();
+    assert_eq!(next.unwrap().id, b);
+
+    env::set_current_dir(original_dir).unwrap();
+}
