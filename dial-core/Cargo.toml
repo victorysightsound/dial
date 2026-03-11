@@ -1,0 +1,30 @@
+[package]
+name = "dial-core"
+description = "DIAL engine - Deterministic Iterative Agent Loop for autonomous AI-assisted software development"
+readme = "../README.md"
+keywords = ["ai", "development", "automation", "agent", "engine"]
+categories = ["development-tools"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+regex.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+lazy_static = "1.4"
+dirs = "5"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }

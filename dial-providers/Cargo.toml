@@ -1,0 +1,24 @@
+[package]
+name = "dial-providers"
+description = "AI provider implementations for DIAL engine"
+readme = "../README.md"
+keywords = ["ai", "provider", "anthropic", "openai"]
+categories = ["development-tools"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+dial-core.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

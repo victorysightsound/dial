@@ -1,0 +1,29 @@
+[package]
+name = "dial-cli"
+description = "CLI for DIAL - Deterministic Iterative Agent Loop"
+readme = "../README.md"
+keywords = ["ai", "development", "automation", "cli", "agent"]
+categories = ["command-line-utilities", "development-tools"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+dial-core.workspace = true
+dial-providers.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+tokio.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+
+[[bin]]
+name = "dial"
+path = "src/main.rs"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
