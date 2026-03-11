@@ -2,7 +2,7 @@ pub mod models;
 
 use crate::db::get_db;
 use crate::errors::{DialError, Result};
-use crate::output::{bold, dim, green, print_success, red, yellow};
+use crate::output::{bold, dim, green, red, yellow};
 use chrono::Local;
 use models::Task;
 
@@ -13,7 +13,6 @@ pub fn task_add(description: &str, priority: i32, spec_section_id: Option<i64>) 
         rusqlite::params![description, priority, spec_section_id],
     )?;
     let task_id = conn.last_insert_rowid();
-    print_success(&format!("Added task #{}: {}", task_id, description));
     Ok(task_id)
 }
 
@@ -129,8 +128,6 @@ pub fn task_done(task_id: i64) -> Result<()> {
         return Err(DialError::TaskNotFound(task_id));
     }
 
-    print_success(&format!("Task #{} marked as completed.", task_id));
-
     // Auto-unblock dependents whose deps are now all satisfied
     auto_unblock_dependents(&conn, task_id)?;
 
@@ -169,7 +166,6 @@ pub fn auto_unblock_dependents(conn: &rusqlite::Connection, completed_task_id: i
                     "UPDATE tasks SET status = 'pending', blocked_by = NULL WHERE id = ?1",
                     [dep_id],
                 )?;
-                print_success(&format!("Task #{} auto-unblocked (all dependencies satisfied).", dep_id));
             }
         }
     }
@@ -189,7 +185,6 @@ pub fn task_block(task_id: i64, reason: &str) -> Result<()> {
         return Err(DialError::TaskNotFound(task_id));
     }
 
-    println!("{}", yellow(&format!("Task #{} marked as blocked: {}", task_id, reason)));
     Ok(())
 }
 
@@ -205,7 +200,6 @@ pub fn task_cancel(task_id: i64) -> Result<()> {
         return Err(DialError::TaskNotFound(task_id));
     }
 
-    println!("{}", dim(&format!("Task #{} cancelled.", task_id)));
     Ok(())
 }
 
@@ -278,7 +272,6 @@ pub fn task_depends(task_id: i64, depends_on_id: i64) -> Result<()> {
         rusqlite::params![task_id, depends_on_id],
     )?;
 
-    print_success(&format!("Task #{} now depends on task #{}", task_id, depends_on_id));
     Ok(())
 }
 
@@ -289,7 +282,6 @@ pub fn task_undepend(task_id: i64, depends_on_id: i64) -> Result<()> {
         "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
         rusqlite::params![task_id, depends_on_id],
     )?;
-    print_success(&format!("Removed dependency: task #{} no longer depends on #{}", task_id, depends_on_id));
     Ok(())
 }
 

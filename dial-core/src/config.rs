@@ -1,6 +1,6 @@
 use crate::db::get_db;
 use crate::errors::Result;
-use crate::output::{bold, print_success};
+use crate::output::bold;
 use chrono::Local;
 
 pub fn config_get(key: &str) -> Result<Option<String>> {
@@ -18,7 +18,6 @@ pub fn config_set(key: &str, value: &str) -> Result<()> {
          ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
         [key, value, &now],
     )?;
-    print_success(&format!("Set {} = {}", key, value));
     Ok(())
 }
 

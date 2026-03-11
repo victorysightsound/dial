@@ -1,6 +1,6 @@
 use crate::db::get_db;
 use crate::errors::{DialError, Result};
-use crate::output::{blue, bold, dim, print_success, yellow};
+use crate::output::{blue, bold, dim, yellow};
 use rusqlite::Connection;
 
 pub const LEARNING_CATEGORIES: &[&str] = &["build", "test", "setup", "gotcha", "pattern", "tool", "other"];
@@ -24,15 +24,6 @@ pub fn add_learning(description: &str, category: Option<&str>) -> Result<i64> {
     )?;
 
     let learning_id = conn.last_insert_rowid();
-    let cat_str = category.map(|c| format!(" [{}]", c)).unwrap_or_default();
-
-    let preview = if description.len() > 60 {
-        format!("{}...", &description[..60])
-    } else {
-        description.to_string()
-    };
-
-    print_success(&format!("Added learning #{}{}: {}", learning_id, cat_str, preview));
     Ok(learning_id)
 }
 
@@ -155,7 +146,6 @@ pub fn delete_learning(learning_id: i64) -> Result<()> {
         return Err(DialError::LearningNotFound(learning_id));
     }
 
-    print_success(&format!("Deleted learning #{}.", learning_id));
     Ok(())
 }
 
