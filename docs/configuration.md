@@ -273,10 +273,16 @@ DIAL does not push to remote repositories. That's always your decision.
 
 ## `.gitignore` Recommendations
 
-Add to your project's `.gitignore`:
+**Important:** DIAL uses `git add -A` when auto-committing successful tasks. This stages all unignored files in the working tree. Set up a thorough `.gitignore` before running the loop to prevent temp files, debug artifacts, secrets, or editor configs from being committed silently.
+
+At minimum, add:
 
 ```
 .dial/
+.env
+*.tmp
 ```
 
-The `.dial/` directory contains the local database and generated files. These are machine-specific and should not be committed.
+For your specific stack, also exclude build artifacts (`target/`, `node_modules/`, `dist/`, `__pycache__/`, etc.), editor configs (`.vscode/`, `.idea/`), and any generated files that shouldn't be committed.
+
+The `.dial/` directory contains the local database and generated context files. These are machine-specific and should not be committed.
