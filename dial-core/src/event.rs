@@ -4,59 +4,94 @@ use crate::task::models::Task;
 #[derive(Debug, Clone)]
 pub enum Event {
     // --- Task Events ---
+    /// A new task was added to the backlog.
     TaskAdded { id: i64, description: String, priority: i32 },
+    /// A task was marked as done.
     TaskCompleted { id: i64 },
+    /// A task was blocked with a reason.
     TaskBlocked { id: i64, reason: String },
+    /// A task was cancelled.
     TaskCancelled { id: i64 },
+    /// A previously blocked task was unblocked.
     TaskUnblocked { id: i64 },
+    /// A dependency link was created between two tasks.
     TaskDependencyAdded { task_id: i64, depends_on_id: i64 },
+    /// A dependency link was removed between two tasks.
     TaskDependencyRemoved { task_id: i64, depends_on_id: i64 },
 
     // --- Iteration Events ---
+    /// An iteration started for a task.
     IterationStarted { iteration_id: i64, task: Task, attempt: i32, max_attempts: u32 },
+    /// An iteration completed successfully, optionally with a git commit hash.
     IterationCompleted { iteration_id: i64, task_id: i64, commit_hash: Option<String> },
+    /// An iteration failed with an error message.
     IterationFailed { iteration_id: i64, task_id: i64, error: String },
 
     // --- Validation Events ---
+    /// Validation pipeline started for an iteration.
     ValidationStarted { iteration_id: i64 },
+    /// All validation steps passed.
     ValidationPassed,
+    /// Validation failed with captured error output.
     ValidationFailed { error_output: String },
+    /// Build step started with the given command.
     BuildStarted { command: String },
+    /// Build step passed.
     BuildPassed,
+    /// Build step failed with captured output.
     BuildFailed { output: String },
+    /// Test step started with the given command.
     TestStarted { command: String },
+    /// Test step passed.
     TestPassed,
+    /// Test step failed with captured output.
     TestFailed { output: String },
 
     // --- Pipeline Step Events ---
+    /// A named pipeline step started.
     StepStarted { name: String, command: String, required: bool },
+    /// A named pipeline step passed.
     StepPassed { name: String, duration_secs: f64 },
+    /// A named pipeline step failed.
     StepFailed { name: String, required: bool, output: String, duration_secs: f64 },
+    /// A named pipeline step was skipped (e.g., after a required step failed).
     StepSkipped { name: String, reason: String },
 
     // --- Learning Events ---
+    /// A new learning was recorded.
     LearningAdded { id: i64, description: String, category: Option<String> },
+    /// A learning was deleted.
     LearningDeleted { id: i64 },
 
     // --- Failure/Solution Events ---
+    /// A failure was recorded and matched to a pattern.
     FailureRecorded { failure_id: i64, pattern_id: i64 },
+    /// A trusted solution was found for a failure.
     SolutionFound { description: String, confidence: f64 },
 
     // --- Config Events ---
+    /// A configuration key was set or updated.
     ConfigSet { key: String, value: String },
 
     // --- Approval Events ---
+    /// An iteration is awaiting manual approval (Review/Manual mode).
     ApprovalRequired { iteration_id: i64, task_id: i64, diff_summary: String },
+    /// A paused iteration was approved.
     Approved { iteration_id: i64 },
+    /// A paused iteration was rejected with a reason.
     Rejected { iteration_id: i64, reason: String },
 
     // --- General Events ---
+    /// Informational message.
     Info(String),
+    /// Warning message.
     Warning(String),
+    /// Error message.
     Error(String),
 }
 
 /// Trait for handling events emitted by the engine.
 pub trait EventHandler: Send + Sync {
+    /// Called for each event emitted during engine operations.
     fn handle(&self, event: &Event);
 }

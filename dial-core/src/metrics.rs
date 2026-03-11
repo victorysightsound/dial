@@ -1,22 +1,36 @@
 use rusqlite::Connection;
 use crate::errors::Result;
 
-/// Structured metrics report returned by Engine::stats().
+/// Structured metrics report returned by [`Engine::stats()`](crate::Engine::stats).
 #[derive(Debug, Clone)]
 pub struct MetricsReport {
+    /// Total number of iterations (all statuses).
     pub total_iterations: i64,
+    /// Iterations that completed successfully.
     pub completed_iterations: i64,
+    /// Iterations that ended in failure.
     pub failed_iterations: i64,
+    /// Ratio of completed to total iterations (0.0 to 1.0).
     pub success_rate: f64,
+    /// Total number of tasks in the database.
     pub total_tasks: i64,
+    /// Tasks marked as done.
     pub completed_tasks: i64,
+    /// Tasks still pending.
     pub pending_tasks: i64,
+    /// Cumulative input tokens consumed across all provider calls.
     pub total_tokens_in: i64,
+    /// Cumulative output tokens generated across all provider calls.
     pub total_tokens_out: i64,
+    /// Cumulative cost in USD across all provider calls.
     pub total_cost_usd: f64,
+    /// Total wall-clock seconds spent in iterations.
     pub total_duration_secs: f64,
+    /// Average seconds per completed iteration.
     pub avg_iteration_duration_secs: f64,
+    /// Total number of recorded failures.
     pub total_failures: i64,
+    /// Total number of recorded learnings.
     pub total_learnings: i64,
 }
 
@@ -45,7 +59,7 @@ pub fn compute_metrics(conn: &Connection) -> Result<MetricsReport> {
     ).unwrap_or(0);
 
     let completed_tasks: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE status = 'done'", [], |row| row.get(0),
+        "SELECT COUNT(*) FROM tasks WHERE status = 'completed'", [], |row| row.get(0),
     ).unwrap_or(0);
 
     let pending_tasks: i64 = conn.query_row(
@@ -97,16 +111,24 @@ pub fn compute_metrics(conn: &Connection) -> Result<MetricsReport> {
     })
 }
 
-/// A single data point for trend analysis.
+/// A single data point for trend analysis, representing one calendar day.
 #[derive(Debug, Clone)]
 pub struct TrendPoint {
+    /// Calendar date in `YYYY-MM-DD` format.
     pub date: String,
+    /// Number of iterations that day.
     pub iterations: i64,
+    /// Number of successful iterations that day.
     pub successes: i64,
+    /// Number of failed iterations that day.
     pub failures: i64,
+    /// Daily success rate (0.0 to 1.0).
     pub success_rate: f64,
+    /// Input tokens consumed that day.
     pub tokens_in: i64,
+    /// Output tokens generated that day.
     pub tokens_out: i64,
+    /// Cost in USD for that day.
     pub cost_usd: f64,
 }
 

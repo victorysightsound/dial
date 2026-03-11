@@ -1,18 +1,39 @@
+//! DIAL (Deterministic Iterative Agent Loop) core library.
+//!
+//! Provides the engine, event system, provider abstraction, and persistence
+//! layer for autonomous AI development with persistent memory.
+
+/// Token budget estimation and context assembly.
 pub mod budget;
+/// Key-value configuration storage.
 pub mod config;
+/// SQLite database initialization, migrations, and access.
 pub mod db;
+/// Central engine coordinating tasks, iterations, and validation.
 pub mod engine;
+/// Error types used throughout the crate.
 pub mod errors;
+/// Event and handler types for engine lifecycle notifications.
 pub mod event;
+/// Failure pattern detection and solution tracking.
 pub mod failure;
+/// Git repository helpers (status, commit, revert).
 pub mod git;
+/// Iteration lifecycle: context gathering, validation, commit.
 pub mod iteration;
+/// Learnings storage and retrieval.
 pub mod learning;
+/// Metrics computation, trend analysis, and reporting.
 pub mod metrics;
+/// Structured output formatting.
 pub mod output;
+/// AI provider trait and request/response types.
 pub mod provider;
+/// Spec file indexing and full-text search.
 pub mod spec;
+/// Task management (add, list, block, dependencies).
 pub mod task;
+/// Build and test validation pipeline.
 pub mod validation;
 
 // Re-export commonly used items
@@ -23,11 +44,17 @@ pub use errors::{DialError, Result};
 pub use event::{Event, EventHandler};
 pub use provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 
-// Constants
+/// Current DIAL version.
 pub const VERSION: &str = "3.0.0";
+/// Maximum number of fix attempts before a task is abandoned.
 pub const MAX_FIX_ATTEMPTS: u32 = 3;
+/// Minimum confidence threshold for a solution to be considered trusted.
 pub const TRUST_THRESHOLD: f64 = 0.6;
+/// Confidence increase applied when a solution succeeds.
 pub const TRUST_INCREMENT: f64 = 0.15;
+/// Confidence decrease applied when a solution fails.
 pub const TRUST_DECREMENT: f64 = 0.20;
+/// Starting confidence score for newly recorded solutions.
 pub const INITIAL_CONFIDENCE: f64 = 0.3;
+/// Default command timeout in seconds.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;

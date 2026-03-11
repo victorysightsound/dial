@@ -149,6 +149,9 @@ enum Commands {
         path: String,
     },
 
+    /// Recover from crashed/interrupted iterations
+    Recover,
+
     /// Revert to last good commit
     Revert,
 
@@ -614,6 +617,15 @@ async fn run_command(command: Commands) -> Result<()> {
                         println!("Learnings:  {}", report.total_learnings);
                     }
                 }
+            }
+        }
+
+        Commands::Recover => {
+            let count = engine.recover().await?;
+            if count > 0 {
+                println!("{}", output::green(&format!("Recovered {} dangling iteration(s).", count)));
+            } else {
+                println!("No dangling iterations found.");
             }
         }
 

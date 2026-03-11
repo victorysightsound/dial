@@ -48,6 +48,7 @@ pub enum ApprovalMode {
 }
 
 impl ApprovalMode {
+    /// Parse an approval mode from a string ("auto", "review", "manual").
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "auto" => Some(Self::Auto),
@@ -784,6 +785,48 @@ impl Engine {
     /// List all spec sections.
     pub async fn spec_list(&self) -> Result<()> {
         spec::spec_list()
+    }
+
+    // --- Crash Recovery ---
+
+    /// Detect and recover from dangling in_progress iterations.
+    /// Returns the number of iterations that were reset.
+    pub async fn recover(&self) -> Result<u64> {
+        let conn = self.conn()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, task_id FROM iterations WHERE status = 'in_progress'",
+        )?;
+        let dangling: Vec<(i64, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if dangling.is_empty() {
+            self.emit(Event::Info("No dangling iterations found.".to_string()));
+            return Ok(0);
+        }
+
+        let count = dangling.len() as u64;
+        let now = chrono::Local::now().to_rfc3339();
+
+        for (iter_id, task_id) in &dangling {
+            conn.execute(
+                "UPDATE iterations SET status = 'failed', ended_at = ?1, notes = 'Recovered from crash' WHERE id = ?2",
+                rusqlite::params![now, iter_id],
+            )?;
+            conn.execute(
+                "UPDATE tasks SET status = 'pending' WHERE id = ?1 AND status = 'in_progress'",
+                [task_id],
+            )?;
+            self.emit(Event::Warning(format!(
+                "Recovered iteration #{} (task #{}): marked as failed, task reset to pending",
+                iter_id, task_id
+            )));
+        }
+
+        self.emit(Event::Info(format!("Recovered {} dangling iteration(s).", count)));
+        Ok(count)
     }
 
     // --- Migration ---

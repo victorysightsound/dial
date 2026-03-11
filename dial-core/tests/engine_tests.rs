@@ -1393,3 +1393,90 @@ async fn test_trends_empty() {
 
     env::set_current_dir(original_dir).unwrap();
 }
+
+// --- Full Lifecycle Integration Test ---
+
+#[tokio::test]
+async fn test_full_task_lifecycle() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    // 1. Configure
+    engine.config_set("build_cmd", "echo build_ok").await.unwrap();
+    engine.config_set("test_cmd", "echo test_ok").await.unwrap();
+
+    // 2. Add tasks with dependencies
+    let t1 = engine.task_add("Create module structure", 8, None).await.unwrap();
+    let t2 = engine.task_add("Implement core logic", 7, None).await.unwrap();
+    let t3 = engine.task_add("Write tests", 5, None).await.unwrap();
+    engine.task_depends(t2, t1).await.unwrap();
+    engine.task_depends(t3, t2).await.unwrap();
+
+    // 3. First task should be t1 (highest priority with no deps)
+    let next = engine.task_next().await.unwrap().expect("should have next task");
+    assert_eq!(next.id, t1);
+
+    // 4. Complete t1, next should be t2
+    engine.task_done(t1).await.unwrap();
+    let next = engine.task_next().await.unwrap().expect("should have next task");
+    assert_eq!(next.id, t2);
+
+    // 5. Complete t2, next should be t3
+    engine.task_done(t2).await.unwrap();
+    let next = engine.task_next().await.unwrap().expect("should have next task");
+    assert_eq!(next.id, t3);
+
+    // 6. Complete t3, queue should be empty
+    engine.task_done(t3).await.unwrap();
+    let result = engine.task_next().await.unwrap();
+    assert!(result.is_none(), "No more tasks");
+
+    // 7. Add a learning
+    let learn_id = engine.learn("Dependency ordering works correctly", Some("pattern")).await.unwrap();
+    assert!(learn_id > 0);
+
+    // 8. Check stats
+    let report = engine.stats().await.unwrap();
+    assert_eq!(report.total_tasks, 3);
+    assert_eq!(report.completed_tasks, 3);
+    assert_eq!(report.pending_tasks, 0);
+    assert_eq!(report.total_learnings, 1);
+
+    // 10. Verify approval mode
+    assert_eq!(engine.approval_mode(), &dial_core::ApprovalMode::Auto);
+    engine.set_approval_mode(dial_core::ApprovalMode::Review);
+    assert_eq!(engine.approval_mode(), &dial_core::ApprovalMode::Review);
+
+    // 11. Search learnings
+    let results = engine.learnings_search("dependency").await.unwrap();
+    assert!(!results.is_empty());
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+// --- Crash Recovery Test ---
+
+#[tokio::test]
+async fn test_crash_recovery_detects_dangling_iterations() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let task_id = engine.task_add("Crash test task", 5, None).await.unwrap();
+    let conn = dial_core::get_db(None).unwrap();
+
+    // Simulate a crash by leaving an iteration in_progress
+    conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?1", [task_id]).unwrap();
+    conn.execute(
+        "INSERT INTO iterations (task_id, status, started_at) VALUES (?1, 'in_progress', datetime('now'))",
+        [task_id],
+    ).unwrap();
+
+    // Check for dangling iterations
+    let dangling: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM iterations WHERE status = 'in_progress'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(dangling, 1, "Should detect dangling iteration");
+
+    env::set_current_dir(original_dir).unwrap();
+}

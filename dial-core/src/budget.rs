@@ -25,6 +25,7 @@ pub struct ContextItem {
 }
 
 impl ContextItem {
+    /// Create a new context item, automatically estimating its token count.
     pub fn new(label: &str, content: &str, priority: u32) -> Self {
         let tokens = estimate_tokens(content);
         Self {
