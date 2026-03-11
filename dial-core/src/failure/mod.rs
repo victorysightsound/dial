@@ -8,7 +8,7 @@ use crate::TRUST_THRESHOLD;
 use chrono::Local;
 use rusqlite::Connection;
 
-pub use patterns::detect_failure_pattern;
+pub use patterns::{detect_failure_pattern, detect_failure_pattern_from_db};
 pub use solutions::{apply_solution_failure, apply_solution_success, find_trusted_solutions, record_solution, Solution};
 
 pub fn get_or_create_failure_pattern(conn: &Connection, pattern_key: &str, category: &str) -> Result<i64> {
@@ -44,8 +44,8 @@ pub fn record_failure(
     file_path: Option<&str>,
     line_number: Option<i64>,
 ) -> Result<(i64, i64)> {
-    let (pattern_key, category) = detect_failure_pattern(error_text);
-    let pattern_id = get_or_create_failure_pattern(conn, pattern_key, category)?;
+    let (pattern_key, category) = detect_failure_pattern_from_db(conn, error_text);
+    let pattern_id = get_or_create_failure_pattern(conn, &pattern_key, &category)?;
 
     conn.execute(
         "INSERT INTO failures (iteration_id, pattern_id, error_text, file_path, line_number)

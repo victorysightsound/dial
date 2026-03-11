@@ -59,6 +59,7 @@ lazy_static! {
     ];
 }
 
+/// Detect failure pattern using hardcoded regex library (fallback).
 pub fn detect_failure_pattern(error_text: &str) -> (&'static str, &'static str) {
     for pattern in FAILURE_PATTERNS.iter() {
         if pattern.matches(error_text) {
@@ -66,6 +67,39 @@ pub fn detect_failure_pattern(error_text: &str) -> (&'static str, &'static str) 
         }
     }
     ("UnknownError", "unknown")
+}
+
+/// Detect failure pattern by first checking DB patterns (with regex_pattern),
+/// then falling back to hardcoded patterns.
+/// Returns (pattern_key, category) as owned Strings.
+pub fn detect_failure_pattern_from_db(
+    conn: &rusqlite::Connection,
+    error_text: &str,
+) -> (String, String) {
+    // Try DB patterns first (includes user-added patterns)
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT pattern_key, category, regex_pattern FROM failure_patterns
+         WHERE regex_pattern IS NOT NULL AND status IN ('trusted', 'confirmed')
+         ORDER BY occurrence_count DESC",
+    ) {
+        let db_patterns: Vec<(String, String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        for (key, category, regex_str) in &db_patterns {
+            if let Ok(re) = Regex::new(regex_str) {
+                if re.is_match(error_text) {
+                    return (key.clone(), category.clone());
+                }
+            }
+        }
+    }
+
+    // Fall back to hardcoded patterns
+    let (key, cat) = detect_failure_pattern(error_text);
+    (key.to_string(), cat.to_string())
 }
 
 #[cfg(test)]

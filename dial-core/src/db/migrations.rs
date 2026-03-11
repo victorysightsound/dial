@@ -38,6 +38,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Seed failure_patterns from hardcoded patterns",
         apply: migrate_005_seed_failure_patterns,
     },
+    Migration {
+        version: 6,
+        description: "Add regex_pattern and status columns to failure_patterns for DB-driven detection",
+        apply: migrate_006_pattern_regex_and_status,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -196,6 +201,50 @@ fn migrate_004_validation_steps(conn: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    Ok(())
+}
+
+fn migrate_006_pattern_regex_and_status(conn: &Connection) -> Result<()> {
+    // Add regex_pattern column for DB-driven pattern detection
+    conn.execute_batch(
+        r#"
+        ALTER TABLE failure_patterns ADD COLUMN regex_pattern TEXT;
+        ALTER TABLE failure_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'trusted';
+        "#,
+    )?;
+
+    // Populate regex patterns for seeded entries
+    let patterns = [
+        ("ImportError", "(?i)ImportError"),
+        ("ModuleNotFoundError", "(?i)ModuleNotFoundError"),
+        ("SyntaxError", "(?i)SyntaxError"),
+        ("IndentationError", "(?i)IndentationError"),
+        ("NameError", "(?i)NameError"),
+        ("TypeError", "(?i)TypeError"),
+        ("ValueError", "(?i)ValueError"),
+        ("AttributeError", "(?i)AttributeError"),
+        ("KeyError", "(?i)KeyError"),
+        ("IndexError", "(?i)IndexError"),
+        ("FileNotFoundError", "(?i)FileNotFoundError"),
+        ("PermissionError", "(?i)PermissionError"),
+        ("ConnectionError", "(?i)ConnectionError"),
+        ("TimeoutError", "(?i)TimeoutError"),
+        ("TestFailure", "(?i)FAILED.*test_"),
+        ("AssertionError", "(?i)AssertionError"),
+        ("RustCompileError", r"(?i)error\[E\d+\]|error: could not compile"),
+        ("CargoBuildError", "(?i)cargo build.*failed"),
+        ("NpmError", "(?i)npm ERR!"),
+        ("TypeScriptError", r"(?i)tsc.*error TS\d+"),
+    ];
+
+    let mut stmt = conn.prepare(
+        "UPDATE failure_patterns SET regex_pattern = ?2 WHERE pattern_key = ?1",
+    )?;
+
+    for (key, regex) in &patterns {
+        stmt.execute(rusqlite::params![key, regex])?;
+    }
+
     Ok(())
 }
 
