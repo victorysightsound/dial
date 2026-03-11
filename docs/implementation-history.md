@@ -160,14 +160,14 @@ The SQLite schema is identical between Python and Rust versions. Existing `.dial
 ## Building
 
 ```bash
-cd ~/projects/dial/dial
+cd dial
 cargo build --release
 ```
 
 ## Testing
 
 ```bash
-cd ~/projects/dial/dial
+cd dial
 cargo test
 ```
 
