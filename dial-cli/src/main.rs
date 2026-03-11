@@ -1,5 +1,8 @@
+mod cli_handler;
+
 use clap::{Parser, Subcommand};
 use dial_core::*;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "dial")]
@@ -238,12 +241,14 @@ async fn main() {
 async fn run_command(command: Commands) -> Result<()> {
     // Init creates a new engine — handled separately
     if let Commands::Init { phase, import_solutions, no_agents } = command {
-        Engine::init(&phase, import_solutions.as_deref(), !no_agents).await?;
+        let mut engine = Engine::init(&phase, import_solutions.as_deref(), !no_agents).await?;
+        engine.on_event(Arc::new(cli_handler::CliEventHandler));
         return Ok(());
     }
 
     // All other commands require an initialized project
-    let engine = Engine::open(EngineConfig::default()).await?;
+    let mut engine = Engine::open(EngineConfig::default()).await?;
+    engine.on_event(Arc::new(cli_handler::CliEventHandler));
 
     match command {
         Commands::Init { .. } => unreachable!(),
