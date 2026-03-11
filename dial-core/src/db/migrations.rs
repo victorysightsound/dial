@@ -23,6 +23,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Add task_dependencies table for dependency graph",
         apply: migrate_002_task_dependencies,
     },
+    Migration {
+        version: 3,
+        description: "Add provider_usage table for token and cost tracking",
+        apply: migrate_003_provider_usage,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -141,6 +146,26 @@ fn migrate_002_task_dependencies(conn: &Connection) -> Result<()> {
             PRIMARY KEY (task_id, depends_on_id),
             FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
             FOREIGN KEY (depends_on_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_003_provider_usage(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_usage (
+            id INTEGER PRIMARY KEY,
+            iteration_id INTEGER,
+            provider TEXT NOT NULL,
+            model TEXT,
+            tokens_in INTEGER DEFAULT 0,
+            tokens_out INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0.0,
+            duration_secs REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (iteration_id) REFERENCES iterations(id)
         );
         "#,
     )?;
