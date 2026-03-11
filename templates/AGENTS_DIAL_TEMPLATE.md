@@ -45,6 +45,17 @@ dial config set build_cmd "YOUR_BUILD_COMMAND"
 dial config set test_cmd "YOUR_TEST_COMMAND"
 ```
 
+### Specifications (Optional)
+
+If your project has specs in `specs/*.md`, index them for richer context:
+
+```bash
+dial index
+dial task add "Implement feature X" -p 2 --spec 1
+```
+
+Specs are optional. DIAL works with just tasks — specs add automatic context retrieval for related work.
+
 ### The DIAL Loop
 
 1. `dial iterate` - Get task + context from database

@@ -139,9 +139,70 @@ curl -s https://api.example.com/v1/completions \
 dial validate
 ```
 
+## Auto-Run Best Practices
+
+### Task Sizing
+
+Each task runs in a single AI subprocess with a timeout. Tasks that are too large risk timeout, incomplete output, or context overload. Tasks that are too small create unnecessary overhead.
+
+| Task size | Example | Guidance |
+|-----------|---------|----------|
+| Too large | "Build the entire authentication system" | Break into 3-5 tasks |
+| Right size | "Implement password hashing with bcrypt" | Single focused feature |
+| Too small | "Add a comment to line 42" | Combine with related work |
+
+Rule of thumb: a task should be completable in 10-15 minutes of focused AI work.
+
+### Timeout Configuration
+
+Three timeouts control auto-run behavior:
+
+| Config key | Default | What it controls |
+|------------|---------|------------------|
+| `subagent_timeout` | 1800s (30 min) | How long the AI subprocess gets to implement the task |
+| `build_timeout` | 600s (10 min) | How long the build command gets during validation |
+| `test_timeout` | 600s (10 min) | How long the test command gets during validation |
+
+Total wall time per task can be up to `subagent_timeout + build_timeout + test_timeout`.
+
+```bash
+# For simple tasks (small scripts, config changes)
+dial config set subagent_timeout 900    # 15 min
+
+# For complex tasks (large features, refactoring)
+dial config set subagent_timeout 3600   # 1 hour
+```
+
+### What Happens Without DIAL_COMPLETE
+
+When the AI subprocess finishes without outputting `DIAL_COMPLETE:`:
+
+1. DIAL treats it as a failed attempt
+2. The task resets to pending
+3. One of the 3 max attempts is consumed
+4. On the next attempt, the AI gets a fresh subprocess with updated failure context
+
+Common causes:
+- The task was too large and the AI lost focus
+- The AI hit a permission prompt or error
+- Output was truncated by the timeout
+- The AI completed the work but forgot to output the signal
+
+If the work was actually done, run `dial validate` manually to verify and commit.
+
+### Stopping Auto-Run
+
+```bash
+# Graceful stop (finishes current task first)
+dial stop
+
+# Or create the stop file directly
+touch .dial/stop
+```
+
 ## Writing Effective Specs for AI
 
-The quality of DIAL's output depends heavily on your specification. Tips:
+The quality of DIAL's output depends heavily on your specification. Specs are optional — you can use DIAL with just tasks — but they unlock context-aware task linking and richer AI prompts.
 
 ### Be Specific About Behavior
 
@@ -180,24 +241,52 @@ Each section should describe one feature or component. DIAL's FTS search works b
 ### "No completion signal received"
 
 The AI finished but didn't output `DIAL_COMPLETE:`. Possible causes:
-- The AI hit an error and stopped
+- The task is too large — break it into smaller pieces
+- The AI hit a tool permission prompt (Claude Code) that blocked non-interactive mode
 - The AI completed but forgot to output the signal
-- The output was truncated
+- Output was truncated by the subagent timeout
 
-Fix: Check the output (printed in real-time during auto-run). If the task was actually completed, run `dial validate` manually.
+Fix: Check the streamed output (printed in real-time during auto-run). If the work was done, run `dial validate` manually. If the task is too large, cancel it and break it into smaller tasks.
 
 ### "Subagent timed out"
 
 The AI took longer than the configured timeout.
 
-Fix: Increase the timeout:
+Fix: Either increase the timeout or break the task into smaller pieces:
 ```bash
+# Increase timeout
 dial config set subagent_timeout 3600  # 1 hour
+
+# Or break the task up
+dial task cancel 5
+dial task add "Part 1: Set up auth data model" -p 5
+dial task add "Part 2: Implement auth endpoints" -p 6
+dial task add "Part 3: Add auth middleware" -p 7
+```
+
+### Task Burns All 3 Attempts
+
+The AI keeps failing on the same task. Possible causes:
+- The task description is too vague — rewrite it with more detail
+- The AI is missing critical context — add a learning or link to a spec section
+- There's a real blocker (missing dependency, wrong API, etc.)
+
+Fix:
+```bash
+# Check what's failing
+dial failures
+
+# Add context for the next attempt
+dial learn "The auth library requires Node 18+" -c gotcha
+
+# Or cancel and rewrite the task
+dial task cancel 5
+dial task add "Implement auth using passport.js (requires Node 18+)" -p 5 --spec 2
 ```
 
 ### AI Makes Same Mistake Repeatedly
 
-DIAL records failure patterns and surfaces solutions, but the AI needs to read them. In auto-run mode, solutions are included in the prompt automatically. In manual mode, check:
+DIAL records failure patterns and surfaces solutions, but the AI needs to see them. In auto-run mode, solutions are included in the prompt automatically. In manual mode, check:
 
 ```bash
 dial failures          # See what's failing
@@ -216,6 +305,6 @@ dial failures
 # Record what you learned
 dial learn "The auth endpoint needs CORS headers" -c gotcha
 
-# Unblock by adding a new task for the same work
+# Add a new task for the same work (with better context)
 dial task add "Implement auth with CORS headers" -p 1
 ```

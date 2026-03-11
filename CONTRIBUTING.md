@@ -2,6 +2,8 @@
 
 ## Getting Started
 
+> **Note:** The crate is published on crates.io as `dial-cli` (because `dial` was taken). The binary name remains `dial`.
+
 ```bash
 git clone https://github.com/victorysightsound/dial.git
 cd dial/dial

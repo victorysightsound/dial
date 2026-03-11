@@ -4,7 +4,6 @@ This guide walks through installing DIAL, setting up your first project, and run
 
 ## Prerequisites
 
-- **Rust 1.70+** and Cargo ([install](https://rustup.rs/))
 - **Git** (DIAL auto-commits on successful validation)
 - An AI coding tool (optional but recommended):
   - [Claude Code](https://claude.ai/download) (`claude` CLI)
@@ -12,6 +11,24 @@ This guide walks through installing DIAL, setting up your first project, and run
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
 
 ## Installation
+
+### Quick Install (Linux/macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/victorysightsound/dial/main/install.sh | sh
+```
+
+Downloads the correct prebuilt binary for your platform and installs it to `~/.local/bin/`. To upgrade, run the same command again.
+
+### Via Cargo
+
+If you have the Rust toolchain installed:
+
+```bash
+cargo install dial-cli
+```
+
+The crate is published as `dial-cli` but the binary is `dial`. To upgrade: `cargo install dial-cli --force`.
 
 ### From Source
 
@@ -37,10 +54,11 @@ ln -sf "$(pwd)/target/release/dial" ~/bin/dial
 
 ```bash
 dial --version
-# Output: dial 2.2.0
 ```
 
 ## Your First Project
+
+There are two ways to use DIAL: with just tasks (fastest start) or with tasks linked to a specification (richer context). You can always add a spec later.
 
 ### 1. Initialize
 
@@ -96,9 +114,32 @@ dial config set build_timeout 300
 dial config set test_timeout 300
 ```
 
-### 3. Write a Specification
+### 3. Create Tasks
 
-Create a `specs/` directory and add markdown files describing what you want to build:
+Add tasks describing what needs to be built:
+
+```bash
+dial task add "Set up project structure with Cargo.toml and dependencies" -p 1
+dial task add "Implement core data types and SQLite schema" -p 2
+dial task add "Add CLI argument parsing" -p 3
+dial task add "Implement CRUD commands" -p 4
+dial task add "Add error handling and input validation" -p 5
+dial task add "Write integration tests" -p 6
+```
+
+The `-p` flag sets priority (1 = highest, 10 = lowest). Tasks execute in priority order.
+
+View your task queue:
+
+```bash
+dial task list
+```
+
+That's all you need to start. Skip to [Step 5: Run the Loop](#5-run-the-loop) if you want to get going immediately.
+
+### 4. Add a Specification (Optional)
+
+For richer context, write a spec and let DIAL link tasks to relevant sections. Create a `specs/` directory and add markdown files:
 
 ```bash
 mkdir -p specs
@@ -139,29 +180,15 @@ Index the spec so DIAL can search it:
 dial index
 ```
 
-DIAL parses markdown headers into sections and creates FTS5 full-text search indexes. When you work on a task, DIAL automatically surfaces relevant spec sections.
-
-### 4. Create Tasks
-
-Break your spec into implementation tasks:
+Now you can link tasks to spec sections for automatic context retrieval:
 
 ```bash
-dial task add "Set up Rust project with Cargo.toml and dependencies" -p 1
-dial task add "Implement Task data model and SQLite schema" -p 2 --spec 1
+dial task add "Implement Task data model" -p 2 --spec 1
 dial task add "Implement 'add' command" -p 3 --spec 2
 dial task add "Implement 'list' command" -p 4 --spec 3
-dial task add "Implement 'done' command" -p 5 --spec 4
-dial task add "Add error handling and input validation" -p 6
-dial task add "Write integration tests" -p 7
 ```
 
-The `-p` flag sets priority (1 = highest, 10 = lowest). `--spec` links the task to a spec section ID for automatic context retrieval.
-
-View your task queue:
-
-```bash
-dial task list
-```
+DIAL parses markdown headers into sections and creates FTS5 full-text search indexes. When you work on a task, DIAL automatically surfaces relevant spec sections — even without explicit `--spec` links, it searches by task description.
 
 ### 5. Run the Loop
 
@@ -217,6 +244,8 @@ This:
 8. Repeats until all tasks are done or the limit is reached
 
 To stop gracefully: create a `.dial/stop` file or press Ctrl+C.
+
+**Task sizing tip:** Each task runs in a single AI subprocess with a timeout (default 30 min). If a task is too large, the AI may time out or lose focus. Rule of thumb: if you'd describe the task as "implement the entire auth system," break it into 3-5 smaller tasks.
 
 ### 6. Monitor Progress
 
@@ -284,5 +313,5 @@ Each phase gets its own database (`.dial/mvp.db`, `.dial/beta.db`), but you can 
 
 - [CLI Reference](cli-reference.md) - Every command and flag
 - [Methodology](methodology.md) - The theory behind DIAL
-- [AI Integration](ai-integration.md) - Detailed setup for each AI tool
+- [AI Integration](ai-integration.md) - Detailed setup for each AI tool, auto-run guidance, and troubleshooting
 - [Configuration](configuration.md) - All config options and database schema
