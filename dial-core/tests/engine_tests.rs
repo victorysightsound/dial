@@ -1,7 +1,7 @@
-use dial_core::{Engine, EngineConfig};
+use dial_core::{Engine, EngineConfig, Event, EventHandler};
 use dial_core::task::models::TaskStatus;
 use std::env;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 // Mutex to serialize tests that change the global current directory.
@@ -431,6 +431,156 @@ async fn test_undepend_removes_dependency() {
     // Now B should be next (higher priority)
     let next = engine.task_next().await.unwrap();
     assert_eq!(next.unwrap().id, b);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+// --- Event System Tests ---
+
+/// Test handler that records events
+struct RecordingHandler {
+    events: Mutex<Vec<String>>,
+}
+
+impl RecordingHandler {
+    fn new() -> Self {
+        Self { events: Mutex::new(Vec::new()) }
+    }
+
+    fn events(&self) -> Vec<String> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl EventHandler for RecordingHandler {
+    fn handle(&self, event: &Event) {
+        let label = match event {
+            Event::TaskAdded { id, .. } => format!("task_added:{}", id),
+            Event::TaskCompleted { id } => format!("task_completed:{}", id),
+            Event::TaskBlocked { id, .. } => format!("task_blocked:{}", id),
+            Event::TaskCancelled { id } => format!("task_cancelled:{}", id),
+            Event::TaskDependencyAdded { task_id, depends_on_id } => {
+                format!("dep_added:{}:{}", task_id, depends_on_id)
+            }
+            Event::TaskDependencyRemoved { task_id, depends_on_id } => {
+                format!("dep_removed:{}:{}", task_id, depends_on_id)
+            }
+            Event::ConfigSet { key, .. } => format!("config_set:{}", key),
+            Event::LearningAdded { id, .. } => format!("learning_added:{}", id),
+            Event::LearningDeleted { id } => format!("learning_deleted:{}", id),
+            _ => format!("{:?}", event),
+        };
+        self.events.lock().unwrap().push(label);
+    }
+}
+
+#[tokio::test]
+async fn test_event_handler_receives_task_events() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    let handler = Arc::new(RecordingHandler::new());
+    engine.on_event(handler.clone());
+
+    let id = engine.task_add("Event test task", 5, None).await.unwrap();
+    engine.task_done(id).await.unwrap();
+
+    let events = handler.events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0], format!("task_added:{}", id));
+    assert_eq!(events[1], format!("task_completed:{}", id));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_event_handler_receives_config_events() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    let handler = Arc::new(RecordingHandler::new());
+    engine.on_event(handler.clone());
+
+    engine.config_set("foo", "bar").await.unwrap();
+
+    let events = handler.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0], "config_set:foo");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_multiple_event_handlers() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    let handler1 = Arc::new(RecordingHandler::new());
+    let handler2 = Arc::new(RecordingHandler::new());
+    engine.on_event(handler1.clone());
+    engine.on_event(handler2.clone());
+
+    engine.task_add("Multi handler test", 5, None).await.unwrap();
+
+    // Both handlers should receive the event
+    assert_eq!(handler1.events().len(), 1);
+    assert_eq!(handler2.events().len(), 1);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_event_ordering() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    let handler = Arc::new(RecordingHandler::new());
+    engine.on_event(handler.clone());
+
+    let a = engine.task_add("Task A", 5, None).await.unwrap();
+    let b = engine.task_add("Task B", 5, None).await.unwrap();
+    engine.task_depends(b, a).await.unwrap();
+    engine.task_block(b, "waiting").await.unwrap();
+    engine.task_cancel(a).await.unwrap();
+
+    let events = handler.events();
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[0], format!("task_added:{}", a));
+    assert_eq!(events[1], format!("task_added:{}", b));
+    assert_eq!(events[2], format!("dep_added:{}:{}", b, a));
+    assert_eq!(events[3], format!("task_blocked:{}", b));
+    assert_eq!(events[4], format!("task_cancelled:{}", a));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_event_learning_lifecycle() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    let handler = Arc::new(RecordingHandler::new());
+    engine.on_event(handler.clone());
+
+    let id = engine.learn("Test learning", Some("pattern")).await.unwrap();
+    engine.learnings_delete(id).await.unwrap();
+
+    let events = handler.events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0], format!("learning_added:{}", id));
+    assert_eq!(events[1], format!("learning_deleted:{}", id));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_no_events_without_handler() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    // No handler registered — operations should still succeed
+    engine.task_add("No handler test", 5, None).await.unwrap();
+    engine.config_set("key", "val").await.unwrap();
 
     env::set_current_dir(original_dir).unwrap();
 }
