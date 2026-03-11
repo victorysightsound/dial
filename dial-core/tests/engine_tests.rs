@@ -1,5 +1,7 @@
 use dial_core::{Engine, EngineConfig, Event, EventHandler};
+use dial_core::provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 use dial_core::task::models::TaskStatus;
+use async_trait::async_trait;
 use std::env;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
@@ -581,6 +583,118 @@ async fn test_no_events_without_handler() {
     // No handler registered — operations should still succeed
     engine.task_add("No handler test", 5, None).await.unwrap();
     engine.config_set("key", "val").await.unwrap();
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+// --- Provider System Tests ---
+
+struct MockProvider {
+    response: ProviderResponse,
+}
+
+impl MockProvider {
+    fn new(output: &str, success: bool) -> Self {
+        Self {
+            response: ProviderResponse {
+                output: output.to_string(),
+                success,
+                exit_code: if success { Some(0) } else { Some(1) },
+                usage: Some(TokenUsage {
+                    tokens_in: 100,
+                    tokens_out: 200,
+                    cost_usd: Some(0.003),
+                }),
+                model: Some("mock-model".to_string()),
+                duration_secs: Some(1.5),
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for MockProvider {
+    fn name(&self) -> &str {
+        "mock"
+    }
+
+    async fn execute(&self, _request: ProviderRequest) -> dial_core::Result<ProviderResponse> {
+        Ok(self.response.clone())
+    }
+
+    async fn is_available(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn test_mock_provider_execute() {
+    let provider = MockProvider::new("Hello from mock", true);
+    let request = ProviderRequest {
+        prompt: "test prompt".to_string(),
+        work_dir: "/tmp".to_string(),
+        max_tokens: None,
+        model: None,
+        timeout_secs: None,
+    };
+
+    let response = provider.execute(request).await.unwrap();
+    assert!(response.success);
+    assert_eq!(response.output, "Hello from mock");
+    assert!(response.usage.is_some());
+    let usage = response.usage.unwrap();
+    assert_eq!(usage.tokens_in, 100);
+    assert_eq!(usage.tokens_out, 200);
+}
+
+#[tokio::test]
+async fn test_engine_provider_registration() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (mut engine, _tmp, original_dir) = setup_engine().await;
+
+    assert!(engine.provider().is_none());
+
+    let mock = Arc::new(MockProvider::new("test", true));
+    engine.set_provider(mock);
+
+    assert!(engine.provider().is_some());
+    assert_eq!(engine.provider().unwrap().name(), "mock");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_record_usage() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    let response = ProviderResponse {
+        output: "test output".to_string(),
+        success: true,
+        exit_code: Some(0),
+        usage: Some(TokenUsage {
+            tokens_in: 500,
+            tokens_out: 1000,
+            cost_usd: Some(0.015),
+        }),
+        model: Some("test-model".to_string()),
+        duration_secs: Some(2.5),
+    };
+
+    engine.record_usage(None, &response, "mock").unwrap();
+
+    // Verify it was stored
+    let conn = dial_core::get_db(None).unwrap();
+    let (provider, tokens_in, tokens_out, cost): (String, i64, i64, f64) = conn.query_row(
+        "SELECT provider, tokens_in, tokens_out, cost_usd FROM provider_usage ORDER BY id DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).unwrap();
+
+    assert_eq!(provider, "mock");
+    assert_eq!(tokens_in, 500);
+    assert_eq!(tokens_out, 1000);
+    assert!((cost - 0.015).abs() < 0.001);
 
     env::set_current_dir(original_dir).unwrap();
 }
