@@ -124,7 +124,15 @@ enum Commands {
     },
 
     /// Show statistics
-    Stats,
+    Stats {
+        /// Output format (text, json, csv)
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Show daily trends over the last N days
+        #[arg(long)]
+        trend: Option<i64>,
+    },
 
     /// Approve a paused iteration (in review/manual mode)
     Approve,
@@ -548,8 +556,59 @@ async fn run_command(command: Commands) -> Result<()> {
             }
         },
 
-        Commands::Stats => {
-            show_stats()?;
+        Commands::Stats { format, trend } => {
+            if let Some(days) = trend {
+                let trends = engine.trends(days).await?;
+                if trends.is_empty() {
+                    println!("No data in the last {} days.", days);
+                } else {
+                    match format.as_str() {
+                        "json" => {
+                            let items: Vec<String> = trends.iter().map(|t| t.to_json()).collect();
+                            println!("[{}]", items.join(","));
+                        }
+                        "csv" => {
+                            println!("date,iterations,successes,failures,success_rate,tokens_in,tokens_out,cost_usd");
+                            for t in &trends {
+                                println!("{},{},{},{},{:.4},{},{},{:.4}",
+                                    t.date, t.iterations, t.successes, t.failures,
+                                    t.success_rate, t.tokens_in, t.tokens_out, t.cost_usd);
+                            }
+                        }
+                        _ => {
+                            println!("{}", output::bold("Daily Trends"));
+                            println!("{}", "=".repeat(60));
+                            for t in &trends {
+                                println!("{}: {} iters ({} ok, {} fail) {:.0}% | tokens: {}/{} | ${:.4}",
+                                    t.date, t.iterations, t.successes, t.failures,
+                                    t.success_rate * 100.0, t.tokens_in, t.tokens_out, t.cost_usd);
+                            }
+                        }
+                    }
+                }
+            } else {
+                let report = engine.stats().await?;
+                match format.as_str() {
+                    "json" => println!("{}", report.to_json()),
+                    "csv" => println!("{}", report.to_csv()),
+                    _ => {
+                        println!("{}", output::bold("DIAL Statistics"));
+                        println!("{}", "=".repeat(60));
+                        println!("Tasks:      {} total, {} completed, {} pending",
+                            report.total_tasks, report.completed_tasks, report.pending_tasks);
+                        println!("Iterations: {} total, {} completed, {} failed",
+                            report.total_iterations, report.completed_iterations, report.failed_iterations);
+                        println!("Success:    {:.1}%", report.success_rate * 100.0);
+                        println!("Duration:   {:.1}s total, {:.1}s avg/iteration",
+                            report.total_duration_secs, report.avg_iteration_duration_secs);
+                        println!("Tokens:     {} in, {} out",
+                            report.total_tokens_in, report.total_tokens_out);
+                        println!("Cost:       ${:.4}", report.total_cost_usd);
+                        println!("Failures:   {}", report.total_failures);
+                        println!("Learnings:  {}", report.total_learnings);
+                    }
+                }
+            }
         }
 
         Commands::Approve => {
@@ -722,145 +781,3 @@ fn show_history(limit: usize) -> Result<()> {
     Ok(())
 }
 
-fn show_stats() -> Result<()> {
-    let conn = get_db(None)?;
-    let phase = get_current_phase()?;
-    let project = config::config_get("project_name")?.unwrap_or_else(|| "unknown".to_string());
-
-    println!("{}", output::bold(&format!("\nDIAL Statistics: {} (phase: {})", project, phase)));
-    println!("{}", "=".repeat(60));
-
-    let (total, completed, failed, total_duration, avg_duration, max_duration): (
-        i64, i64, i64, Option<f64>, Option<f64>, Option<f64>
-    ) = conn.query_row(
-        "SELECT
-            COUNT(*),
-            COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
-            SUM(duration_seconds),
-            AVG(duration_seconds),
-            MAX(duration_seconds)
-         FROM iterations",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-    )?;
-
-    let success_rate = if total > 0 {
-        completed as f64 / total as f64 * 100.0
-    } else {
-        0.0
-    };
-
-    println!("\n{}", output::bold("Iterations"));
-    println!("  Total:      {}", total);
-    println!("  Successful: {} ({:.1}%)", output::green(&completed.to_string()), success_rate);
-    if failed > 0 {
-        println!("  Failed:     {} ({:.1}%)", output::red(&failed.to_string()), 100.0 - success_rate);
-    } else {
-        println!("  Failed:     {}", failed);
-    }
-
-    let mut stmt = conn.prepare("SELECT status, COUNT(*) FROM tasks GROUP BY status")?;
-    let task_counts: std::collections::HashMap<String, i64> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    println!("\n{}", output::bold("Tasks"));
-    println!("  Completed:  {}", task_counts.get("completed").unwrap_or(&0));
-    println!("  Pending:    {}", task_counts.get("pending").unwrap_or(&0));
-    println!("  Blocked:    {}", task_counts.get("blocked").unwrap_or(&0));
-    println!("  Cancelled:  {}", task_counts.get("cancelled").unwrap_or(&0));
-
-    if let Some(total_dur) = total_duration {
-        let total_mins = total_dur / 60.0;
-        let avg_mins = avg_duration.unwrap_or(0.0) / 60.0;
-        let max_mins = max_duration.unwrap_or(0.0) / 60.0;
-
-        println!("\n{}", output::bold("Time"));
-        if total_mins >= 60.0 {
-            println!("  Total runtime:    {:.1}h", total_mins / 60.0);
-        } else {
-            println!("  Total runtime:    {:.1}m", total_mins);
-        }
-        println!("  Avg iteration:    {:.1}m", avg_mins);
-        println!("  Longest:          {:.1}m", max_mins);
-    }
-
-    let mut stmt = conn.prepare(
-        "SELECT pattern_key, occurrence_count
-         FROM failure_patterns
-         ORDER BY occurrence_count DESC LIMIT 5",
-    )?;
-
-    let patterns: Vec<(String, i64)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    if !patterns.is_empty() {
-        println!("\n{}", output::bold("Failure Patterns (top 5)"));
-        for (pattern_key, count) in patterns {
-            println!("  {:25} {} occurrences", pattern_key, count);
-        }
-    }
-
-    let (sol_total, sol_trusted, sol_success, sol_failure): (i64, i64, i64, i64) = conn.query_row(
-        "SELECT
-            COUNT(*),
-            COALESCE(SUM(CASE WHEN confidence >= ?1 THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(success_count), 0),
-            COALESCE(SUM(failure_count), 0)
-         FROM solutions",
-        [TRUST_THRESHOLD],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    )?;
-
-    if sol_total > 0 {
-        let total_apps = sol_success + sol_failure;
-        let hit_rate = if total_apps > 0 {
-            sol_success as f64 / total_apps as f64 * 100.0
-        } else {
-            0.0
-        };
-
-        println!("\n{}", output::bold("Solutions"));
-        println!("  Total:            {}", sol_total);
-        println!("  Trusted (>=0.6):  {}", output::green(&sol_trusted.to_string()));
-        if total_apps > 0 {
-            println!("  Hit rate:         {:.0}% ({} applications)", hit_rate, total_apps);
-        }
-    }
-
-    let (learn_total, learn_refs): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(times_referenced), 0) FROM learnings",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-
-    if learn_total > 0 {
-        println!("\n{}", output::bold("Learnings"));
-        println!("  Total:            {}", learn_total);
-        println!("  Total references: {}", learn_refs);
-
-        let mut stmt = conn.prepare(
-            "SELECT category, COUNT(*) FROM learnings GROUP BY category ORDER BY COUNT(*) DESC",
-        )?;
-
-        let categories: Vec<(Option<String>, i64)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        if !categories.is_empty() {
-            println!("  By category:");
-            for (cat, count) in categories {
-                let cat_name = cat.unwrap_or_else(|| "uncategorized".to_string());
-                println!("    {}: {}", cat_name, count);
-            }
-        }
-    }
-
-    println!("\n{}", "=".repeat(60));
-    Ok(())
-}

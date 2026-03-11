@@ -53,6 +53,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Expand iterations status CHECK to include awaiting_approval and rejected",
         apply: migrate_008_iterations_approval_status,
     },
+    Migration {
+        version: 9,
+        description: "Add metrics table for iteration-level metric snapshots",
+        apply: migrate_009_metrics_table,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -316,6 +321,27 @@ fn migrate_005_seed_failure_patterns(conn: &Connection) -> Result<()> {
         stmt.execute(rusqlite::params![key, desc, cat])?;
     }
 
+    Ok(())
+}
+
+fn migrate_009_metrics_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS metrics (
+            id INTEGER PRIMARY KEY,
+            iteration_id INTEGER,
+            task_id INTEGER,
+            success INTEGER NOT NULL,
+            duration_secs REAL,
+            tokens_in INTEGER DEFAULT 0,
+            tokens_out INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0.0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (iteration_id) REFERENCES iterations(id),
+            FOREIGN KEY (task_id) REFERENCES tasks(id)
+        );
+        "#,
+    )?;
     Ok(())
 }
 

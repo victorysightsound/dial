@@ -785,6 +785,37 @@ impl Engine {
     pub async fn spec_list(&self) -> Result<()> {
         spec::spec_list()
     }
+
+    // --- Metrics ---
+
+    /// Compute a structured metrics report.
+    pub async fn stats(&self) -> Result<crate::metrics::MetricsReport> {
+        let conn = self.conn()?;
+        crate::metrics::compute_metrics(&conn)
+    }
+
+    /// Compute daily trends over the last N days.
+    pub async fn trends(&self, days: i64) -> Result<Vec<crate::metrics::TrendPoint>> {
+        let conn = self.conn()?;
+        crate::metrics::compute_trends(&conn, days)
+    }
+
+    /// Record a metric snapshot for a completed iteration.
+    pub fn record_metric(
+        &self,
+        iteration_id: i64,
+        task_id: i64,
+        success: bool,
+        duration_secs: f64,
+        tokens_in: i64,
+        tokens_out: i64,
+        cost_usd: f64,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        crate::metrics::record_iteration_metric(
+            &conn, iteration_id, task_id, success, duration_secs, tokens_in, tokens_out, cost_usd,
+        )
+    }
 }
 
 #[cfg(test)]

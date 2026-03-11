@@ -8,6 +8,7 @@ pub mod failure;
 pub mod git;
 pub mod iteration;
 pub mod learning;
+pub mod metrics;
 pub mod output;
 pub mod provider;
 pub mod spec;
@@ -17,6 +18,7 @@ pub mod validation;
 // Re-export commonly used items
 pub use db::{get_current_phase, get_db, get_dial_dir, init_db, DEFAULT_PHASE};
 pub use engine::{ApprovalMode, Engine, EngineConfig, PatternInfo, PipelineStepConfig};
+pub use metrics::{MetricsReport, TrendPoint};
 pub use errors::{DialError, Result};
 pub use event::{Event, EventHandler};
 pub use provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};

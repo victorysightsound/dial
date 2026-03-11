@@ -243,4 +243,19 @@ CREATE TRIGGER IF NOT EXISTS learnings_au AFTER UPDATE ON learnings BEGIN
     INSERT INTO learnings_fts(rowid, category, description)
     VALUES (NEW.id, COALESCE(NEW.category, ''), NEW.description);
 END;
+
+-- Metrics (per-iteration metric snapshots)
+CREATE TABLE IF NOT EXISTS metrics (
+    id INTEGER PRIMARY KEY,
+    iteration_id INTEGER,
+    task_id INTEGER,
+    success INTEGER NOT NULL,
+    duration_secs REAL,
+    tokens_in INTEGER DEFAULT 0,
+    tokens_out INTEGER DEFAULT 0,
+    cost_usd REAL DEFAULT 0.0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (iteration_id) REFERENCES iterations(id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
+);
 "#;
