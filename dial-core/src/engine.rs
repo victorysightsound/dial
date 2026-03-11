@@ -36,6 +36,38 @@ pub struct PatternInfo {
     pub occurrence_count: i64,
 }
 
+/// Approval mode for iterations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ApprovalMode {
+    /// Auto-commit on validation pass (default, existing behavior).
+    Auto,
+    /// Emit ApprovalRequired event with diff summary, pause iteration for review.
+    Review,
+    /// Always require manual approval before committing.
+    Manual,
+}
+
+impl ApprovalMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "review" => Some(Self::Review),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ApprovalMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Review => write!(f, "review"),
+            Self::Manual => write!(f, "manual"),
+        }
+    }
+}
+
 /// Configuration for the DIAL engine.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -43,6 +75,8 @@ pub struct EngineConfig {
     pub work_dir: PathBuf,
     /// Phase name (e.g., "mvp", "v3").
     pub phase: Option<String>,
+    /// Approval mode for iterations.
+    pub approval_mode: ApprovalMode,
 }
 
 impl Default for EngineConfig {
@@ -50,6 +84,7 @@ impl Default for EngineConfig {
         Self {
             work_dir: std::env::current_dir().unwrap_or_default(),
             phase: None,
+            approval_mode: ApprovalMode::Auto,
         }
     }
 }
@@ -92,6 +127,7 @@ impl Engine {
             config: EngineConfig {
                 work_dir: std::env::current_dir().unwrap_or_default(),
                 phase: Some(phase.to_string()),
+                approval_mode: ApprovalMode::Auto,
             },
             handlers: Vec::new(),
             provider: None,
@@ -390,6 +426,123 @@ impl Engine {
         iteration::auto_run(max_iterations, cli)
     }
 
+    // --- Approval ---
+
+    /// Get the current approval mode.
+    pub fn approval_mode(&self) -> &ApprovalMode {
+        &self.config.approval_mode
+    }
+
+    /// Set the approval mode.
+    pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
+        self.config.approval_mode = mode;
+    }
+
+    /// Generate a diff summary from git diff --stat.
+    pub fn diff_summary(&self) -> Result<String> {
+        if !crate::git::git_is_repo() {
+            return Ok("(not a git repo)".to_string());
+        }
+
+        let output = std::process::Command::new("git")
+            .args(["diff", "--stat"])
+            .output()
+            .map_err(|e| DialError::CommandFailed(e.to_string()))?;
+
+        let diff_stat = String::from_utf8_lossy(&output.stdout).to_string();
+
+        if diff_stat.is_empty() {
+            // Try staged changes
+            let output = std::process::Command::new("git")
+                .args(["diff", "--cached", "--stat"])
+                .output()
+                .map_err(|e| DialError::CommandFailed(e.to_string()))?;
+
+            let cached = String::from_utf8_lossy(&output.stdout).to_string();
+            if cached.is_empty() {
+                return Ok("(no changes)".to_string());
+            }
+            return Ok(cached);
+        }
+
+        Ok(diff_stat)
+    }
+
+    /// Approve a paused iteration (in Review/Manual mode).
+    pub async fn approve(&self) -> Result<()> {
+        let conn = self.conn()?;
+
+        // Find the paused iteration
+        let iteration: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT id, task_id FROM iterations WHERE status = 'awaiting_approval' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        let (iteration_id, _task_id) = match iteration {
+            Some(i) => i,
+            None => return Err(DialError::UserError("No iteration awaiting approval".to_string())),
+        };
+
+        // Resume by setting back to in_progress, then committing
+        conn.execute(
+            "UPDATE iterations SET status = 'in_progress' WHERE id = ?1",
+            [iteration_id],
+        )?;
+
+        self.emit(Event::Approved { iteration_id });
+
+        // Now validate and commit normally
+        self.validate().await?;
+
+        Ok(())
+    }
+
+    /// Reject a paused iteration (in Review/Manual mode).
+    pub async fn reject(&self, reason: &str) -> Result<()> {
+        let conn = self.conn()?;
+
+        let iteration: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT id, task_id FROM iterations WHERE status = 'awaiting_approval' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        let (iteration_id, task_id) = match iteration {
+            Some(i) => i,
+            None => return Err(DialError::UserError("No iteration awaiting approval".to_string())),
+        };
+
+        let now = chrono::Local::now().to_rfc3339();
+
+        // Mark iteration as rejected
+        conn.execute(
+            "UPDATE iterations SET status = 'rejected', ended_at = ?1, notes = ?2 WHERE id = ?3",
+            rusqlite::params![now, reason, iteration_id],
+        )?;
+
+        // Reset task to pending
+        conn.execute(
+            "UPDATE tasks SET status = 'pending' WHERE id = ?1",
+            [task_id],
+        )?;
+
+        self.emit(Event::Rejected { iteration_id, reason: reason.to_string() });
+
+        // Revert changes if in git repo
+        if crate::git::git_is_repo() && crate::git::git_has_changes() {
+            let _ = std::process::Command::new("git")
+                .args(["checkout", "."])
+                .output();
+        }
+
+        Ok(())
+    }
+
     // --- Validation Pipeline ---
 
     /// Add a step to the validation pipeline.
@@ -650,6 +803,7 @@ mod tests {
         let config = EngineConfig {
             work_dir: PathBuf::from("/tmp/nonexistent-dial-test"),
             phase: None,
+            approval_mode: ApprovalMode::Auto,
         };
         let result = Engine::open(config).await;
         assert!(result.is_err());

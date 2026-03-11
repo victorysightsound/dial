@@ -95,6 +95,19 @@ impl EventHandler for CliEventHandler {
             Event::ConfigSet { key, value } => {
                 output::print_success(&format!("Config set: {} = {}", key, value));
             }
+            Event::ApprovalRequired { iteration_id, task_id, diff_summary } => {
+                println!("{}", output::bold("Approval Required"));
+                println!("{}", "=".repeat(60));
+                println!("Iteration #{} for task #{}", iteration_id, task_id);
+                println!("\n{}", diff_summary);
+                println!("\nRun `dial approve` to accept or `dial reject \"reason\"` to reject.");
+            }
+            Event::Approved { iteration_id } => {
+                output::print_success(&format!("Iteration #{} approved.", iteration_id));
+            }
+            Event::Rejected { iteration_id, reason } => {
+                println!("{}", output::yellow(&format!("Iteration #{} rejected: {}", iteration_id, reason)));
+            }
             Event::StepStarted { name, command, required } => {
                 println!(
                     "{}",

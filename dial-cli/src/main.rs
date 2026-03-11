@@ -126,6 +126,15 @@ enum Commands {
     /// Show statistics
     Stats,
 
+    /// Approve a paused iteration (in review/manual mode)
+    Approve,
+
+    /// Reject a paused iteration
+    Reject {
+        /// Reason for rejection
+        reason: String,
+    },
+
     /// Revert to last good commit
     Revert,
 
@@ -541,6 +550,14 @@ async fn run_command(command: Commands) -> Result<()> {
 
         Commands::Stats => {
             show_stats()?;
+        }
+
+        Commands::Approve => {
+            engine.approve().await?;
+        }
+
+        Commands::Reject { reason } => {
+            engine.reject(&reason).await?;
         }
 
         Commands::Revert => {

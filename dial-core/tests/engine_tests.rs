@@ -41,6 +41,7 @@ async fn test_engine_open_after_init() {
     let config = EngineConfig {
         work_dir: tmp.path().to_path_buf(),
         phase: Some("test".to_string()),
+        ..Default::default()
     };
     let engine2 = Engine::open(config).await;
     assert!(engine2.is_ok());
@@ -57,6 +58,7 @@ async fn test_engine_open_fails_without_init() {
     let config = EngineConfig {
         work_dir: tmp.path().to_path_buf(),
         phase: None,
+        ..Default::default()
     };
     let result = Engine::open(config).await;
     assert!(result.is_err());

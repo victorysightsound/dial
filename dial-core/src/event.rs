@@ -45,6 +45,11 @@ pub enum Event {
     // --- Config Events ---
     ConfigSet { key: String, value: String },
 
+    // --- Approval Events ---
+    ApprovalRequired { iteration_id: i64, task_id: i64, diff_summary: String },
+    Approved { iteration_id: i64 },
+    Rejected { iteration_id: i64, reason: String },
+
     // --- General Events ---
     Info(String),
     Warning(String),
