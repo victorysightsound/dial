@@ -1,3 +1,4 @@
+pub mod migrations;
 pub mod schema;
 
 use crate::errors::{DialError, Result};
@@ -46,7 +47,7 @@ pub fn get_db(phase: Option<&str>) -> Result<Connection> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
 
     // Run migrations
-    migrate_db(&conn)?;
+    migrations::run_migrations(&conn)?;
 
     Ok(conn)
 }
@@ -190,54 +191,6 @@ fn import_trusted_solutions(conn: &Connection, dial_dir: &PathBuf, source_phase:
         "Imported {} trusted solutions from '{}'.",
         count, source_phase
     ));
-
-    Ok(())
-}
-
-fn migrate_db(conn: &Connection) -> Result<()> {
-    // Check if learnings table exists
-    let has_learnings: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='learnings'",
-        [],
-        |row| row.get(0),
-    )?;
-
-    if !has_learnings {
-        conn.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS learnings (
-                id INTEGER PRIMARY KEY,
-                category TEXT,
-                description TEXT NOT NULL,
-                discovered_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                times_referenced INTEGER DEFAULT 0
-            );
-
-            CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
-                category, description,
-                content='learnings', content_rowid='id',
-                tokenize='porter'
-            );
-
-            CREATE TRIGGER IF NOT EXISTS learnings_ai AFTER INSERT ON learnings BEGIN
-                INSERT INTO learnings_fts(rowid, category, description)
-                VALUES (NEW.id, COALESCE(NEW.category, ''), NEW.description);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS learnings_ad AFTER DELETE ON learnings BEGIN
-                INSERT INTO learnings_fts(learnings_fts, rowid, category, description)
-                VALUES('delete', OLD.id, COALESCE(OLD.category, ''), OLD.description);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS learnings_au AFTER UPDATE ON learnings BEGIN
-                INSERT INTO learnings_fts(learnings_fts, rowid, category, description)
-                VALUES('delete', OLD.id, COALESCE(OLD.category, ''), OLD.description);
-                INSERT INTO learnings_fts(rowid, category, description)
-                VALUES (NEW.id, COALESCE(NEW.category, ''), NEW.description);
-            END;
-            "#,
-        )?;
-    }
 
     Ok(())
 }
