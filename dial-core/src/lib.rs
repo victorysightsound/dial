@@ -11,6 +11,7 @@ pub mod output;
 pub mod provider;
 pub mod spec;
 pub mod task;
+pub mod validation;
 
 // Re-export commonly used items
 pub use db::{get_current_phase, get_db, get_dial_dir, init_db, DEFAULT_PHASE};
