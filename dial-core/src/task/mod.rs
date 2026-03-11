@@ -130,6 +130,50 @@ pub fn task_done(task_id: i64) -> Result<()> {
     }
 
     print_success(&format!("Task #{} marked as completed.", task_id));
+
+    // Auto-unblock dependents whose deps are now all satisfied
+    auto_unblock_dependents(&conn, task_id)?;
+
+    Ok(())
+}
+
+/// Check dependents of a completed task and unblock any whose dependencies are all satisfied.
+pub fn auto_unblock_dependents(conn: &rusqlite::Connection, completed_task_id: i64) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1"
+    )?;
+    let dependents: Vec<i64> = stmt
+        .query_map([completed_task_id], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for dep_id in dependents {
+        // Check if this dependent is blocked and all its deps are now completed
+        let status: String = conn.query_row(
+            "SELECT status FROM tasks WHERE id = ?1",
+            [dep_id],
+            |row| row.get(0),
+        ).map_err(|_| DialError::TaskNotFound(dep_id))?;
+
+        if status == "blocked" {
+            let unsatisfied: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM task_dependencies td
+                 INNER JOIN tasks t ON t.id = td.depends_on_id
+                 WHERE td.task_id = ?1 AND t.status != 'completed'",
+                [dep_id],
+                |row| row.get(0),
+            )?;
+
+            if unsatisfied == 0 {
+                conn.execute(
+                    "UPDATE tasks SET status = 'pending', blocked_by = NULL WHERE id = ?1",
+                    [dep_id],
+                )?;
+                print_success(&format!("Task #{} auto-unblocked (all dependencies satisfied).", dep_id));
+            }
+        }
+    }
+
     Ok(())
 }
 

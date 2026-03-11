@@ -202,6 +202,9 @@ pub fn validate_current() -> Result<bool> {
             rusqlite::params![now, task_id],
         )?;
 
+        // Auto-unblock dependents
+        crate::task::auto_unblock_dependents(&conn, task_id)?;
+
         println!("{}", green(&format!("\nIteration #{} completed successfully!", iteration_id)));
         println!("{}", green(&format!("Task #{} marked as completed.", task_id)));
 
