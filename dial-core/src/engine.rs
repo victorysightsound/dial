@@ -30,15 +30,17 @@ impl Default for EngineConfig {
 
 /// The DIAL engine. Central API for all operations.
 ///
-/// Wraps a SQLite database connection and provides methods for
-/// task management, iteration control, failure tracking, and more.
+/// All public methods are async to support truly async operations like
+/// AI provider API calls (added in later phases). Database operations
+/// use rusqlite (sync) internally — the async boundary allows future
+/// migration to async DB or wrapping with spawn_blocking as needed.
 pub struct Engine {
     config: EngineConfig,
 }
 
 impl Engine {
     /// Open an existing DIAL project. Runs migrations automatically.
-    pub fn open(config: EngineConfig) -> Result<Self> {
+    pub async fn open(config: EngineConfig) -> Result<Self> {
         let dial_dir = config.work_dir.join(".dial");
         if !dial_dir.exists() {
             return Err(DialError::NotInitialized);
@@ -51,7 +53,7 @@ impl Engine {
     }
 
     /// Initialize a new DIAL project.
-    pub fn init(
+    pub async fn init(
         phase: &str,
         import_solutions_from: Option<&str>,
         setup_agents: bool,
@@ -71,13 +73,18 @@ impl Engine {
         self.config.work_dir.join(".dial")
     }
 
+    /// Get the engine configuration.
+    pub fn config(&self) -> &EngineConfig {
+        &self.config
+    }
+
     /// Get a database connection.
     fn conn(&self) -> Result<Connection> {
         db::get_db(self.config.phase.as_deref())
     }
 
     /// Get the current schema version.
-    pub fn schema_version(&self) -> Result<i64> {
+    pub async fn schema_version(&self) -> Result<i64> {
         let conn = self.conn()?;
         migrations::current_version(&conn)
     }
@@ -85,24 +92,24 @@ impl Engine {
     // --- Configuration ---
 
     /// Get a config value.
-    pub fn config_get(&self, key: &str) -> Result<Option<String>> {
+    pub async fn config_get(&self, key: &str) -> Result<Option<String>> {
         config::config_get(key)
     }
 
     /// Set a config value.
-    pub fn config_set(&self, key: &str, value: &str) -> Result<()> {
+    pub async fn config_set(&self, key: &str, value: &str) -> Result<()> {
         config::config_set(key, value)
     }
 
     /// Show all config (prints to stdout).
-    pub fn config_show(&self) -> Result<()> {
+    pub async fn config_show(&self) -> Result<()> {
         config::config_show()
     }
 
     // --- Tasks ---
 
     /// Add a new task. Returns the task ID.
-    pub fn task_add(
+    pub async fn task_add(
         &self,
         description: &str,
         priority: i32,
@@ -112,140 +119,140 @@ impl Engine {
     }
 
     /// List tasks.
-    pub fn task_list(&self, show_all: bool) -> Result<()> {
+    pub async fn task_list(&self, show_all: bool) -> Result<()> {
         task::task_list(show_all)
     }
 
     /// Get the next pending task.
-    pub fn task_next(&self) -> Result<Option<Task>> {
+    pub async fn task_next(&self) -> Result<Option<Task>> {
         task::task_next()
     }
 
     /// Mark a task as done.
-    pub fn task_done(&self, task_id: i64) -> Result<()> {
+    pub async fn task_done(&self, task_id: i64) -> Result<()> {
         task::task_done(task_id)
     }
 
     /// Block a task with a reason.
-    pub fn task_block(&self, task_id: i64, reason: &str) -> Result<()> {
+    pub async fn task_block(&self, task_id: i64, reason: &str) -> Result<()> {
         task::task_block(task_id, reason)
     }
 
     /// Cancel a task.
-    pub fn task_cancel(&self, task_id: i64) -> Result<()> {
+    pub async fn task_cancel(&self, task_id: i64) -> Result<()> {
         task::task_cancel(task_id)
     }
 
     /// Search tasks by query.
-    pub fn task_search(&self, query: &str) -> Result<()> {
+    pub async fn task_search(&self, query: &str) -> Result<()> {
         task::task_search(query)
     }
 
     /// Get a task by ID.
-    pub fn task_get(&self, task_id: i64) -> Result<Task> {
+    pub async fn task_get(&self, task_id: i64) -> Result<Task> {
         task::get_task_by_id(task_id)
     }
 
     // --- Iteration ---
 
     /// Run one iteration (pick next task, set up context).
-    pub fn iterate(&self) -> Result<(bool, String)> {
+    pub async fn iterate(&self) -> Result<(bool, String)> {
         iteration::iterate_once()
     }
 
     /// Validate the current iteration (run build + test).
-    pub fn validate(&self) -> Result<bool> {
+    pub async fn validate(&self) -> Result<bool> {
         iteration::validate_current()
     }
 
     /// Run the iteration loop until tasks are exhausted or stopped.
-    pub fn run(&self, max_iterations: Option<u32>) -> Result<()> {
+    pub async fn run(&self, max_iterations: Option<u32>) -> Result<()> {
         iteration::run_loop(max_iterations)
     }
 
     /// Stop the iteration loop gracefully.
-    pub fn stop(&self) -> Result<()> {
+    pub async fn stop(&self) -> Result<()> {
         iteration::stop_loop()
     }
 
     /// Revert to the last successful commit.
-    pub fn revert(&self) -> Result<bool> {
+    pub async fn revert(&self) -> Result<bool> {
         iteration::revert_to_last_good()
     }
 
     /// Reset the current in-progress iteration.
-    pub fn reset(&self) -> Result<()> {
+    pub async fn reset(&self) -> Result<()> {
         iteration::reset_current()
     }
 
     /// Show fresh context for current/next task.
-    pub fn show_context(&self) -> Result<()> {
+    pub async fn show_context(&self) -> Result<()> {
         iteration::show_context()
     }
 
     /// Generate an orchestrator prompt for sub-agent spawning.
-    pub fn orchestrate(&self) -> Result<()> {
+    pub async fn orchestrate(&self) -> Result<()> {
         iteration::orchestrate()
     }
 
     /// Run automated orchestration with fresh AI subprocesses.
-    pub fn auto_run(&self, max_iterations: Option<u32>, cli: Option<&str>) -> Result<()> {
+    pub async fn auto_run(&self, max_iterations: Option<u32>, cli: Option<&str>) -> Result<()> {
         iteration::auto_run(max_iterations, cli)
     }
 
     // --- Failures & Solutions ---
 
     /// Show failure records.
-    pub fn show_failures(&self, unresolved_only: bool) -> Result<()> {
+    pub async fn show_failures(&self, unresolved_only: bool) -> Result<()> {
         failure::show_failures(unresolved_only)
     }
 
     /// Show solutions.
-    pub fn show_solutions(&self, trusted_only: bool) -> Result<()> {
+    pub async fn show_solutions(&self, trusted_only: bool) -> Result<()> {
         failure::show_solutions(trusted_only)
     }
 
     // --- Learnings ---
 
     /// Add a learning. Returns the learning ID.
-    pub fn learn(&self, description: &str, category: Option<&str>) -> Result<i64> {
+    pub async fn learn(&self, description: &str, category: Option<&str>) -> Result<i64> {
         learning::add_learning(description, category)
     }
 
     /// List learnings.
-    pub fn learnings_list(&self, category: Option<&str>) -> Result<()> {
+    pub async fn learnings_list(&self, category: Option<&str>) -> Result<()> {
         learning::list_learnings(category)
     }
 
     /// Search learnings.
-    pub fn learnings_search(&self, query: &str) -> Result<Vec<learning::LearningResult>> {
+    pub async fn learnings_search(&self, query: &str) -> Result<Vec<learning::LearningResult>> {
         learning::search_learnings(query)
     }
 
     /// Delete a learning.
-    pub fn learnings_delete(&self, id: i64) -> Result<()> {
+    pub async fn learnings_delete(&self, id: i64) -> Result<()> {
         learning::delete_learning(id)
     }
 
     // --- Specs ---
 
     /// Index spec files from a directory. Returns true if specs were found.
-    pub fn index_specs(&self, dir: &str) -> Result<bool> {
+    pub async fn index_specs(&self, dir: &str) -> Result<bool> {
         spec::index_specs(dir)
     }
 
     /// Search specs.
-    pub fn spec_search(&self, query: &str) -> Result<Vec<spec::SpecSearchResult>> {
+    pub async fn spec_search(&self, query: &str) -> Result<Vec<spec::SpecSearchResult>> {
         spec::spec_search(query)
     }
 
     /// Show a spec section.
-    pub fn spec_show(&self, id: i64) -> Result<Option<spec::SpecSearchResult>> {
+    pub async fn spec_show(&self, id: i64) -> Result<Option<spec::SpecSearchResult>> {
         spec::spec_show(id)
     }
 
     /// List all spec sections.
-    pub fn spec_list(&self) -> Result<()> {
+    pub async fn spec_list(&self) -> Result<()> {
         spec::spec_list()
     }
 }
@@ -261,13 +268,13 @@ mod tests {
         assert!(!config.work_dir.as_os_str().is_empty());
     }
 
-    #[test]
-    fn test_engine_open_uninitialized_fails() {
+    #[tokio::test]
+    async fn test_engine_open_uninitialized_fails() {
         let config = EngineConfig {
             work_dir: PathBuf::from("/tmp/nonexistent-dial-test"),
             phase: None,
         };
-        let result = Engine::open(config);
+        let result = Engine::open(config).await;
         assert!(result.is_err());
     }
 }
