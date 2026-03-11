@@ -88,6 +88,11 @@ pub fn task_next() -> Result<Option<Task>> {
     let mut stmt = conn.prepare(
         "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
          FROM tasks WHERE status = 'pending'
+         AND id NOT IN (
+             SELECT td.task_id FROM task_dependencies td
+             INNER JOIN tasks dep ON dep.id = td.depends_on_id
+             WHERE dep.status != 'completed'
+         )
          ORDER BY priority, id LIMIT 1",
     )?;
 

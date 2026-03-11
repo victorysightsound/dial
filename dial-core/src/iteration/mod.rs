@@ -70,10 +70,15 @@ pub fn complete_iteration(
 pub fn iterate_once() -> Result<(bool, String)> {
     let conn = get_db(None)?;
 
-    // Get next task
+    // Get next task (dependency-aware: skip tasks with unsatisfied deps)
     let mut stmt = conn.prepare(
         "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
          FROM tasks WHERE status = 'pending'
+         AND id NOT IN (
+             SELECT td.task_id FROM task_dependencies td
+             INNER JOIN tasks dep ON dep.id = td.depends_on_id
+             WHERE dep.status != 'completed'
+         )
          ORDER BY priority, id LIMIT 1",
     )?;
 
@@ -462,6 +467,11 @@ pub fn show_context() -> Result<()> {
             let mut stmt = conn.prepare(
                 "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
                  FROM tasks WHERE status = 'pending'
+                 AND id NOT IN (
+                     SELECT td.task_id FROM task_dependencies td
+                     INNER JOIN tasks dep ON dep.id = td.depends_on_id
+                     WHERE dep.status != 'completed'
+                 )
                  ORDER BY priority, id LIMIT 1",
             )?;
 
@@ -497,10 +507,15 @@ pub fn show_context() -> Result<()> {
 pub fn orchestrate() -> Result<()> {
     let conn = get_db(None)?;
 
-    // Get next pending task
+    // Get next pending task (dependency-aware)
     let mut stmt = conn.prepare(
         "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
          FROM tasks WHERE status = 'pending'
+         AND id NOT IN (
+             SELECT td.task_id FROM task_dependencies td
+             INNER JOIN tasks dep ON dep.id = td.depends_on_id
+             WHERE dep.status != 'completed'
+         )
          ORDER BY priority, id LIMIT 1",
     )?;
 
