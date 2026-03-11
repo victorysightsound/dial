@@ -1,5 +1,6 @@
 pub mod config;
 pub mod db;
+pub mod engine;
 pub mod errors;
 pub mod failure;
 pub mod git;
@@ -11,6 +12,7 @@ pub mod task;
 
 // Re-export commonly used items
 pub use db::{get_current_phase, get_db, get_dial_dir, init_db, DEFAULT_PHASE};
+pub use engine::{Engine, EngineConfig};
 pub use errors::{DialError, Result};
 
 // Constants
