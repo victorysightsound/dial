@@ -25,7 +25,7 @@ DIAL solves these by externalizing memory to SQLite, linking tasks to specificat
 
 ## Architecture
 
-DIAL v3.0.0 is structured as a Rust workspace with three crates:
+DIAL is structured as a Rust workspace with three crates:
 
 ```
 dial/
@@ -222,7 +222,7 @@ Add `dial-core` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dial-core = "3.0"
+dial-core = "4.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -340,6 +340,50 @@ dial stats --format csv                # Export for spreadsheets
 dial stats --trend 30                  # Daily trends over 30 days
 ```
 
+### Project Health Score
+```bash
+dial health                            # Color-coded score (green/yellow/red)
+dial health --format json              # Machine-readable output
+```
+
+Six weighted factors: success rate, success trend, solution confidence, blocked task ratio, learning utilization, and pattern resolution rate. Trend detection compares current score vs 7 days ago.
+
+### Dry Run / Preview Mode
+```bash
+dial iterate --dry-run                 # See what would happen without side effects
+dial iterate --dry-run --format json   # Machine-readable preview
+dial auto-run --dry-run                # Preview next auto-run iteration
+```
+
+Shows context items included/excluded with token sizes, prompt preview, suggested solutions, and dependency status — without creating iteration records or spawning subagents.
+
+### Cross-Iteration Failure Tracking
+```bash
+dial task chronic                      # Tasks exceeding default failure threshold
+dial task chronic --threshold 5        # Custom threshold
+```
+
+Tasks track `total_attempts` and `total_failures` across all iterations. Auto-run auto-blocks tasks exceeding `max_total_failures` (default: 10).
+
+### Per-Pattern Metrics
+```bash
+dial patterns metrics                  # Table of per-pattern cost/time/occurrences
+dial patterns metrics --format json    # Machine-readable output
+dial patterns metrics --sort cost      # Sort by cost, time, or occurrences
+```
+
+### Checkpoint System
+
+Automatic git stash-based checkpoints before task execution. On validation failure, the working tree is restored to pre-task state before retry. Controlled via `enable_checkpoints` config (default: true).
+
+### Structured Subagent Signals
+
+Subagents write `.dial/signal.json` with typed signals (`Complete`, `Blocked`, `Learning`) instead of printing `DIAL_` lines to stdout. Falls back to regex parsing for backward compatibility.
+
+### Transaction Safety
+
+All multi-step database mutations (`record_failure`, `task_done`, `iterate`, `prd_import`) are wrapped in `BEGIN IMMEDIATE` transactions with automatic rollback on error.
+
 ### Crash Recovery
 ```bash
 dial recover                           # Reset dangling iterations
@@ -349,8 +393,11 @@ dial recover                           # Reset dangling iterations
 ```bash
 dial learn "Always run migrations before tests" -c setup
 dial learnings list -c gotcha
+dial learnings list --pattern 5        # Learnings linked to pattern #5
 dial learnings search "database"
 ```
+
+Learnings are auto-linked to failure patterns when recorded during an iteration with failures.
 
 ## Project Structure
 

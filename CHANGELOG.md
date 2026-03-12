@@ -1,5 +1,83 @@
 # Changelog
 
+## 4.0.0 — 2026-03-12
+
+10 new features across 3 tiers: foundation infrastructure, intelligent context, and analytics/observability. 308 total tests (up from 201).
+
+### Tier 1 — Foundation
+
+#### Transaction Safety
+- `with_transaction()` helper in `db.rs` wraps closures in `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`
+- Uses `BEGIN IMMEDIATE` (not plain `BEGIN`) to acquire write locks upfront in WAL mode, preventing `SQLITE_BUSY` contention
+- Wrapped operations: `record_failure()`, `task_done()` + auto-unblock, `iterate()` + `validate()`, `prd_import()`
+
+#### Checkpoint/Rollback System
+- `checkpoint_create()`, `checkpoint_restore()`, `checkpoint_drop()` in `git.rs` using `git stash push -u`
+- Automatic checkpoint before task execution during `iterate()`; restore on validation failure, drop on success
+- `enable_checkpoints` config key (default: true)
+- New events: `CheckpointCreated`, `CheckpointRestored`, `CheckpointDropped`
+
+#### Structured Subagent Signals
+- New `SubagentSignal` enum: `Complete{summary}`, `Blocked{reason}`, `Learning{category, description}`
+- Subagents write `.dial/signal.json` instead of printing `DIAL_` lines to stdout
+- Orchestrator reads `signal.json` first, falls back to regex parsing for backward compatibility
+- `#[serde(tag = "type", rename_all = "snake_case")]` for clean tagged-union JSON serialization
+
+### Tier 2 — Intelligence
+
+#### Solution Auto-Suggestion
+- `find_solutions_for_pattern()` queries trusted solutions (confidence >= 0.6) for matched failure patterns
+- `SolutionSuggested` event emitted with failure ID and matching solutions
+- Context assembly includes known fixes at priority 15: `KNOWN FIX (confidence: 0.85): description`
+- Successful validation after a suggestion auto-increments solution confidence by +0.15
+
+#### Cross-Iteration Failure Tracking
+- Tasks track `total_attempts`, `total_failures`, `last_failure_at` across all iterations
+- `Engine::chronic_failures(threshold)` returns tasks exceeding failure threshold
+- Auto-run auto-blocks tasks exceeding `max_total_failures` config (default: 10)
+- `ChronicFailureDetected` event variant
+- CLI: `dial task chronic --threshold N`
+
+#### Similar Completed Task Context
+- FTS query against `tasks_fts` finds completed tasks matching keywords from current task description
+- Stop word stripping (the, a, an, is, for, to, of, in, and, or) for better search relevance
+- Context includes up to 3 similar tasks at priority 25: `SIMILAR COMPLETED TASK: {desc}\nApproach: {notes}\nCommit: {hash}`
+
+#### Learning-to-Pattern Linking
+- `learn()` accepts optional `pattern_id` and `iteration_id` parameters
+- Auto-links learnings to failure patterns when called during an iteration with recorded failures
+- `Engine::learnings_for_pattern(pattern_id)` queries linked learnings
+- Context assembly includes pattern-linked learnings at priority 35
+- CLI: `dial learnings list --pattern <id>`
+
+### Tier 3 — Analytics & Observability
+
+#### Per-Pattern Metrics
+- `PatternMetrics` struct: occurrences, resolution times, token/cost consumption, auto/manual/unresolved counts
+- `compute_pattern_metrics()` joins failures, iterations, provider_usage, and solutions tables
+- CLI: `dial patterns metrics` with table output, `--format json`, `--sort` (cost/time/occurrences)
+
+#### Dry Run / Preview Mode
+- `DryRunResult` struct shows what would happen without creating iteration records or spawning subagents
+- Fields: task, context items included/excluded with token sizes, prompt preview (first 500 chars), suggested solutions, dependency status
+- CLI: `dial iterate --dry-run [--format json]`, `dial auto-run --dry-run`
+
+#### Project Health Score
+- `compute_health()` with 6 weighted factors: success rate (0.30), success trend (0.15), solution confidence (0.15), blocked task ratio (0.15), learning utilization (0.10), pattern resolution rate (0.15)
+- `Trend` enum: `Improving`, `Stable`, `Declining` (compares current vs 7 days ago)
+- Color-coded output: green (>= 70), yellow (>= 40), red (< 40)
+- CLI: `dial health [--format json]`
+
+### Database Migration
+- **Migration 11**: adds `total_attempts`, `total_failures`, `last_failure_at` columns to `tasks` table; adds `pattern_id` and `iteration_id` columns to `learnings` table (all nullable/defaulted)
+
+### Testing
+- 308 total tests (up from 201)
+- New unit tests: transaction commit/rollback, pattern metrics aggregation, signal parsing, health score computation, solution auto-suggestion, chronic failure detection
+- New integration tests: checkpoint create/restore/drop cycle, learning-to-pattern auto-linking, per-pattern metrics, dry run no-side-effects verification, full health score lifecycle
+
+---
+
 ## 3.2.0 — 2026-03-12
 
 ### Unified Project Wizard (`dial new`)
