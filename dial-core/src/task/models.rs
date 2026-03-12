@@ -44,6 +44,7 @@ pub struct Task {
     pub priority: i32,
     pub blocked_by: Option<String>,
     pub spec_section_id: Option<i64>,
+    pub prd_section_id: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
@@ -52,6 +53,8 @@ pub struct Task {
 impl Task {
     pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
         let status_str: String = row.get("status")?;
+        // prd_section_id may not exist in older databases without migration 10
+        let prd_section_id: Option<String> = row.get("prd_section_id").unwrap_or(None);
         Ok(Task {
             id: row.get("id")?,
             description: row.get("description")?,
@@ -59,6 +62,7 @@ impl Task {
             priority: row.get("priority")?,
             blocked_by: row.get("blocked_by")?,
             spec_section_id: row.get("spec_section_id")?,
+            prd_section_id,
             created_at: row.get("created_at")?,
             started_at: row.get("started_at")?,
             completed_at: row.get("completed_at")?,

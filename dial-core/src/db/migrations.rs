@@ -58,6 +58,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Add metrics table for iteration-level metric snapshots",
         apply: migrate_009_metrics_table,
     },
+    Migration {
+        version: 10,
+        description: "Add prd_section_id TEXT column to tasks for PRD section linking",
+        apply: migrate_010_prd_section_id,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -367,6 +372,13 @@ fn migrate_008_iterations_approval_status(conn: &Connection) -> Result<()> {
         DROP TABLE iterations;
         ALTER TABLE iterations_new RENAME TO iterations;
         "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_010_prd_section_id(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE tasks ADD COLUMN prd_section_id TEXT;",
     )?;
     Ok(())
 }
