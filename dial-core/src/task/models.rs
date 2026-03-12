@@ -48,6 +48,9 @@ pub struct Task {
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    pub total_attempts: i64,
+    pub total_failures: i64,
+    pub last_failure_at: Option<String>,
 }
 
 impl Task {
@@ -55,6 +58,10 @@ impl Task {
         let status_str: String = row.get("status")?;
         // prd_section_id may not exist in older databases without migration 10
         let prd_section_id: Option<String> = row.get("prd_section_id").unwrap_or(None);
+        // total_attempts/total_failures/last_failure_at may not exist without migration 11
+        let total_attempts: i64 = row.get("total_attempts").unwrap_or(0);
+        let total_failures: i64 = row.get("total_failures").unwrap_or(0);
+        let last_failure_at: Option<String> = row.get("last_failure_at").unwrap_or(None);
         Ok(Task {
             id: row.get("id")?,
             description: row.get("description")?,
@@ -66,6 +73,9 @@ impl Task {
             created_at: row.get("created_at")?,
             started_at: row.get("started_at")?,
             completed_at: row.get("completed_at")?,
+            total_attempts,
+            total_failures,
+            last_failure_at,
         })
     }
 }

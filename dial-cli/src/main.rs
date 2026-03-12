@@ -257,6 +257,12 @@ enum TaskCommands {
     },
     /// Show dependency info for a task
     Deps { id: i64 },
+    /// Show tasks with chronic failures (total_failures >= threshold)
+    Chronic {
+        /// Minimum total failures to report
+        #[arg(long, default_value = "10")]
+        threshold: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -500,6 +506,23 @@ async fn run_command(command: Commands) -> Result<()> {
             }
             Some(TaskCommands::Deps { id }) => {
                 engine.task_show_deps(id).await?;
+            }
+            Some(TaskCommands::Chronic { threshold }) => {
+                let results = engine.chronic_failures(threshold).await?;
+                if results.is_empty() {
+                    println!("{}", output::dim(&format!("No tasks with {} or more total failures.", threshold)));
+                } else {
+                    println!("{}", output::bold("Chronic Failures"));
+                    println!("{}", "=".repeat(70));
+                    for r in &results {
+                        let last = r.last_failure_at.as_deref().unwrap_or("never");
+                        println!(
+                            "  #{:<4} failures: {:<4} attempts: {:<4} last: {}",
+                            r.task_id, r.total_failures, r.total_attempts, last
+                        );
+                        println!("        {}", r.description);
+                    }
+                }
             }
             None => {
                 engine.task_list(false).await?;

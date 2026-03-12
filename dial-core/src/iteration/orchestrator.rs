@@ -372,7 +372,50 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
         println!("{}", bold(&format!("Task #{}: {}", task.id, task.description)));
         println!("{}", bold(&"=".repeat(70)));
 
-        // Check attempt count
+        // Check cross-iteration chronic failure threshold
+        let max_total_failures: i64 = config_get("max_total_failures")?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10);
+
+        let task_total_failures: i64 = conn
+            .query_row(
+                "SELECT COALESCE(total_failures, 0) FROM tasks WHERE id = ?1",
+                [task.id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        let task_total_attempts: i64 = conn
+            .query_row(
+                "SELECT COALESCE(total_attempts, 0) FROM tasks WHERE id = ?1",
+                [task.id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if task_total_failures >= max_total_failures {
+            let reason = format!(
+                "Chronic failure: {} failures across {} attempts",
+                task_total_failures, task_total_attempts
+            );
+            println!(
+                "{}",
+                red(&format!(
+                    "Task #{} is a chronic failure ({}). Auto-blocking.",
+                    task.id, reason
+                ))
+            );
+
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', blocked_by = ?1 WHERE id = ?2",
+                rusqlite::params![reason, task.id],
+            )?;
+
+            failed_count += 1;
+            continue;
+        }
+
+        // Check attempt count (per-iteration MAX_FIX_ATTEMPTS)
         let max_attempt: Option<i32> = conn
             .query_row(
                 "SELECT MAX(attempt_number) FROM iterations WHERE task_id = ?1 AND status = 'failed'",

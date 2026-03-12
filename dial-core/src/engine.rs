@@ -338,6 +338,22 @@ impl Engine {
         task::task_show_deps(task_id)
     }
 
+    /// Return tasks where total_failures >= threshold (chronic failures).
+    pub async fn chronic_failures(&self, threshold: i64) -> Result<Vec<task::ChronicFailureInfo>> {
+        let conn = self.conn()?;
+        let results = task::get_chronic_failures_with_conn(&conn, threshold)?;
+        if !results.is_empty() {
+            for r in &results {
+                self.emit(Event::ChronicFailureDetected {
+                    task_id: r.task_id,
+                    total_failures: r.total_failures,
+                    total_attempts: r.total_attempts,
+                });
+            }
+        }
+        Ok(results)
+    }
+
     // --- Iteration ---
 
     /// Run one iteration (pick next task, set up context).

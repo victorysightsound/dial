@@ -217,6 +217,12 @@ impl EventHandler for CliEventHandler {
                     "Checkpoint dropped (iteration #{} passed)", iteration_id
                 )));
             }
+            Event::ChronicFailureDetected { task_id, total_failures, total_attempts } => {
+                println!("{}", output::red(&format!(
+                    "Chronic failure: task #{} has {} failures across {} attempts",
+                    task_id, total_failures, total_attempts
+                )));
+            }
             Event::Info(msg) => {
                 println!("{}", msg);
             }

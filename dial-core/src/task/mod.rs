@@ -5,6 +5,7 @@ use crate::errors::{DialError, Result};
 use crate::output::{bold, dim, green, red, yellow};
 use chrono::Local;
 use models::Task;
+use rusqlite::Connection;
 
 pub fn task_add(description: &str, priority: i32, spec_section_id: Option<i64>) -> Result<i64> {
     let conn = get_db(None)?;
@@ -360,6 +361,67 @@ pub fn task_deps_satisfied(task_id: i64) -> Result<bool> {
     Ok(unsatisfied == 0)
 }
 
+// --- Cross-Iteration Failure Tracking ---
+
+/// Increment total_attempts for a task when an iteration starts.
+pub fn increment_total_attempts(conn: &Connection, task_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE tasks SET total_attempts = COALESCE(total_attempts, 0) + 1 WHERE id = ?1",
+        [task_id],
+    )?;
+    Ok(())
+}
+
+/// Increment total_failures and set last_failure_at when an iteration fails.
+pub fn increment_total_failures(conn: &Connection, task_id: i64) -> Result<()> {
+    let now = Local::now().to_rfc3339();
+    conn.execute(
+        "UPDATE tasks SET total_failures = COALESCE(total_failures, 0) + 1, last_failure_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, task_id],
+    )?;
+    Ok(())
+}
+
+/// A task that has exceeded a chronic failure threshold.
+#[derive(Debug, Clone)]
+pub struct ChronicFailureInfo {
+    pub task_id: i64,
+    pub description: String,
+    pub total_failures: i64,
+    pub total_attempts: i64,
+    pub last_failure_at: Option<String>,
+}
+
+/// Return tasks where total_failures >= threshold.
+pub fn get_chronic_failures(threshold: i64) -> Result<Vec<ChronicFailureInfo>> {
+    let conn = get_db(None)?;
+    get_chronic_failures_with_conn(&conn, threshold)
+}
+
+/// Return tasks where total_failures >= threshold (using an existing connection).
+pub fn get_chronic_failures_with_conn(conn: &Connection, threshold: i64) -> Result<Vec<ChronicFailureInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, description, COALESCE(total_failures, 0), COALESCE(total_attempts, 0), last_failure_at
+         FROM tasks
+         WHERE COALESCE(total_failures, 0) >= ?1
+         ORDER BY total_failures DESC, id",
+    )?;
+
+    let rows = stmt
+        .query_map([threshold], |row| {
+            Ok(ChronicFailureInfo {
+                task_id: row.get(0)?,
+                description: row.get(1)?,
+                total_failures: row.get(2)?,
+                total_attempts: row.get(3)?,
+                last_failure_at: row.get(4)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(rows)
+}
+
 /// Check if adding an edge (task_id -> depends_on_id) would create a cycle.
 /// A cycle exists if there's already a path from depends_on_id to task_id.
 fn would_create_cycle(conn: &rusqlite::Connection, task_id: i64, depends_on_id: i64) -> Result<bool> {
@@ -391,4 +453,189 @@ fn would_create_cycle(conn: &rusqlite::Connection, task_id: i64, depends_on_id: 
     }
 
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::schema;
+    use crate::db::migrations;
+
+    fn setup_test_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+        conn.execute_batch(schema::SCHEMA).unwrap();
+        migrations::run_migrations(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_increment_total_attempts() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO tasks (description, priority) VALUES ('test task', 5)",
+            [],
+        ).unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Initial value should be 0
+        let val: i64 = conn.query_row(
+            "SELECT COALESCE(total_attempts, 0) FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(val, 0);
+
+        // Increment once
+        increment_total_attempts(&conn, task_id).unwrap();
+        let val: i64 = conn.query_row(
+            "SELECT total_attempts FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(val, 1);
+
+        // Increment again
+        increment_total_attempts(&conn, task_id).unwrap();
+        let val: i64 = conn.query_row(
+            "SELECT total_attempts FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(val, 2);
+    }
+
+    #[test]
+    fn test_increment_total_failures() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO tasks (description, priority) VALUES ('failing task', 5)",
+            [],
+        ).unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Initial value should be 0
+        let val: i64 = conn.query_row(
+            "SELECT COALESCE(total_failures, 0) FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(val, 0);
+
+        // Increment once
+        increment_total_failures(&conn, task_id).unwrap();
+        let val: i64 = conn.query_row(
+            "SELECT total_failures FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(val, 1);
+
+        // last_failure_at should be set
+        let last: Option<String> = conn.query_row(
+            "SELECT last_failure_at FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(last.is_some());
+
+        // Increment multiple times
+        increment_total_failures(&conn, task_id).unwrap();
+        increment_total_failures(&conn, task_id).unwrap();
+        let val: i64 = conn.query_row(
+            "SELECT total_failures FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(val, 3);
+    }
+
+    #[test]
+    fn test_get_chronic_failures_empty() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO tasks (description, priority) VALUES ('healthy task', 5)",
+            [],
+        ).unwrap();
+
+        let results = get_chronic_failures_with_conn(&conn, 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_get_chronic_failures_threshold() {
+        let conn = setup_test_db();
+
+        // Create two tasks
+        conn.execute(
+            "INSERT INTO tasks (description, priority) VALUES ('chronic task', 5)",
+            [],
+        ).unwrap();
+        let chronic_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO tasks (description, priority) VALUES ('ok task', 5)",
+            [],
+        ).unwrap();
+        let ok_id = conn.last_insert_rowid();
+
+        // Give chronic task 5 failures, ok task 2
+        for _ in 0..5 {
+            increment_total_failures(&conn, chronic_id).unwrap();
+            increment_total_attempts(&conn, chronic_id).unwrap();
+        }
+        for _ in 0..2 {
+            increment_total_failures(&conn, ok_id).unwrap();
+            increment_total_attempts(&conn, ok_id).unwrap();
+        }
+
+        // Threshold 5: only chronic task
+        let results = get_chronic_failures_with_conn(&conn, 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].task_id, chronic_id);
+        assert_eq!(results[0].total_failures, 5);
+        assert_eq!(results[0].total_attempts, 5);
+        assert!(results[0].last_failure_at.is_some());
+
+        // Threshold 2: both tasks
+        let results = get_chronic_failures_with_conn(&conn, 2).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Threshold 10: neither
+        let results = get_chronic_failures_with_conn(&conn, 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_chronic_failures_ordered_by_failure_count() {
+        let conn = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO tasks (description, priority) VALUES ('task A', 5)",
+            [],
+        ).unwrap();
+        let a_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO tasks (description, priority) VALUES ('task B', 5)",
+            [],
+        ).unwrap();
+        let b_id = conn.last_insert_rowid();
+
+        // B has more failures than A
+        for _ in 0..3 {
+            increment_total_failures(&conn, a_id).unwrap();
+        }
+        for _ in 0..7 {
+            increment_total_failures(&conn, b_id).unwrap();
+        }
+
+        let results = get_chronic_failures_with_conn(&conn, 3).unwrap();
+        assert_eq!(results.len(), 2);
+        // B should come first (more failures)
+        assert_eq!(results[0].task_id, b_id);
+        assert_eq!(results[0].total_failures, 7);
+        assert_eq!(results[1].task_id, a_id);
+        assert_eq!(results[1].total_failures, 3);
+    }
 }

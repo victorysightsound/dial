@@ -39,6 +39,9 @@ pub fn create_iteration(conn: &Connection, task_id: i64, attempt_number: i32) ->
         rusqlite::params![now, task_id],
     )?;
 
+    // Increment cross-iteration attempt counter
+    crate::task::increment_total_attempts(conn, task_id)?;
+
     Ok(iteration_id)
 }
 
@@ -49,10 +52,10 @@ pub fn complete_iteration(
     commit_hash: Option<&str>,
     notes: Option<&str>,
 ) -> Result<()> {
-    let started_at: String = conn.query_row(
-        "SELECT started_at FROM iterations WHERE id = ?1",
+    let (started_at, task_id): (String, i64) = conn.query_row(
+        "SELECT started_at, task_id FROM iterations WHERE id = ?1",
         [iteration_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
     let started = chrono::DateTime::parse_from_rfc3339(&started_at)
@@ -68,6 +71,11 @@ pub fn complete_iteration(
          WHERE id = ?6",
         rusqlite::params![status, now, duration, commit_hash, notes, iteration_id],
     )?;
+
+    // Increment cross-iteration failure counter when iteration fails
+    if status == "failed" {
+        crate::task::increment_total_failures(conn, task_id)?;
+    }
 
     Ok(())
 }

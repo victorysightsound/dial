@@ -107,6 +107,10 @@ pub enum Event {
     /// Project is ready for launch.
     LaunchReady { project_name: String, task_count: usize },
 
+    // --- Chronic Failure Events ---
+    /// A task was detected as a chronic failure and auto-blocked.
+    ChronicFailureDetected { task_id: i64, total_failures: i64, total_attempts: i64 },
+
     // --- Checkpoint Events ---
     /// A checkpoint was created before task execution.
     CheckpointCreated { iteration_id: i64, checkpoint_id: String },
