@@ -5,6 +5,29 @@ use rusqlite::{params, Connection};
 use std::env;
 use std::path::PathBuf;
 
+/// A terminology entry in the PRD database.
+#[derive(Debug, Clone)]
+pub struct PrdTerm {
+    pub id: i64,
+    pub canonical: String,
+    pub variants: String,
+    pub definition: String,
+    pub category: String,
+    pub first_used_in: Option<String>,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+}
+
+/// A source file record tracking what was imported.
+#[derive(Debug, Clone)]
+pub struct PrdSource {
+    pub id: i64,
+    pub file_path: String,
+    pub imported_at: String,
+    pub file_size: Option<i64>,
+    pub modified_at: Option<String>,
+}
+
 /// A section in the PRD database.
 #[derive(Debug, Clone)]
 pub struct PrdSection {
@@ -199,4 +222,150 @@ pub fn prd_update_section(conn: &Connection, section_id: &str, content: &str) ->
 pub fn prd_delete_all_sections(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM sections", [])?;
     Ok(())
+}
+
+// --- Terminology CRUD ---
+
+/// Add a terminology entry.
+pub fn prd_add_term(
+    conn: &Connection,
+    canonical: &str,
+    variants_json: &str,
+    definition: &str,
+    category: &str,
+    first_used_in: Option<&str>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO terminology (canonical, variants, definition, category, first_used_in)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![canonical, variants_json, definition, category, first_used_in],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Full-text search terminology.
+pub fn prd_search_terms(conn: &Connection, query: &str) -> Result<Vec<PrdTerm>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.canonical, t.variants, t.definition, t.category, t.first_used_in, t.created_at, t.updated_at
+         FROM terminology t
+         INNER JOIN terminology_fts fts ON t.id = fts.rowid
+         WHERE terminology_fts MATCH ?1
+         ORDER BY rank
+         LIMIT 20",
+    )?;
+
+    let rows = stmt
+        .query_map(params![query], |row| {
+            Ok(PrdTerm {
+                id: row.get(0)?,
+                canonical: row.get(1)?,
+                variants: row.get(2)?,
+                definition: row.get(3)?,
+                category: row.get(4)?,
+                first_used_in: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(rows)
+}
+
+/// List all terminology entries, optionally filtered by category.
+pub fn prd_list_terms(conn: &Connection, category: Option<&str>) -> Result<Vec<PrdTerm>> {
+    let (sql, param): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match category {
+        Some(cat) => (
+            "SELECT id, canonical, variants, definition, category, first_used_in, created_at, updated_at
+             FROM terminology WHERE category = ?1 ORDER BY canonical",
+            vec![Box::new(cat.to_string())],
+        ),
+        None => (
+            "SELECT id, canonical, variants, definition, category, first_used_in, created_at, updated_at
+             FROM terminology ORDER BY canonical",
+            vec![],
+        ),
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> = param.iter().map(|p| p.as_ref()).collect();
+
+    let rows = stmt
+        .query_map(params_refs.as_slice(), |row| {
+            Ok(PrdTerm {
+                id: row.get(0)?,
+                canonical: row.get(1)?,
+                variants: row.get(2)?,
+                definition: row.get(3)?,
+                category: row.get(4)?,
+                first_used_in: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(rows)
+}
+
+/// Delete a terminology entry by canonical name.
+pub fn prd_delete_term(conn: &Connection, canonical: &str) -> Result<()> {
+    conn.execute("DELETE FROM terminology WHERE canonical = ?1", params![canonical])?;
+    Ok(())
+}
+
+// --- Sources CRUD ---
+
+/// Record a source file import.
+pub fn prd_record_source(
+    conn: &Connection,
+    file_path: &str,
+    file_size: Option<i64>,
+    modified_at: Option<&str>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO sources (file_path, file_size, modified_at) VALUES (?1, ?2, ?3)",
+        params![file_path, file_size, modified_at],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// List all recorded source files.
+pub fn prd_list_sources(conn: &Connection) -> Result<Vec<PrdSource>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, file_path, imported_at, file_size, modified_at FROM sources ORDER BY imported_at DESC",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(PrdSource {
+                id: row.get(0)?,
+                file_path: row.get(1)?,
+                imported_at: row.get(2)?,
+                file_size: row.get(3)?,
+                modified_at: row.get(4)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(rows)
+}
+
+// --- Meta CRUD ---
+
+/// Set a metadata key-value pair (upsert).
+pub fn prd_meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Get a metadata value by key.
+pub fn prd_meta_get(conn: &Connection, key: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT value FROM meta WHERE key = ?1")?;
+    let result = stmt.query_row(params![key], |row| row.get(0)).ok();
+    Ok(result)
 }
