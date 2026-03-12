@@ -312,29 +312,12 @@ Respond ONLY with valid JSON."#
             // when technical details are available. This fallback uses only gathered_info.
             build_build_test_config_prompt(&state.gathered_info)
         }
-        WizardPhase::IterationMode => format!(
-            r#"You are recommending an iteration mode for autonomous development.
-
-{prior_context}
-
-Available modes:
-- autonomous: Run all tasks, commit on pass, no stops
-- review_every:N: Pause for review after every N completed tasks
-- review_each: Pause after every task for approval
-
-Based on the project scope, task count, and complexity, recommend a mode.
-
-Respond in JSON format:
-{{
-  "recommended_mode": "autonomous",
-  "review_interval": null,
-  "ai_cli": "claude",
-  "subagent_timeout": 1800,
-  "rationale": "why this mode"
-}}
-
-Respond ONLY with valid JSON."#
-        ),
+        WizardPhase::IterationMode => {
+            // Phase 8 uses build_iteration_mode_prompt() for the full prompt
+            // when project context and task count are available. This fallback
+            // uses only gathered_info with a zero task count.
+            build_iteration_mode_prompt(&state.gathered_info, 0)
+        }
         WizardPhase::Launch => {
             // Phase 9 is not an AI provider call — it prints a summary.
             // This prompt is not expected to be sent to a provider.
@@ -993,6 +976,211 @@ fn apply_build_test_config(
     };
 
     Ok((build_cmd, test_cmd, steps_count))
+}
+
+/// Build the phase 8 (Iteration Mode) prompt with project context and task count.
+///
+/// Unlike generic phases that only use `gathered_info` as prior context, phase 8
+/// extracts the project name, task count, and complexity indicators from the
+/// accumulated wizard state so the AI can recommend an appropriate iteration mode.
+///
+/// # Arguments
+/// * `gathered_info` - Accumulated wizard state from phases 1-7
+/// * `task_count` - Number of pending/in-progress tasks in the database
+pub fn build_iteration_mode_prompt(gathered_info: &JsonValue, task_count: usize) -> String {
+    let project_name = gathered_info
+        .get("vision")
+        .and_then(|v| v.get("project_name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("unknown");
+
+    let complexity_context = {
+        let mut parts: Vec<String> = Vec::new();
+
+        // Extract feature count from functionality phase
+        if let Some(functionality) = gathered_info.get("functionality") {
+            if let Some(features) = functionality.get("mvp_features").and_then(|f| f.as_array()) {
+                parts.push(format!("- MVP features: {}", features.len()));
+            }
+        }
+
+        // Extract integration count from technical phase
+        if let Some(technical) = gathered_info.get("technical") {
+            if let Some(integrations) = technical.get("integrations").and_then(|i| i.as_array()) {
+                parts.push(format!("- External integrations: {}", integrations.len()));
+            }
+            if let Some(constraints) = technical.get("constraints").and_then(|c| c.as_array()) {
+                parts.push(format!("- Constraints: {}", constraints.len()));
+            }
+        }
+
+        // Extract gap count from gap analysis phase
+        if let Some(gap_analysis) = gathered_info.get("gap_analysis") {
+            if let Some(gaps) = gap_analysis.get("gaps").and_then(|g| g.as_array()) {
+                parts.push(format!("- Identified gaps: {}", gaps.len()));
+            }
+        }
+
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("\n## Complexity Indicators\n{}\n", parts.join("\n"))
+        }
+    };
+
+    let prd_context = if gathered_info.is_object()
+        && !gathered_info.as_object().unwrap().is_empty()
+    {
+        format!(
+            "\n## Full PRD Context (from phases 1-7)\n```json\n{}\n```\n",
+            serde_json::to_string_pretty(gathered_info).unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+
+    format!(
+        r#"You are recommending an iteration mode for autonomous AI development of a software project.
+
+## Project Summary
+- Project: {project_name}
+- Pending tasks: {task_count}
+{complexity_context}
+{prd_context}
+Available iteration modes:
+- "autonomous": Run all tasks without stopping. Commit on pass, skip to next on failure. Best for well-specified projects with strong test coverage.
+- "review_every:N": Pause for human review after every N completed tasks. Good balance of speed and oversight.
+- "review_each": Pause after every single task for human approval before continuing. Best for complex, high-risk, or exploratory projects.
+
+Consider:
+1. More tasks and higher complexity → more review points
+2. External integrations and constraints → more risk → more review
+3. Well-defined, isolated tasks → safer for autonomous mode
+4. Projects with many dependencies between tasks → benefit from review
+
+Respond in JSON format:
+{{
+  "recommended_mode": "autonomous",
+  "review_interval": null,
+  "ai_cli": "claude",
+  "subagent_timeout": 1800,
+  "rationale": "why this mode is appropriate for this project"
+}}
+
+Notes:
+- "recommended_mode" must be one of: "autonomous", "review_every", "review_each"
+- "review_interval" should be a positive integer when mode is "review_every", null otherwise
+- "ai_cli" should be "claude", "codex", or "gemini"
+- "subagent_timeout" is in seconds (default 1800 = 30 minutes)
+
+Respond ONLY with valid JSON."#
+    )
+}
+
+/// Run wizard phase 8: Iteration Mode.
+///
+/// Sends the project context and task count to the AI provider to get a
+/// recommended iteration mode. Writes the results (mode, review_interval,
+/// ai_cli, subagent_timeout) to the config table.
+///
+/// Returns the recommended mode string.
+pub async fn run_wizard_phase_8(
+    provider: &dyn Provider,
+    prd_conn: &Connection,
+    state: &mut WizardState,
+) -> Result<String> {
+    if state.completed_phases.contains(&(WizardPhase::IterationMode as i32)) {
+        return Ok(String::new());
+    }
+
+    state.current_phase = WizardPhase::IterationMode;
+    save_wizard_state(prd_conn, state)?;
+
+    // 1. Count pending tasks from the DIAL database
+    let phase_conn = crate::db::get_db(None)?;
+    let task_count: usize = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'in_progress')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
+
+    // 2. Build the prompt with project context and task count
+    let prompt = build_iteration_mode_prompt(&state.gathered_info, task_count);
+
+    // 3. Send to provider and parse JSON response
+    let response = execute_wizard_prompt(provider, &prompt).await?;
+    let data = parse_json_response(&response, provider, &prompt).await?;
+
+    // 4. Apply iteration mode config to the database
+    let mode = apply_iteration_mode(&phase_conn, &data)?;
+
+    // 5. Store in wizard state and mark complete
+    state.set_phase_data(WizardPhase::IterationMode, data);
+    state.mark_phase_complete(WizardPhase::IterationMode);
+    save_wizard_state(prd_conn, state)?;
+
+    Ok(mode)
+}
+
+/// Apply the AI-recommended iteration mode to the database.
+///
+/// Writes `iteration_mode`, `review_interval`, `ai_cli`, and `subagent_timeout`
+/// to the config table.
+///
+/// Returns the resolved mode string (e.g., "autonomous", "review_every:5", "review_each").
+fn apply_iteration_mode(
+    conn: &Connection,
+    mode_data: &JsonValue,
+) -> Result<String> {
+    let raw_mode = mode_data
+        .get("recommended_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("autonomous");
+
+    let review_interval = mode_data
+        .get("review_interval")
+        .and_then(|v| v.as_u64());
+
+    // Build the full mode string: "review_every:N" when interval is provided
+    let mode = if raw_mode == "review_every" {
+        let n = review_interval.unwrap_or(5);
+        format!("review_every:{}", n)
+    } else {
+        raw_mode.to_string()
+    };
+
+    let ai_cli = mode_data
+        .get("ai_cli")
+        .and_then(|v| v.as_str())
+        .unwrap_or("claude")
+        .to_string();
+
+    let subagent_timeout = mode_data
+        .get("subagent_timeout")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1800);
+
+    // Write config values
+    let now = chrono::Local::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        params!["iteration_mode", &mode, &now],
+    )?;
+    conn.execute(
+        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        params!["ai_cli", &ai_cli, &now],
+    )?;
+    conn.execute(
+        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        params!["subagent_timeout", &subagent_timeout.to_string(), &now],
+    )?;
+
+    Ok(mode)
 }
 
 /// Extract JSON from a response that might be wrapped in markdown code blocks.
