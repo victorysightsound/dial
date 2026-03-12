@@ -13,6 +13,10 @@ pub enum WizardPhase {
     Technical = 3,
     GapAnalysis = 4,
     Generate = 5,
+    TaskReview = 6,
+    BuildTestConfig = 7,
+    IterationMode = 8,
+    Launch = 9,
 }
 
 impl WizardPhase {
@@ -23,6 +27,10 @@ impl WizardPhase {
             3 => Some(Self::Technical),
             4 => Some(Self::GapAnalysis),
             5 => Some(Self::Generate),
+            6 => Some(Self::TaskReview),
+            7 => Some(Self::BuildTestConfig),
+            8 => Some(Self::IterationMode),
+            9 => Some(Self::Launch),
             _ => None,
         }
     }
@@ -34,6 +42,10 @@ impl WizardPhase {
             Self::Technical => "Technical",
             Self::GapAnalysis => "Gap Analysis",
             Self::Generate => "Generate",
+            Self::TaskReview => "Task Review",
+            Self::BuildTestConfig => "Build & Test Config",
+            Self::IterationMode => "Iteration Mode",
+            Self::Launch => "Launch",
         }
     }
 
@@ -290,6 +302,87 @@ Respond in JSON format:
 
 Respond ONLY with valid JSON."#
         ),
+        WizardPhase::TaskReview => format!(
+            r#"You are reviewing and refining a task list generated from a PRD.
+
+{prior_context}
+
+Review the generated tasks and:
+1. Reorder by logical implementation sequence
+2. Add missing tasks
+3. Remove redundant ones
+4. Set dependency relationships
+5. Assign realistic priorities (1 = first, higher = later)
+
+Respond in JSON format:
+{{
+  "tasks": [
+    {{"description": "task description", "priority": 1, "spec_section": "1.2", "depends_on": [], "rationale": "why this order"}}
+  ],
+  "removed": [
+    {{"original": "task that was removed", "reason": "why"}}
+  ],
+  "added": [
+    {{"description": "new task", "reason": "why it was missing"}}
+  ]
+}}
+
+Respond ONLY with valid JSON."#
+        ),
+        WizardPhase::BuildTestConfig => format!(
+            r#"You are configuring build and test commands for a project.
+
+{prior_context}
+
+Based on the technical details (languages, frameworks, platform), suggest build and test commands
+and validation pipeline steps.
+
+Respond in JSON format:
+{{
+  "build_cmd": "cargo build",
+  "test_cmd": "cargo test",
+  "pipeline_steps": [
+    {{"name": "lint", "command": "cargo clippy", "order": 1, "required": true, "timeout": 120}},
+    {{"name": "build", "command": "cargo build", "order": 2, "required": true, "timeout": 300}},
+    {{"name": "test", "command": "cargo test", "order": 3, "required": true, "timeout": 300}}
+  ],
+  "build_timeout": 600,
+  "test_timeout": 600,
+  "rationale": "why these commands"
+}}
+
+Respond ONLY with valid JSON."#
+        ),
+        WizardPhase::IterationMode => format!(
+            r#"You are recommending an iteration mode for autonomous development.
+
+{prior_context}
+
+Available modes:
+- autonomous: Run all tasks, commit on pass, no stops
+- review_every:N: Pause for review after every N completed tasks
+- review_each: Pause after every task for approval
+
+Based on the project scope, task count, and complexity, recommend a mode.
+
+Respond in JSON format:
+{{
+  "recommended_mode": "autonomous",
+  "review_interval": null,
+  "ai_cli": "claude",
+  "subagent_timeout": 1800,
+  "rationale": "why this mode"
+}}
+
+Respond ONLY with valid JSON."#
+        ),
+        WizardPhase::Launch => {
+            // Phase 9 is not an AI provider call — it prints a summary.
+            // This prompt is not expected to be sent to a provider.
+            format!(
+                "Launch phase: no AI prompt needed. Project is ready for `dial auto-run`.\n{prior_context}"
+            )
+        }
     }
 }
 
