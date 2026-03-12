@@ -1,5 +1,52 @@
 # Changelog
 
+## 3.1.0 — 2026-03-11
+
+### PRD Wizard & Structured Spec Database
+
+Adds a standalone PRD database (`prd.db`) with hierarchical sections, terminology tracking, and an AI-assisted wizard for creating or refining specifications.
+
+#### PRD Database
+- **Separate `prd.db`** alongside the main phase database — sections, terminology, sources, wizard state, metadata
+- **Hierarchical sections** with dotted notation (1, 1.1, 1.2.1), parent linkage, sort order, word counts
+- **FTS5 full-text search** with porter tokenizer on sections and terminology, auto-synced via triggers
+- **Terminology tracking** — canonical terms with variants (JSON), definitions, categories
+- **Source file tracking** — records which files were imported with file size and modification timestamps
+
+#### PRD Wizard
+- **5-phase AI wizard**: Vision → Functionality → Technical → Gap Analysis → Generate
+- **4 templates**: `spec`, `architecture`, `api`, `mvp` — each with purpose-built section structures
+- **`--from` mode** — feed an existing document through the wizard for AI-assisted refinement
+- **Pause/resume** — wizard state persisted to `prd.db`, resume with `--resume`
+- **Auto-generates** PRD sections, terminology entries, and linked DIAL tasks on completion
+
+#### Enhanced Markdown Parser
+- Code fence awareness (backtick and tilde fences)
+- Hierarchical section ID generation using dotted notation with counter arrays
+- Parent chain determination via backward level search
+- Duplicate ID handling with `_2`, `_3` suffixes
+- Multi-file import with automatic top-level ID offsetting
+
+#### New CLI Commands
+- `dial spec import --dir <path>` — import markdown files into prd.db
+- `dial spec wizard --template <name> [--from <doc>] [--resume]` — run the PRD wizard
+- `dial spec migrate` — migrate legacy `spec_sections` into prd.db
+- `dial spec term add/list/search` — terminology management
+- `dial spec check` — PRD health summary
+- `dial spec prd <section_id>` — show section by dotted ID
+- `dial spec prd-search <query>` — full-text search PRD sections
+
+#### Engine & Integration
+- 10 new Engine methods: `prd_import`, `prd_search`, `prd_show`, `prd_list`, `prd_term_add`, `prd_term_list`, `prd_term_search`, `prd_wizard`, `prd_migrate`, plus `prd_conn` helper
+- Context assembly prefers `prd.db` when available, falls back to `spec_sections` for backward compatibility
+- Migration 10: `prd_section_id TEXT` column on tasks table for PRD section linking
+- 7 new event variants: `PrdImported`, `WizardPhaseStarted`, `WizardPhaseCompleted`, `WizardCompleted`, `WizardPaused`, `WizardResumed`, `TermAdded`
+- 4 new error variants: `PrdSectionNotFound`, `WizardError`, `TemplateNotFound`, `ProviderRequired`
+- `dial index` now shows deprecation notice suggesting `dial spec import`
+- 13 new integration tests covering import pipeline, terminology CRUD, section CRUD, context assembly, wizard state persistence, backward compatibility
+
+---
+
 ## 3.0.0 — 2025-03-11
 
 Complete ground-up rewrite as a Rust workspace with embeddable library.
@@ -7,7 +54,7 @@ Complete ground-up rewrite as a Rust workspace with embeddable library.
 ### Architecture
 - **Workspace restructure** — three crates: `dial-core` (library), `dial-cli` (binary), `dial-providers` (AI backends)
 - **Engine struct** — central API wrapping all operations as async methods
-- **Versioned migrations** — 9 sequential SQLite migrations, auto-run on database open
+- **Versioned migrations** — 10 sequential SQLite migrations, auto-run on database open
 - **Full async** — all Engine methods are async via tokio
 
 ### New Features

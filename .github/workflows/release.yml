@@ -47,14 +47,13 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Build
-        working-directory: dial
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         run: |
           mkdir -p dist
-          cp dial/target/${{ matrix.target }}/release/dial dist/
+          cp target/${{ matrix.target }}/release/dial dist/
           cd dist
           tar czf ../dial-${{ matrix.target }}.tar.gz dial
 
@@ -63,7 +62,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "dial/target/${{ matrix.target }}/release/dial.exe" -Destination dist/
+          Copy-Item "target/${{ matrix.target }}/release/dial.exe" -Destination dist/
           Compress-Archive -Path dist/dial.exe -DestinationPath "dial-${{ matrix.target }}.zip"
 
       - name: Upload artifact

@@ -6,7 +6,7 @@ A Rust library and CLI for autonomous AI-assisted software development.
 Persistent memory. Failure pattern detection. Structured task execution.
 Build entire projects iteratively without losing context or repeating mistakes.
 
-[Quick Start](#quick-start)&ensp;&middot;&ensp;[Recommended Workflow](#recommended-workflow)&ensp;&middot;&ensp;[Library](#library-usage)&ensp;&middot;&ensp;[CLI Reference](docs/cli-reference.md)&ensp;&middot;&ensp;[AI Integration](docs/ai-integration.md)
+[Quick Start](#quick-start)&ensp;&middot;&ensp;[Recommended Workflow](#recommended-workflow)&ensp;&middot;&ensp;[PRD Wizard](#prd-wizard)&ensp;&middot;&ensp;[Library](#library-usage)&ensp;&middot;&ensp;[CLI Reference](docs/cli-reference.md)&ensp;&middot;&ensp;[AI Integration](docs/ai-integration.md)
 
 ---
 
@@ -78,7 +78,7 @@ cp target/release/dial /usr/local/bin/
 
 ## Recommended Workflow
 
-The most effective way to use DIAL is spec-driven: write a specification first, index it, then link tasks to spec sections. This gives the AI grounded requirements at every iteration, preventing drift and duplicate work.
+The most effective way to use DIAL is spec-driven: write a specification first, import it into a structured PRD database, then link tasks to spec sections. This gives the AI grounded requirements at every iteration, preventing drift and duplicate work.
 
 ### 1. Initialize
 
@@ -90,65 +90,51 @@ dial config set build_cmd "cargo build"
 dial config set test_cmd "cargo test"
 ```
 
-### 2. Write Your Specification
+### 2. Create Your Specification
 
-Create a `specs/` directory with markdown files describing what you're building. This can be a PRD, architecture doc, or any structured requirements document.
+You have three options for getting a spec into DIAL:
+
+**Option A: Write markdown and import** — Create a `specs/` directory with markdown files:
 
 ```bash
 mkdir -p specs
+# Write your spec in specs/PRD.md
+dial spec import --dir specs
 ```
 
-Write your spec in `specs/PRD.md` using numbered sections:
-
-```markdown
-# My Project
-
-## 1. Data Model
-Users have an id, email, and name. Emails must be unique.
-Passwords are hashed with bcrypt, minimum 12 rounds.
-
-## 2. API Endpoints
-### 2.1 POST /users
-Create a new user. Validate email format and uniqueness.
-Return 201 with user object (no password field).
-
-### 2.2 GET /users/:id
-Return user by ID. Return 404 if not found.
-
-## 3. Authentication
-JWT tokens with 24h expiry. Refresh tokens stored in database.
-```
-
-DIAL parses markdown headers into sections and builds FTS5 full-text search indexes over them. Numbered sections make it easy to reference specific requirements.
-
-### 3. Index the Spec
+**Option B: Use the PRD Wizard** — Let AI help you create a structured spec interactively:
 
 ```bash
-dial index
+dial spec wizard --template mvp
 ```
 
-This scans `specs/` and indexes every section into the database. You can re-run `dial index` any time you update the spec.
+**Option C: Refine an existing document** — Feed an existing PRD/spec/architecture doc through the wizard:
 
-### 4. Add Tasks Linked to Spec Sections
+```bash
+dial spec wizard --template spec --from existing-prd.md
+```
+
+All options produce the same result: a `prd.db` database with hierarchical sections, FTS5 search, and terminology tracking.
+
+### 3. Add Tasks Linked to Spec Sections
 
 ```bash
 dial task add "Create User model with email uniqueness" -p 1 --spec 1
 dial task add "Implement POST /users endpoint" -p 2 --spec 2
-dial task add "Implement GET /users/:id endpoint" -p 3 --spec 3
-dial task add "Add JWT authentication middleware" -p 4 --spec 4
-dial task add "Write integration tests" -p 5
+dial task add "Add JWT authentication middleware" -p 3 --spec 3
+dial task add "Write integration tests" -p 4
 ```
 
-The `--spec` flag links a task to a spec section ID. When DIAL gathers context for that task, it includes the linked section automatically. Even without explicit links, DIAL searches the spec by task description and surfaces relevant sections.
+The `--spec` flag links a task to a spec section ID. When DIAL gathers context for that task, it includes the linked section automatically. Even without explicit links, DIAL searches the PRD by task description and surfaces relevant sections.
 
-### 5. Set Up Dependencies (Optional)
+### 4. Set Up Dependencies (Optional)
 
 ```bash
-dial task depends 4 1    # Auth depends on User model
-dial task depends 5 2    # Tests depend on endpoints
+dial task depends 3 1    # Auth depends on User model
+dial task depends 4 2    # Tests depend on endpoints
 ```
 
-### 6. Run the Loop
+### 5. Run the Loop
 
 **Manual mode** (you control the AI):
 
@@ -176,6 +162,102 @@ Without a spec, DIAL assembles context from learnings, solutions, and failures �
 - The token budget is spent on high-value context instead of generic history
 
 For quick prototypes or small utilities, you can skip the spec and just use tasks. But for any project with more than a handful of tasks, the spec-driven workflow is what makes DIAL effective at scale.
+
+## PRD Wizard
+
+The PRD Wizard is an AI-assisted interactive tool that helps you create a structured specification from scratch, or refine an existing document into a DIAL-ready PRD.
+
+### How It Works
+
+The wizard walks through 5 phases, using your configured AI provider to guide the conversation:
+
+| Phase | Name | What It Does |
+|-------|------|-------------|
+| 1 | **Vision** | Identifies the problem, target users, and core value proposition |
+| 2 | **Functionality** | Defines features, user stories, and requirements |
+| 3 | **Technical** | Covers architecture, data model, integrations, and constraints |
+| 4 | **Gap Analysis** | Reviews everything gathered so far for gaps, contradictions, and missing details |
+| 5 | **Generate** | Produces structured PRD sections, extracts terminology, and creates linked DIAL tasks |
+
+### Templates
+
+Four templates are available, each with a different section structure:
+
+| Template | Use For |
+|----------|---------|
+| `spec` | General product requirements (Problem, Requirements, Features, Data Model, Constraints, Acceptance Criteria) |
+| `architecture` | System architecture (Overview, Components, Data Model, Integrations, Deployment, Security) |
+| `api` | API design (Overview, Authentication, Endpoints, Data Types, Error Handling) |
+| `mvp` | Minimum viable product (Problem, MVP Features, Technical Stack, Data Model) |
+
+### Usage
+
+```bash
+# Start a new wizard session with a template
+dial spec wizard --template mvp
+
+# Refine an existing document through the wizard
+dial spec wizard --template spec --from docs/existing-prd.md
+
+# Resume a paused wizard session
+dial spec wizard --resume
+```
+
+The wizard can be paused at any phase and resumed later — state is persisted in `prd.db`.
+
+### What Gets Created
+
+After the wizard completes:
+
+- **PRD sections** in `prd.db` with hierarchical dotted IDs (1, 1.1, 1.2.1), full-text search, and word counts
+- **Terminology entries** extracted from your spec (canonical names, variants, definitions, categories)
+- **Linked DIAL tasks** ready to iterate on, each tied to its relevant PRD section
+
+### Import Without the Wizard
+
+If you already have markdown specs and don't need AI refinement:
+
+```bash
+# Import all markdown files from a directory
+dial spec import --dir specs
+
+# Migrate existing spec_sections from a legacy DIAL database
+dial spec migrate
+```
+
+### Querying the PRD
+
+```bash
+dial spec list                    # List all PRD sections with hierarchy
+dial spec prd 1.2                 # Show a specific section by dotted ID
+dial spec prd-search "auth"       # Full-text search across sections
+dial spec check                   # PRD health check (section count, word count, terms)
+```
+
+### Terminology Management
+
+```bash
+dial spec term add "API" "Application Programming Interface" -c technical --variants "api,Rest API"
+dial spec term list               # All terms
+dial spec term list -c domain     # Filter by category
+dial spec term search "auth"      # Search terms
+```
+
+### Project Structure with PRD
+
+```
+your-project/
+├── .dial/
+│   ├── mvp.db              # Engine state (tasks, iterations, failures, solutions)
+│   ├── prd.db              # PRD database (sections, terminology, sources, wizard state)
+│   ├── current_phase
+│   └── current_context.md
+├── specs/                   # Original source documents (stay intact)
+│   └── PRD.md
+└── ... your project files
+```
+
+`prd.db` is a separate SQLite database alongside the main phase database. The engine reads from it during context assembly — when a task is linked to a PRD section, that section's content is automatically included in the iteration context.
 
 ## Library Usage
 
@@ -241,12 +323,17 @@ dial task block 3 "waiting on API"  # Block with reason
 dial task depends 5 3               # Task 5 depends on task 3
 ```
 
-### Specification Search
+### Specification & PRD
 ```bash
-dial index                         # Index specs/ directory
-dial spec search "auth"            # Full-text search
-dial spec show 5                   # Show full section
-dial spec list                     # List all indexed sections
+dial spec import --dir specs       # Import markdown into prd.db
+dial spec wizard --template mvp    # AI-guided spec creation
+dial spec list                     # List PRD sections (hierarchical)
+dial spec prd 1.2                  # Show section by dotted ID
+dial spec prd-search "auth"        # Full-text search PRD
+dial spec check                    # PRD health summary
+dial spec term add "API" "def" -c technical  # Add terminology
+dial spec term list                # List all terms
+dial spec search "auth"            # Legacy spec search (fallback)
 ```
 
 ### Configurable Validation Pipeline
@@ -313,11 +400,12 @@ dial learnings search "database"
 ```
 your-project/
 ├── .dial/
-│   ├── mvp.db              # SQLite database for this phase
+│   ├── mvp.db              # Engine state (tasks, iterations, failures, solutions)
+│   ├── prd.db              # PRD database (sections, terminology, wizard state)
 │   ├── current_phase        # Active phase name
 │   ├── current_context.md   # Latest context (auto-generated)
 │   └── subagent_prompt.md   # Latest sub-agent prompt (auto-generated)
-├── specs/                   # Specification files (PRD, architecture, etc.)
+├── specs/                   # Original source documents (stay intact)
 │   └── PRD.md
 └── ... your project files
 ```

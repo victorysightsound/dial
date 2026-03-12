@@ -47,7 +47,7 @@ pub use event::{Event, EventHandler};
 pub use provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 
 /// Current DIAL version.
-pub const VERSION: &str = "3.0.0";
+pub const VERSION: &str = "3.1.0";
 /// Maximum number of fix attempts before a task is abandoned.
 pub const MAX_FIX_ATTEMPTS: u32 = 3;
 /// Minimum confidence threshold for a solution to be considered trusted.
