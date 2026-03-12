@@ -2,6 +2,7 @@ use crate::budget::{self, ContextItem};
 use crate::errors::Result;
 use crate::learning::increment_learning_reference;
 use crate::prd;
+use crate::task::find_similar_completed_tasks;
 use crate::task::models::Task;
 use crate::TRUST_THRESHOLD;
 use rusqlite::Connection;
@@ -143,6 +144,18 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
         }
     }
 
+    // Get similar completed tasks
+    let similar = find_similar_completed_tasks(conn, &task.description, 3)?;
+    if !similar.is_empty() {
+        context.push("## Similar Completed Tasks\n".to_string());
+        for (similar_task, approach) in &similar {
+            context.push(format!(
+                "SIMILAR COMPLETED TASK: {}\n{}",
+                similar_task.description, approach
+            ));
+        }
+    }
+
     // Get recent failures to avoid
     let mut stmt = conn.prepare(
         "SELECT f.error_text, fp.pattern_key
@@ -201,6 +214,7 @@ pub const PRIORITY_TASK_SPEC: u32 = 5;
 pub const PRIORITY_FTS_SPECS: u32 = 10;
 pub const PRIORITY_SUGGESTED_SOLUTIONS: u32 = 15;
 pub const PRIORITY_TRUSTED_SOLUTIONS: u32 = 20;
+pub const PRIORITY_SIMILAR_TASKS: u32 = 25;
 pub const PRIORITY_FAILURES: u32 = 30;
 pub const PRIORITY_LEARNINGS: u32 = 40;
 
@@ -324,6 +338,23 @@ pub fn gather_context_items(conn: &Connection, task: &Task) -> Result<Vec<Contex
             .collect::<Vec<_>>()
             .join("\n");
         items.push(ContextItem::new("Trusted Solutions", &content, PRIORITY_TRUSTED_SOLUTIONS));
+    }
+
+    // Similar completed tasks
+    let similar = find_similar_completed_tasks(conn, &task.description, 3)?;
+    if !similar.is_empty() {
+        let content = similar
+            .iter()
+            .map(|(t, approach)| {
+                format!("SIMILAR COMPLETED TASK: {}\n{}", t.description, approach)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        items.push(ContextItem::new(
+            "Similar Completed Tasks",
+            &content,
+            PRIORITY_SIMILAR_TASKS,
+        ));
     }
 
     // Recent failures

@@ -361,6 +361,71 @@ pub fn task_deps_satisfied(task_id: i64) -> Result<bool> {
     Ok(unsatisfied == 0)
 }
 
+// --- Similar Completed Task Context ---
+
+/// Strip common stop words from a description to produce a cleaner FTS query.
+fn strip_stop_words(description: &str) -> String {
+    const STOP_WORDS: &[&str] = &[
+        "the", "a", "an", "is", "for", "to", "of", "in", "and", "or",
+    ];
+    description
+        .split_whitespace()
+        .filter(|word| !STOP_WORDS.contains(&word.to_lowercase().as_str()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Find completed tasks similar to the given description using FTS.
+/// Returns `Vec<(Task, String)>` where the String contains the most recent
+/// successful iteration's notes and commit hash, ordered by FTS rank.
+pub fn find_similar_completed_tasks(
+    conn: &Connection,
+    description: &str,
+    limit: usize,
+) -> Result<Vec<(Task, String)>> {
+    let query = strip_stop_words(description);
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.description, t.status, t.priority, t.blocked_by,
+                t.spec_section_id, t.created_at, t.started_at, t.completed_at
+         FROM tasks t
+         INNER JOIN tasks_fts fts ON t.id = fts.rowid
+         WHERE tasks_fts MATCH ?1 AND t.status = 'completed'
+         ORDER BY rank
+         LIMIT ?2",
+    )?;
+
+    let tasks: Vec<Task> = stmt
+        .query_map(rusqlite::params![query, limit as i64], |row| Task::from_row(row))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut results = Vec::new();
+    for task in tasks {
+        let context = conn
+            .query_row(
+                "SELECT COALESCE(notes, ''), COALESCE(commit_hash, '')
+                 FROM iterations
+                 WHERE task_id = ?1 AND status = 'completed'
+                 ORDER BY ended_at DESC LIMIT 1",
+                [task.id],
+                |row| {
+                    let notes: String = row.get(0)?;
+                    let commit_hash: String = row.get(1)?;
+                    Ok(format!("Approach: {}\nCommit: {}", notes, commit_hash))
+                },
+            )
+            .unwrap_or_else(|_| "No iteration data available".to_string());
+
+        results.push((task, context));
+    }
+
+    Ok(results)
+}
+
 // --- Cross-Iteration Failure Tracking ---
 
 /// Increment total_attempts for a task when an iteration starts.
@@ -604,6 +669,128 @@ mod tests {
         // Threshold 10: neither
         let results = get_chronic_failures_with_conn(&conn, 10).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_strip_stop_words() {
+        assert_eq!(
+            strip_stop_words("Add the logging for an API endpoint"),
+            "Add logging API endpoint"
+        );
+        assert_eq!(strip_stop_words("the a an is for to of in and or"), "");
+        assert_eq!(strip_stop_words("implement feature"), "implement feature");
+        assert_eq!(strip_stop_words(""), "");
+    }
+
+    #[test]
+    fn test_strip_stop_words_case_insensitive() {
+        assert_eq!(
+            strip_stop_words("The AND Or IS"),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_find_similar_completed_tasks_empty() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO tasks (description, priority, status) VALUES ('pending task', 5, 'pending')",
+            [],
+        ).unwrap();
+
+        let results = find_similar_completed_tasks(&conn, "pending task", 3).unwrap();
+        assert!(results.is_empty(), "Should not match non-completed tasks");
+    }
+
+    #[test]
+    fn test_find_similar_completed_tasks_matches() {
+        let conn = setup_test_db();
+
+        // Insert a completed task
+        conn.execute(
+            "INSERT INTO tasks (id, description, priority, status, completed_at) VALUES (1, 'implement database migration system', 5, 'completed', '2025-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        // Insert a successful iteration with notes and commit hash
+        conn.execute(
+            "INSERT INTO iterations (task_id, status, notes, commit_hash, ended_at) VALUES (1, 'completed', 'Used ALTER TABLE for schema changes', 'abc123', '2025-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        let results = find_similar_completed_tasks(&conn, "database migration", 3).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, 1);
+        assert!(results[0].1.contains("Used ALTER TABLE for schema changes"));
+        assert!(results[0].1.contains("abc123"));
+    }
+
+    #[test]
+    fn test_find_similar_completed_tasks_limit() {
+        let conn = setup_test_db();
+
+        for i in 1..=5 {
+            conn.execute(
+                "INSERT INTO tasks (id, description, priority, status, completed_at) VALUES (?1, ?2, 5, 'completed', '2025-01-01T00:00:00Z')",
+                rusqlite::params![i, format!("implement feature variant {}", i)],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO iterations (task_id, status, notes, commit_hash, ended_at) VALUES (?1, 'completed', ?2, ?3, '2025-01-01T00:00:00Z')",
+                rusqlite::params![i, format!("notes for {}", i), format!("hash{}", i)],
+            ).unwrap();
+        }
+
+        let results = find_similar_completed_tasks(&conn, "implement feature", 2).unwrap();
+        assert_eq!(results.len(), 2, "Should respect the limit parameter");
+    }
+
+    #[test]
+    fn test_find_similar_completed_tasks_only_stop_words() {
+        let conn = setup_test_db();
+        let results = find_similar_completed_tasks(&conn, "the a an is", 3).unwrap();
+        assert!(results.is_empty(), "All-stop-words query should return empty");
+    }
+
+    #[test]
+    fn test_find_similar_completed_tasks_no_iteration_data() {
+        let conn = setup_test_db();
+
+        // Completed task but no iterations
+        conn.execute(
+            "INSERT INTO tasks (id, description, priority, status, completed_at) VALUES (1, 'setup logging infrastructure', 5, 'completed', '2025-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        let results = find_similar_completed_tasks(&conn, "logging infrastructure", 3).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].1.contains("No iteration data available"));
+    }
+
+    #[test]
+    fn test_find_similar_completed_tasks_uses_latest_iteration() {
+        let conn = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO tasks (id, description, priority, status, completed_at) VALUES (1, 'build auth system', 5, 'completed', '2025-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        // Older iteration
+        conn.execute(
+            "INSERT INTO iterations (task_id, status, notes, commit_hash, ended_at) VALUES (1, 'completed', 'old approach', 'old111', '2025-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        // Newer iteration (should be returned)
+        conn.execute(
+            "INSERT INTO iterations (task_id, status, notes, commit_hash, ended_at) VALUES (1, 'completed', 'final approach with JWT', 'new222', '2025-01-02T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        let results = find_similar_completed_tasks(&conn, "auth system", 3).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].1.contains("final approach with JWT"));
+        assert!(results[0].1.contains("new222"));
     }
 
     #[test]
