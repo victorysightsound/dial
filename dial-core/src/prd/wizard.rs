@@ -1156,6 +1156,105 @@ pub fn apply_iteration_mode(
     Ok(mode)
 }
 
+/// Run wizard phase 9: Launch Summary.
+///
+/// This phase does NOT call an AI provider. It:
+/// 1. Gathers project name from wizard state (gathered_info.vision.project_name)
+/// 2. Counts pending/in_progress tasks from the DIAL database
+/// 3. Reads build_cmd, test_cmd, iteration_mode, ai_cli from config
+/// 4. Formats and prints a launch summary
+/// 5. Writes launch_ready flag to wizard state gathered_info
+///
+/// Returns (project_name, task_count) for event emission.
+pub fn run_wizard_phase_9(
+    prd_conn: &Connection,
+    state: &mut WizardState,
+) -> Result<(String, usize)> {
+    if state.completed_phases.contains(&(WizardPhase::Launch as i32)) {
+        let project_name = state
+            .gathered_info
+            .get("vision")
+            .and_then(|v| v.get("project_name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        return Ok((project_name, 0));
+    }
+
+    state.current_phase = WizardPhase::Launch;
+    save_wizard_state(prd_conn, state)?;
+
+    // 1. Extract project name from gathered_info
+    let project_name = state
+        .gathered_info
+        .get("vision")
+        .and_then(|v| v.get("project_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    // 2. Count pending tasks from the DIAL database
+    let phase_conn = crate::db::get_db(None)?;
+    let task_count: usize = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'in_progress')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
+
+    // 3. Read config values (treat empty strings as not set)
+    let not_set = "(not set)".to_string();
+    let build_cmd = crate::config::config_get("build_cmd")?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| not_set.clone());
+    let test_cmd = crate::config::config_get("test_cmd")?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| not_set.clone());
+    let iteration_mode = crate::config::config_get("iteration_mode")?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| not_set.clone());
+    let ai_cli = crate::config::config_get("ai_cli")?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| not_set);
+
+    // 4. Print launch summary
+    println!();
+    println!("{}", crate::output::bold("Launch Summary"));
+    println!("{}", "═".repeat(50));
+    println!("  Project:        {}", crate::output::bold(&project_name));
+    println!("  Tasks:          {}", task_count);
+    println!("  Build command:  {}", build_cmd);
+    println!("  Test command:   {}", test_cmd);
+    println!("  Iteration mode: {}", iteration_mode);
+    println!("  AI CLI:         {}", ai_cli);
+    println!("{}", "═".repeat(50));
+    println!();
+    println!(
+        "{}",
+        crate::output::green(
+            "Project configured. Run `dial auto-run` to start autonomous iteration."
+        )
+    );
+
+    // 5. Write launch_ready flag to wizard state
+    let launch_data = serde_json::json!({
+        "launch_ready": true,
+        "project_name": project_name,
+        "task_count": task_count,
+        "build_cmd": build_cmd,
+        "test_cmd": test_cmd,
+        "iteration_mode": iteration_mode,
+        "ai_cli": ai_cli,
+    });
+
+    state.set_phase_data(WizardPhase::Launch, launch_data);
+    state.mark_phase_complete(WizardPhase::Launch);
+    save_wizard_state(prd_conn, state)?;
+
+    Ok((project_name, task_count))
+}
+
 /// Extract JSON from a response that might be wrapped in markdown code blocks.
 fn extract_json(text: &str) -> String {
     let trimmed = text.trim();

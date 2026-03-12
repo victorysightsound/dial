@@ -562,6 +562,141 @@ async fn test_apply_iteration_mode_review_each() {
     env::set_current_dir(original_dir).unwrap();
 }
 
+// --- Phase 9: Launch Summary ---
+
+#[tokio::test]
+async fn test_run_wizard_phase_9_writes_launch_ready() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+
+    // Set up config values as if phases 7 and 8 already ran
+    dial_core::config::config_set("build_cmd", "cargo build").unwrap();
+    dial_core::config::config_set("test_cmd", "cargo test").unwrap();
+    dial_core::config::config_set("iteration_mode", "autonomous").unwrap();
+    dial_core::config::config_set("ai_cli", "claude").unwrap();
+
+    // Add some tasks so task_count is non-zero
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["Task one", 5, "pending"],
+        )
+        .unwrap();
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["Task two", 3, "pending"],
+        )
+        .unwrap();
+
+    // Build wizard state with prior gathered_info
+    let mut state = prd::wizard::WizardState::new("spec");
+    state.set_phase_data(
+        prd::wizard::WizardPhase::Vision,
+        json!({ "project_name": "TestProject", "problem": "testing" }),
+    );
+    // Mark phases 1-8 complete
+    for phase_num in 1..=8 {
+        let _phase = prd::wizard::WizardPhase::from_i32(phase_num).unwrap();
+        if !state.completed_phases.contains(&phase_num) {
+            state.completed_phases.push(phase_num);
+        }
+        if phase_num == 8 {
+            state.current_phase = prd::wizard::WizardPhase::Launch;
+        }
+    }
+    prd::wizard::save_wizard_state(&prd_conn, &state).unwrap();
+
+    // Run phase 9
+    let (project_name, task_count) =
+        prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
+
+    assert_eq!(project_name, "TestProject");
+    assert_eq!(task_count, 2);
+
+    // Verify launch_ready flag is written in gathered_info
+    assert_eq!(
+        state.gathered_info["launch"]["launch_ready"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        state.gathered_info["launch"]["project_name"].as_str(),
+        Some("TestProject")
+    );
+    assert_eq!(state.gathered_info["launch"]["task_count"].as_u64(), Some(2));
+    assert_eq!(
+        state.gathered_info["launch"]["build_cmd"].as_str(),
+        Some("cargo build")
+    );
+
+    // Verify phase 9 is in completed_phases
+    assert!(state.completed_phases.contains(&9));
+
+    // Verify state persisted to DB
+    let reloaded = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
+    assert!(reloaded.completed_phases.contains(&9));
+    assert_eq!(
+        reloaded.gathered_info["launch"]["launch_ready"].as_bool(),
+        Some(true)
+    );
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_run_wizard_phase_9_skips_if_already_complete() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+
+    let mut state = prd::wizard::WizardState::new("spec");
+    state.set_phase_data(
+        prd::wizard::WizardPhase::Vision,
+        json!({ "project_name": "SkipProject" }),
+    );
+    // Mark phase 9 already complete
+    state.completed_phases.push(9);
+    prd::wizard::save_wizard_state(&prd_conn, &state).unwrap();
+
+    let (project_name, task_count) =
+        prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
+
+    assert_eq!(project_name, "SkipProject");
+    assert_eq!(task_count, 0);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_run_wizard_phase_9_defaults_when_no_vision() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+
+    // No vision data, no config set
+    let mut state = prd::wizard::WizardState::new("spec");
+    prd::wizard::save_wizard_state(&prd_conn, &state).unwrap();
+
+    let (project_name, task_count) =
+        prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
+
+    assert_eq!(project_name, "Unknown");
+    assert_eq!(task_count, 0);
+
+    // Verify defaults show "(not set)" for unconfigured values
+    assert_eq!(
+        state.gathered_info["launch"]["build_cmd"].as_str(),
+        Some("(not set)")
+    );
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
 // --- Load Existing Doc ---
 
 #[tokio::test]
