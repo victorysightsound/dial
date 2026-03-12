@@ -5,7 +5,7 @@ pub mod validation;
 
 use crate::db::{get_db, get_dial_dir, with_transaction};
 use crate::errors::{DialError, Result};
-use crate::failure::{find_trusted_solutions, record_failure};
+use crate::failure::record_failure;
 use crate::git::{
     checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled,
     git_commit, git_has_changes, git_is_repo, git_revert_to,
@@ -181,6 +181,10 @@ pub fn iterate_once() -> Result<(bool, String)> {
 pub struct ValidateResult {
     pub success: bool,
     pub step_results: Vec<PipelineStepResult>,
+    /// Task ID for the validated iteration (used for post-validation solution tracking).
+    pub task_id: Option<i64>,
+    /// Solutions suggested for failures during this validation (failure_id, solution_id, description, confidence).
+    pub suggested_solutions: Vec<(i64, i64, String, f64)>,
 }
 
 pub fn validate_current() -> Result<bool> {
@@ -267,7 +271,7 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
         println!("{}", dim("Categories: build, test, setup, gotcha, pattern, tool, other"));
         println!();
 
-        Ok(ValidateResult { success: true, step_results })
+        Ok(ValidateResult { success: true, step_results, task_id: Some(task_id), suggested_solutions: Vec::new() })
     } else {
         // Restore checkpoint on failure (rolls back working tree to pre-task state)
         if git_is_repo() && checkpoints_enabled() {
@@ -279,15 +283,14 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
         }
 
         // Record failure (already wrapped in its own transaction internally)
-        let (failure_id, pattern_id) = record_failure(&conn, iteration_id, &error_output, None, None)?;
+        let (failure_id, _pattern_id, suggested_solutions) = record_failure(&conn, iteration_id, &error_output, None, None)?;
         println!("{}", red(&format!("Recorded failure #{}", failure_id)));
 
-        // Check for trusted solutions
-        let solutions = find_trusted_solutions(&conn, pattern_id)?;
-        if !solutions.is_empty() {
-            println!("{}", yellow("\nTrusted solutions available:"));
-            for sol in solutions {
-                println!("  - {}", sol.description);
+        // Show auto-suggested solutions
+        if !suggested_solutions.is_empty() {
+            println!("{}", yellow("\nKnown fixes available:"));
+            for (_, desc, confidence) in &suggested_solutions {
+                println!("  - KNOWN FIX (confidence: {:.2}): {}", confidence, desc);
             }
         }
 
@@ -344,7 +347,13 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             Ok(())
         })?;
 
-        Ok(ValidateResult { success: false, step_results })
+        // Build suggested_solutions list for event emission by engine
+        let suggested_for_event: Vec<(i64, i64, String, f64)> = suggested_solutions
+            .iter()
+            .map(|(sol_id, desc, conf)| (failure_id, *sol_id, desc.clone(), *conf))
+            .collect();
+
+        Ok(ValidateResult { success: false, step_results, task_id: Some(task_id), suggested_solutions: suggested_for_event })
     }
 }
 

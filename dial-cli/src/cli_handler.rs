@@ -92,6 +92,12 @@ impl EventHandler for CliEventHandler {
             Event::SolutionFound { description, confidence } => {
                 println!("{}", output::yellow(&format!("Solution (confidence {:.2}): {}", confidence, description)));
             }
+            Event::SolutionSuggested { failure_id, solutions } => {
+                println!("{}", output::yellow(&format!("Auto-suggested {} solution(s) for failure #{}", solutions.len(), failure_id)));
+                for (_, desc, conf) in solutions {
+                    println!("  - KNOWN FIX (confidence: {:.2}): {}", conf, desc);
+                }
+            }
             Event::ConfigSet { key, value } => {
                 output::print_success(&format!("Config set: {} = {}", key, value));
             }

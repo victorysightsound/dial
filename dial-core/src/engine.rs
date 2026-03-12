@@ -347,6 +347,8 @@ impl Engine {
 
     /// Validate the current iteration (run build + test).
     /// Emits per-step events (StepPassed, StepFailed, StepSkipped) to registered handlers.
+    /// On failure: emits SolutionSuggested if trusted solutions exist for the failure pattern.
+    /// On success: increments confidence for any previously suggested solutions.
     pub async fn validate(&self) -> Result<bool> {
         let result = iteration::validate_current_with_details()?;
 
@@ -369,6 +371,36 @@ impl Engine {
                     output: step.output.clone(),
                     duration_secs: step.duration_secs,
                 });
+            }
+        }
+
+        // Emit SolutionSuggested events for failures with auto-suggested solutions
+        if !result.suggested_solutions.is_empty() {
+            // Group by failure_id
+            let mut by_failure: std::collections::HashMap<i64, Vec<(i64, String, f64)>> =
+                std::collections::HashMap::new();
+            for (failure_id, sol_id, desc, conf) in &result.suggested_solutions {
+                by_failure
+                    .entry(*failure_id)
+                    .or_default()
+                    .push((*sol_id, desc.clone(), *conf));
+            }
+            for (failure_id, solutions) in by_failure {
+                self.emit(Event::SolutionSuggested { failure_id, solutions });
+            }
+        }
+
+        // After successful validation, increment confidence for previously suggested solutions
+        if result.success {
+            if let Some(task_id) = result.task_id {
+                let conn = self.conn()?;
+                let boosted = failure::mark_solution_applications_success(&conn, task_id)?;
+                if !boosted.is_empty() {
+                    self.emit(Event::Info(format!(
+                        "Boosted confidence for {} solution(s) after successful validation",
+                        boosted.len()
+                    )));
+                }
             }
         }
 

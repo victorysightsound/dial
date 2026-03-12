@@ -121,6 +121,28 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
         }
     }
 
+    // Get recent failures with matched solutions (known fixes) — higher priority than general solutions
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT s.description, s.confidence, fp.pattern_key
+         FROM failures f
+         INNER JOIN failure_patterns fp ON f.pattern_id = fp.id
+         INNER JOIN solutions s ON s.pattern_id = fp.id
+         WHERE f.resolved = 0 AND s.confidence >= ?1
+         ORDER BY s.confidence DESC, f.created_at DESC LIMIT 5",
+    )?;
+
+    let known_fixes: Vec<(String, f64, String)> = stmt
+        .query_map([TRUST_THRESHOLD], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !known_fixes.is_empty() {
+        context.push("## Known Fixes for Recent Failures\n".to_string());
+        for (description, confidence, _pattern_key) in known_fixes {
+            context.push(format!("- KNOWN FIX (confidence: {:.2}): {}", confidence, description));
+        }
+    }
+
     // Get recent failures to avoid
     let mut stmt = conn.prepare(
         "SELECT f.error_text, fp.pattern_key
@@ -177,6 +199,7 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
 pub const PRIORITY_SIGNS: u32 = 0;
 pub const PRIORITY_TASK_SPEC: u32 = 5;
 pub const PRIORITY_FTS_SPECS: u32 = 10;
+pub const PRIORITY_SUGGESTED_SOLUTIONS: u32 = 15;
 pub const PRIORITY_TRUSTED_SOLUTIONS: u32 = 20;
 pub const PRIORITY_FAILURES: u32 = 30;
 pub const PRIORITY_LEARNINGS: u32 = 40;
@@ -256,6 +279,29 @@ pub fn gather_context_items(conn: &Connection, task: &Task) -> Result<Vec<Contex
                 PRIORITY_FTS_SPECS,
             ));
         }
+    }
+
+    // Known fixes for recent failures (higher priority than general solutions)
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT s.description, s.confidence, fp.pattern_key
+         FROM failures f
+         INNER JOIN failure_patterns fp ON f.pattern_id = fp.id
+         INNER JOIN solutions s ON s.pattern_id = fp.id
+         WHERE f.resolved = 0 AND s.confidence >= ?1
+         ORDER BY s.confidence DESC, f.created_at DESC LIMIT 5",
+    )?;
+
+    let known_fixes: Vec<(String, f64, String)> = stmt
+        .query_map([TRUST_THRESHOLD], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !known_fixes.is_empty() {
+        let content = known_fixes.iter()
+            .map(|(desc, confidence, _)| format!("- KNOWN FIX (confidence: {:.2}): {}", confidence, desc))
+            .collect::<Vec<_>>()
+            .join("\n");
+        items.push(ContextItem::new("Known Fixes for Recent Failures", &content, PRIORITY_SUGGESTED_SOLUTIONS));
     }
 
     // Trusted solutions

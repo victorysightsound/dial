@@ -68,6 +68,8 @@ pub enum Event {
     FailureRecorded { failure_id: i64, pattern_id: i64 },
     /// A trusted solution was found for a failure.
     SolutionFound { description: String, confidence: f64 },
+    /// Solutions were auto-suggested for a recorded failure pattern.
+    SolutionSuggested { failure_id: i64, solutions: Vec<(i64, String, f64)> },
 
     // --- Config Events ---
     /// A configuration key was set or updated.

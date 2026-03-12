@@ -11,8 +11,10 @@ use rusqlite::Connection;
 pub use patterns::{detect_failure_pattern, detect_failure_pattern_from_db, suggest_patterns_from_clustering, SuggestedPattern};
 pub use solutions::{
     apply_confidence_decay, apply_solution_failure, apply_solution_success,
-    find_trusted_solutions, get_solution_history, record_solution,
-    record_solution_with_source, validate_solution, Solution, SolutionEvent,
+    find_solutions_for_pattern, find_trusted_solutions, get_pending_solution_applications,
+    get_solution_history, mark_solution_applications_success, record_solution,
+    record_solution_application, record_solution_with_source, validate_solution,
+    Solution, SolutionEvent,
 };
 
 pub fn get_or_create_failure_pattern(conn: &Connection, pattern_key: &str, category: &str) -> Result<i64> {
@@ -47,7 +49,7 @@ pub fn record_failure(
     error_text: &str,
     file_path: Option<&str>,
     line_number: Option<i64>,
-) -> Result<(i64, i64)> {
+) -> Result<(i64, i64, Vec<(i64, String, f64)>)> {
     with_transaction(conn, |conn| {
         let (pattern_key, category) = detect_failure_pattern_from_db(conn, error_text);
         let pattern_id = get_or_create_failure_pattern(conn, &pattern_key, &category)?;
@@ -59,7 +61,16 @@ pub fn record_failure(
         )?;
 
         let failure_id = conn.last_insert_rowid();
-        Ok((failure_id, pattern_id))
+
+        // Auto-suggest: find trusted solutions for the matched pattern
+        let suggested_solutions = solutions::find_solutions_for_pattern(conn, pattern_id)?;
+
+        // Record each suggestion as a solution application (success=NULL until resolved)
+        for &(solution_id, _, _) in &suggested_solutions {
+            solutions::record_solution_application(conn, solution_id, failure_id, iteration_id)?;
+        }
+
+        Ok((failure_id, pattern_id, suggested_solutions))
     })
 }
 

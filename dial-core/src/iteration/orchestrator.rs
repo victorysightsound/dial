@@ -1,7 +1,7 @@
 use crate::config::config_get;
 use crate::db::{get_db, get_dial_dir};
 use crate::errors::{DialError, Result};
-use crate::failure::{find_trusted_solutions, record_failure};
+use crate::failure::record_failure;
 use crate::git::{git_commit, git_has_changes, git_is_repo};
 use crate::learning::add_learning;
 use crate::output::{bold, dim, green, red, yellow};
@@ -502,15 +502,14 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 // Validation failed
                 println!("{}", red("Validation failed."));
 
-                let (failure_id, pattern_id) = record_failure(&conn, iteration_id, &error_output, None, None)?;
+                let (failure_id, _pattern_id, suggested_solutions) = record_failure(&conn, iteration_id, &error_output, None, None)?;
                 println!("{}", dim(&format!("Recorded failure #{}", failure_id)));
 
-                // Check for trusted solutions
-                let solutions = find_trusted_solutions(&conn, pattern_id)?;
-                if !solutions.is_empty() {
-                    println!("{}", yellow("Trusted solutions available for next attempt:"));
-                    for sol in &solutions {
-                        println!("  - {}", sol.description);
+                // Show auto-suggested solutions
+                if !suggested_solutions.is_empty() {
+                    println!("{}", yellow("Known fixes available for next attempt:"));
+                    for (_, desc, confidence) in &suggested_solutions {
+                        println!("  - KNOWN FIX (confidence: {:.2}): {}", confidence, desc);
                     }
                 }
 
