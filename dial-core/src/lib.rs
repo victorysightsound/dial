@@ -40,7 +40,7 @@ pub mod validation;
 
 // Re-export commonly used items
 pub use db::{get_current_phase, get_db, get_dial_dir, init_db, with_transaction, DEFAULT_PHASE};
-pub use engine::{ApprovalMode, Engine, EngineConfig, PatternInfo, PipelineStepConfig};
+pub use engine::{ApprovalMode, DryRunResult, Engine, EngineConfig, PatternInfo, PipelineStepConfig};
 pub use metrics::{MetricsReport, TrendPoint};
 pub use errors::{DialError, Result};
 pub use event::{Event, EventHandler};

@@ -77,7 +77,15 @@ enum Commands {
     },
 
     /// Run one iteration
-    Iterate,
+    Iterate {
+        /// Preview what would happen without creating records or spawning subagents
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output format for dry-run (text, json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 
     /// Validate current iteration
     Validate,
@@ -193,6 +201,14 @@ enum Commands {
         /// AI CLI to use (claude, codex, gemini)
         #[arg(long, default_value = "claude")]
         cli: String,
+
+        /// Preview what would happen without creating records or spawning subagents
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output format for dry-run (text, json)
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -671,8 +687,17 @@ async fn run_command(command: Commands) -> Result<()> {
             }
         },
 
-        Commands::Iterate => {
-            engine.iterate().await?;
+        Commands::Iterate { dry_run, format } => {
+            if dry_run {
+                let result = engine.iterate_dry_run().await?;
+                if format == "json" {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                } else {
+                    print_dry_run_result(&result);
+                }
+            } else {
+                engine.iterate().await?;
+            }
         }
 
         Commands::Validate => {
@@ -949,8 +974,17 @@ async fn run_command(command: Commands) -> Result<()> {
             engine.orchestrate().await?;
         }
 
-        Commands::AutoRun { max, cli } => {
-            engine.auto_run(max, Some(&cli)).await?;
+        Commands::AutoRun { max, cli, dry_run, format } => {
+            if dry_run {
+                let result = engine.iterate_dry_run().await?;
+                if format == "json" {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                } else {
+                    print_dry_run_result(&result);
+                }
+            } else {
+                engine.auto_run(max, Some(&cli)).await?;
+            }
         }
     }
 
@@ -1093,5 +1127,57 @@ fn show_history(limit: usize) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_dry_run_result(result: &DryRunResult) {
+    println!("{}", output::bold("DIAL Dry Run Preview"));
+    println!("{}", "=".repeat(70));
+    println!();
+
+    println!("{}", output::bold(&format!("Task #{}: {}", result.task.id, result.task.description)));
+    println!("  Priority:     {}", result.task.priority);
+    println!("  Dependencies: {}", if result.dependencies_satisfied {
+        output::green("satisfied")
+    } else {
+        output::red("NOT satisfied")
+    });
+    println!();
+
+    println!("{}", output::bold("Context Budget"));
+    println!("  Token budget: {}", result.token_budget);
+    println!("  Tokens used:  {}", result.total_context_tokens);
+    println!();
+
+    if !result.context_items_included.is_empty() {
+        println!("{}", output::bold("Included Context Items"));
+        for (label, tokens) in &result.context_items_included {
+            println!("  {} ({} tokens)", output::green(label), tokens);
+        }
+        println!();
+    }
+
+    if !result.context_items_excluded.is_empty() {
+        println!("{}", output::bold("Excluded Context Items (budget exceeded)"));
+        for (label, tokens) in &result.context_items_excluded {
+            println!("  {} ({} tokens)", output::yellow(label), tokens);
+        }
+        println!();
+    }
+
+    if !result.suggested_solutions.is_empty() {
+        println!("{}", output::bold("Suggested Solutions"));
+        for sol in &result.suggested_solutions {
+            println!("  - {}", sol);
+        }
+        println!();
+    }
+
+    println!("{}", output::bold("Prompt Preview (first 500 chars)"));
+    println!("{}", output::dim(&"-".repeat(70)));
+    println!("{}", result.prompt_preview);
+    if result.prompt_preview.len() >= 500 {
+        println!("{}", output::dim("..."));
+    }
+    println!("{}", output::dim(&"-".repeat(70)));
 }
 

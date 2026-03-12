@@ -17,7 +17,7 @@ use chrono::Local;
 use rusqlite::Connection;
 use std::fs;
 
-pub use context::{gather_context, gather_context_budgeted, gather_context_items, generate_subagent_prompt};
+pub use context::{gather_context, gather_context_budgeted, gather_context_items, gather_context_items_pure, generate_subagent_prompt};
 pub use orchestrator::auto_run;
 pub use signal::{read_signal_file, write_signal_file, SignalFile, SubagentSignal};
 pub use validation::{run_validation, run_validation_with_details, PipelineStepResult, ValidationResult};

@@ -265,6 +265,16 @@ pub const PRIORITY_LEARNINGS: u32 = 40;
 /// Gather context as priority-ranked ContextItems for budget-aware assembly.
 /// This is the structured alternative to `gather_context()`.
 pub fn gather_context_items(conn: &Connection, task: &Task) -> Result<Vec<ContextItem>> {
+    gather_context_items_impl(conn, task, true)
+}
+
+/// Gather context items WITHOUT side effects (no learning reference increments).
+/// Used by dry-run/preview mode to inspect context without mutating the DB.
+pub fn gather_context_items_pure(conn: &Connection, task: &Task) -> Result<Vec<ContextItem>> {
+    gather_context_items_impl(conn, task, false)
+}
+
+fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: bool) -> Result<Vec<ContextItem>> {
     let mut items = Vec::new();
 
     // Signs (highest priority)
@@ -452,7 +462,9 @@ pub fn gather_context_items(conn: &Connection, task: &Task) -> Result<Vec<Contex
                     "- LEARNING (from pattern: {}): {}",
                     pkey, pl.description
                 ));
-                let _ = increment_learning_reference(conn, pl.id);
+                if track_references {
+                    let _ = increment_learning_reference(conn, pl.id);
+                }
             }
         }
 
@@ -478,7 +490,9 @@ pub fn gather_context_items(conn: &Connection, task: &Task) -> Result<Vec<Contex
     if !learnings.is_empty() {
         let content = learnings.iter()
             .map(|(id, category, description)| {
-                let _ = increment_learning_reference(conn, *id);
+                if track_references {
+                    let _ = increment_learning_reference(conn, *id);
+                }
                 let cat_str = category.as_ref().map(|c| format!("[{}]", c)).unwrap_or_default();
                 format!("- {} {}", cat_str, description)
             })
@@ -767,5 +781,88 @@ mod tests {
             !context.contains("Pattern-Linked Learnings"),
             "Should not have pattern-linked learnings without failures"
         );
+    }
+
+    #[test]
+    fn test_gather_context_items_pure_no_reference_increment() {
+        let conn = setup_context_test_db();
+
+        // Create task
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('pure test task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Add a learning
+        add_learning_with_conn(
+            &conn,
+            "Pure mode should not increment this",
+            Some("test"),
+            None,
+            None,
+        )
+        .unwrap();
+        let learning_id = conn.last_insert_rowid();
+
+        // Verify initial reference count is 0
+        let initial_refs: i64 = conn.query_row(
+            "SELECT times_referenced FROM learnings WHERE id = ?1",
+            [learning_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(initial_refs, 0);
+
+        let task = make_test_task(task_id);
+
+        // Call pure version
+        let items = gather_context_items_pure(&conn, &task).unwrap();
+        assert!(!items.is_empty(), "Should return context items");
+
+        // Verify reference count is still 0
+        let after_refs: i64 = conn.query_row(
+            "SELECT times_referenced FROM learnings WHERE id = ?1",
+            [learning_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(after_refs, 0, "Pure mode should not increment references");
+    }
+
+    #[test]
+    fn test_gather_context_items_does_increment_references() {
+        let conn = setup_context_test_db();
+
+        // Create task
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('ref test task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Add a learning
+        add_learning_with_conn(
+            &conn,
+            "Normal mode should increment this",
+            Some("test"),
+            None,
+            None,
+        )
+        .unwrap();
+        let learning_id = conn.last_insert_rowid();
+
+        let task = make_test_task(task_id);
+
+        // Call normal version (with side effects)
+        let _items = gather_context_items(&conn, &task).unwrap();
+
+        // Verify reference count was incremented
+        let after_refs: i64 = conn.query_row(
+            "SELECT times_referenced FROM learnings WHERE id = ?1",
+            [learning_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(after_refs > 0, "Normal mode should increment references");
     }
 }

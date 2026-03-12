@@ -1,3 +1,4 @@
+use crate::budget;
 use crate::config;
 use crate::db::{self, migrations};
 use crate::errors::{DialError, Result};
@@ -11,8 +12,32 @@ use crate::spec;
 use crate::task;
 use crate::task::models::Task;
 use rusqlite::Connection;
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Result of a dry-run/preview iteration. Contains all the information
+/// that would be used in a real iteration, without creating DB records
+/// or spawning subagents.
+#[derive(Debug, Clone, Serialize)]
+pub struct DryRunResult {
+    /// The task that would be executed.
+    pub task: Task,
+    /// Context items that fit within the token budget: (label, token_count).
+    pub context_items_included: Vec<(String, usize)>,
+    /// Context items excluded due to budget overflow: (label, token_count).
+    pub context_items_excluded: Vec<(String, usize)>,
+    /// Total tokens across all included context items.
+    pub total_context_tokens: usize,
+    /// The token budget that was applied.
+    pub token_budget: usize,
+    /// First 500 characters of the prompt that would be sent.
+    pub prompt_preview: String,
+    /// Descriptions of trusted solutions that would be suggested.
+    pub suggested_solutions: Vec<String>,
+    /// Whether all task dependencies are satisfied.
+    pub dependencies_satisfied: bool,
+}
 
 /// Configuration for a single validation pipeline step (from DB).
 #[derive(Debug, Clone)]
@@ -359,6 +384,110 @@ impl Engine {
     /// Run one iteration (pick next task, set up context).
     pub async fn iterate(&self) -> Result<(bool, String)> {
         iteration::iterate_once()
+    }
+
+    /// Dry-run / preview mode: selects the next task, assembles context,
+    /// generates the prompt, and returns a DryRunResult WITHOUT creating
+    /// iteration records, updating task status, or spawning subagents.
+    pub async fn iterate_dry_run(&self) -> Result<DryRunResult> {
+        let conn = self.conn()?;
+
+        // Get next pending task (same query as iterate_once / auto_run)
+        let mut stmt = conn.prepare(
+            "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+             FROM tasks WHERE status = 'pending'
+             AND id NOT IN (
+                 SELECT td.task_id FROM task_dependencies td
+                 INNER JOIN tasks dep ON dep.id = td.depends_on_id
+                 WHERE dep.status != 'completed'
+             )
+             ORDER BY priority, id LIMIT 1",
+        )?;
+
+        let task: Option<Task> = stmt.query_row([], |row| Task::from_row(row)).ok();
+
+        let task = match task {
+            Some(t) => t,
+            None => {
+                return Err(DialError::UserError("No pending tasks available for dry run.".to_string()));
+            }
+        };
+
+        // Check dependency satisfaction
+        let unsatisfied: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM task_dependencies td
+             INNER JOIN tasks t ON t.id = td.depends_on_id
+             WHERE td.task_id = ?1 AND t.status != 'completed'",
+            [task.id],
+            |row| row.get(0),
+        )?;
+        let dependencies_satisfied = unsatisfied == 0;
+
+        // Gather context items WITHOUT side effects (no reference counting)
+        let items = iteration::gather_context_items_pure(&conn, &task)?;
+
+        // Get token budget from config (default 8000)
+        let token_budget: usize = crate::config::config_get("token_budget")?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8000);
+
+        // Assemble within budget
+        let (included, excluded) = budget::assemble_context(&items, token_budget);
+
+        let context_items_included: Vec<(String, usize)> = included
+            .iter()
+            .map(|item| (item.label.clone(), item.tokens))
+            .collect();
+
+        let context_items_excluded: Vec<(String, usize)> = excluded
+            .iter()
+            .map(|item| (item.label.clone(), item.tokens))
+            .collect();
+
+        let total_context_tokens: usize = included.iter().map(|item| item.tokens).sum();
+
+        // Generate the full prompt (side-effect-free — uses gather_context which
+        // does increment references, but we use gather_context_without_signs
+        // and build the prompt manually to avoid that)
+        let context_text = budget::format_context(&included);
+        let full_prompt = format!(
+            "# DIAL Sub-Agent Task\n\nYou are a fresh AI agent spawned by DIAL to complete ONE task.\n\n## Your Task\n**Task #{id}:** {desc}\n\n{context}",
+            id = task.id,
+            desc = task.description,
+            context = context_text,
+        );
+
+        let prompt_preview = if full_prompt.len() > 500 {
+            full_prompt[..500].to_string()
+        } else {
+            full_prompt.clone()
+        };
+
+        // Find suggested solutions for recent unresolved failures
+        let mut sol_stmt = conn.prepare(
+            "SELECT DISTINCT s.description
+             FROM failures f
+             INNER JOIN failure_patterns fp ON f.pattern_id = fp.id
+             INNER JOIN solutions s ON s.pattern_id = fp.id
+             WHERE f.resolved = 0 AND s.confidence >= ?1
+             ORDER BY s.confidence DESC LIMIT 10",
+        )?;
+
+        let suggested_solutions: Vec<String> = sol_stmt
+            .query_map([crate::TRUST_THRESHOLD], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(DryRunResult {
+            task,
+            context_items_included,
+            context_items_excluded,
+            total_context_tokens,
+            token_budget,
+            prompt_preview,
+            suggested_solutions,
+            dependencies_satisfied,
+        })
     }
 
     /// Validate the current iteration (run build + test).
