@@ -377,6 +377,15 @@ enum PatternCommands {
     Promote { id: i64 },
     /// Suggest new patterns from unknown error clustering
     Suggest,
+    /// Show aggregated metrics per failure pattern
+    Metrics {
+        /// Output format (text, json)
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Sort by field (occurrences, cost, time)
+        #[arg(long, default_value = "occurrences")]
+        sort: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -779,6 +788,40 @@ async fn run_command(command: Commands) -> Result<()> {
                         }
                     }
                     println!("\n{}", output::dim("Use `dial patterns add` to create a pattern from a suggestion."));
+                }
+            }
+            Some(PatternCommands::Metrics { format, sort }) => {
+                let mut metrics = engine.pattern_metrics().await?;
+                if metrics.is_empty() {
+                    println!("{}", output::dim("No pattern metrics (no failures recorded)."));
+                } else {
+                    match sort.as_str() {
+                        "cost" => metrics.sort_by(|a, b| b.total_cost_usd.partial_cmp(&a.total_cost_usd).unwrap_or(std::cmp::Ordering::Equal)),
+                        "time" => metrics.sort_by(|a, b| b.total_resolution_time_secs.partial_cmp(&a.total_resolution_time_secs).unwrap_or(std::cmp::Ordering::Equal)),
+                        _ => metrics.sort_by(|a, b| b.total_occurrences.cmp(&a.total_occurrences)),
+                    }
+
+                    if format == "json" {
+                        let items: Vec<String> = metrics.iter().map(|m| m.to_json()).collect();
+                        println!("[{}]", items.join(","));
+                    } else {
+                        println!("{}", output::bold("Pattern Metrics"));
+                        println!("{}", "=".repeat(100));
+                        println!(
+                            "  {:<25} {:<10} {:>6} {:>10} {:>10} {:>12} {:>6} {:>6} {:>6}",
+                            "Pattern", "Category", "Count", "Avg Time", "Cost", "Tokens", "Auto", "Manual", "Open"
+                        );
+                        println!("  {}", "-".repeat(96));
+                        for m in &metrics {
+                            println!(
+                                "  {:<25} {:<10} {:>6} {:>9.1}s ${:>9.4} {:>12} {:>6} {:>6} {:>6}",
+                                m.pattern_key, m.category, m.total_occurrences,
+                                m.avg_resolution_time_secs, m.total_cost_usd,
+                                m.total_tokens_consumed,
+                                m.auto_resolved_count, m.manual_resolved_count, m.unresolved_count
+                            );
+                        }
+                    }
                 }
             }
         },

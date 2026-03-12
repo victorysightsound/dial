@@ -753,6 +753,12 @@ impl Engine {
         Ok(new_status.to_string())
     }
 
+    /// Compute aggregated metrics per failure pattern.
+    pub async fn pattern_metrics(&self) -> Result<Vec<crate::failure::PatternMetrics>> {
+        let conn = self.conn()?;
+        crate::failure::compute_pattern_metrics(&conn)
+    }
+
     // --- Solutions ---
 
     /// Apply confidence decay to stale solutions.

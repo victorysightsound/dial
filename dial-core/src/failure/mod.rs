@@ -8,6 +8,105 @@ use crate::TRUST_THRESHOLD;
 use chrono::Local;
 use rusqlite::Connection;
 
+/// Aggregated metrics for a single failure pattern.
+#[derive(Debug, Clone)]
+pub struct PatternMetrics {
+    pub pattern_key: String,
+    pub category: String,
+    pub total_occurrences: i64,
+    pub total_resolution_time_secs: f64,
+    pub avg_resolution_time_secs: f64,
+    pub total_tokens_consumed: i64,
+    pub total_cost_usd: f64,
+    pub auto_resolved_count: i64,
+    pub manual_resolved_count: i64,
+    pub unresolved_count: i64,
+    pub first_seen: String,
+    pub last_seen: String,
+}
+
+impl PatternMetrics {
+    /// Format as a JSON string.
+    pub fn to_json(&self) -> String {
+        format!(
+            r#"{{"pattern_key":"{}","category":"{}","total_occurrences":{},"total_resolution_time_secs":{:.1},"avg_resolution_time_secs":{:.1},"total_tokens_consumed":{},"total_cost_usd":{:.4},"auto_resolved_count":{},"manual_resolved_count":{},"unresolved_count":{},"first_seen":"{}","last_seen":"{}"}}"#,
+            self.pattern_key, self.category, self.total_occurrences,
+            self.total_resolution_time_secs, self.avg_resolution_time_secs,
+            self.total_tokens_consumed, self.total_cost_usd,
+            self.auto_resolved_count, self.manual_resolved_count, self.unresolved_count,
+            self.first_seen, self.last_seen,
+        )
+    }
+}
+
+/// Compute aggregated metrics per failure pattern.
+///
+/// Joins failures, iterations, provider_usage, and solutions tables to compute:
+/// - total occurrences per pattern
+/// - resolution times (from iteration duration_seconds)
+/// - tokens and cost (from provider_usage linked via iteration_id)
+/// - resolution breakdown (auto-resolved via solution, manually resolved, unresolved)
+/// - first/last seen timestamps
+pub fn compute_pattern_metrics(conn: &Connection) -> Result<Vec<PatternMetrics>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+            fp.pattern_key,
+            COALESCE(fp.category, 'unknown') as category,
+            COUNT(f.id) as total_occurrences,
+            COALESCE(SUM(i.duration_seconds), 0.0) as total_resolution_time_secs,
+            COALESCE(SUM(pu_tokens.tokens_in + pu_tokens.tokens_out), 0) as total_tokens_consumed,
+            COALESCE(SUM(pu_tokens.cost_usd), 0.0) as total_cost_usd,
+            SUM(CASE WHEN f.resolved = 1 AND f.resolved_by_solution_id IS NOT NULL THEN 1 ELSE 0 END) as auto_resolved_count,
+            SUM(CASE WHEN f.resolved = 1 AND f.resolved_by_solution_id IS NULL THEN 1 ELSE 0 END) as manual_resolved_count,
+            SUM(CASE WHEN f.resolved = 0 THEN 1 ELSE 0 END) as unresolved_count,
+            MIN(f.created_at) as first_seen,
+            MAX(f.created_at) as last_seen
+         FROM failure_patterns fp
+         INNER JOIN failures f ON f.pattern_id = fp.id
+         INNER JOIN iterations i ON f.iteration_id = i.id
+         LEFT JOIN (
+             SELECT iteration_id,
+                    SUM(tokens_in + tokens_out) as tokens_in_out_sum,
+                    SUM(tokens_in) as tokens_in,
+                    SUM(tokens_out) as tokens_out,
+                    SUM(cost_usd) as cost_usd
+             FROM provider_usage
+             GROUP BY iteration_id
+         ) pu_tokens ON pu_tokens.iteration_id = i.id
+         GROUP BY fp.id
+         ORDER BY total_occurrences DESC",
+    )?;
+
+    let metrics = stmt
+        .query_map([], |row| {
+            let total_occurrences: i64 = row.get(2)?;
+            let total_resolution_time_secs: f64 = row.get(3)?;
+            let avg_resolution_time_secs = if total_occurrences > 0 {
+                total_resolution_time_secs / total_occurrences as f64
+            } else {
+                0.0
+            };
+
+            Ok(PatternMetrics {
+                pattern_key: row.get(0)?,
+                category: row.get(1)?,
+                total_occurrences,
+                total_resolution_time_secs,
+                avg_resolution_time_secs,
+                total_tokens_consumed: row.get(4)?,
+                total_cost_usd: row.get(5)?,
+                auto_resolved_count: row.get(6)?,
+                manual_resolved_count: row.get(7)?,
+                unresolved_count: row.get(8)?,
+                first_seen: row.get::<_, String>(9).unwrap_or_default(),
+                last_seen: row.get::<_, String>(10).unwrap_or_default(),
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(metrics)
+}
+
 pub use patterns::{detect_failure_pattern, detect_failure_pattern_from_db, suggest_patterns_from_clustering, SuggestedPattern};
 pub use solutions::{
     apply_confidence_decay, apply_solution_failure, apply_solution_success,
@@ -209,4 +308,319 @@ pub fn show_solutions(trusted_only: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::schema;
+
+    /// Set up an in-memory DB with base schema + migration tables needed for pattern metrics.
+    fn setup_metrics_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .unwrap();
+        conn.execute_batch(schema::SCHEMA).unwrap();
+        // Add provider_usage table (migration 3)
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS provider_usage (
+                id INTEGER PRIMARY KEY,
+                iteration_id INTEGER,
+                provider TEXT NOT NULL,
+                model TEXT,
+                tokens_in INTEGER DEFAULT 0,
+                tokens_out INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0.0,
+                duration_secs REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (iteration_id) REFERENCES iterations(id)
+            );
+            "#,
+        )
+        .unwrap();
+        // Add solution provenance columns (migration 7)
+        conn.execute_batch(
+            r#"
+            ALTER TABLE solutions ADD COLUMN source TEXT NOT NULL DEFAULT 'auto-learned';
+            ALTER TABLE solutions ADD COLUMN last_validated_at TEXT;
+            ALTER TABLE solutions ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+            "#,
+        )
+        .unwrap();
+        // Add pattern columns (migration 6)
+        conn.execute_batch(
+            r#"
+            ALTER TABLE failure_patterns ADD COLUMN regex_pattern TEXT;
+            ALTER TABLE failure_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'suggested';
+            "#,
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_compute_pattern_metrics_empty() {
+        let conn = setup_metrics_test_db();
+        let metrics = compute_pattern_metrics(&conn).unwrap();
+        assert!(metrics.is_empty());
+    }
+
+    #[test]
+    fn test_compute_pattern_metrics_single_pattern() {
+        let conn = setup_metrics_test_db();
+
+        // Create task + iteration
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('test task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, duration_seconds) VALUES (?1, 1, 120.5)",
+            [task_id],
+        )
+        .unwrap();
+        let iteration_id = conn.last_insert_rowid();
+
+        // Create pattern
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category) VALUES ('RustCompileError', 'Rust compile error', 'build')",
+            [],
+        )
+        .unwrap();
+        let pattern_id = conn.last_insert_rowid();
+
+        // Create failure (unresolved)
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text) VALUES (?1, ?2, 'error[E0308]')",
+            rusqlite::params![iteration_id, pattern_id],
+        )
+        .unwrap();
+
+        // Add provider_usage for this iteration
+        conn.execute(
+            "INSERT INTO provider_usage (iteration_id, provider, model, tokens_in, tokens_out, cost_usd) VALUES (?1, 'anthropic', 'claude', 1000, 500, 0.05)",
+            [iteration_id],
+        )
+        .unwrap();
+
+        let metrics = compute_pattern_metrics(&conn).unwrap();
+        assert_eq!(metrics.len(), 1);
+
+        let m = &metrics[0];
+        assert_eq!(m.pattern_key, "RustCompileError");
+        assert_eq!(m.category, "build");
+        assert_eq!(m.total_occurrences, 1);
+        assert!((m.total_resolution_time_secs - 120.5).abs() < 0.1);
+        assert!((m.avg_resolution_time_secs - 120.5).abs() < 0.1);
+        assert_eq!(m.total_tokens_consumed, 1500);
+        assert!((m.total_cost_usd - 0.05).abs() < 0.001);
+        assert_eq!(m.auto_resolved_count, 0);
+        assert_eq!(m.manual_resolved_count, 0);
+        assert_eq!(m.unresolved_count, 1);
+    }
+
+    #[test]
+    fn test_compute_pattern_metrics_resolution_types() {
+        let conn = setup_metrics_test_db();
+
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Create pattern
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category) VALUES ('TestFailure', 'Test failure', 'test')",
+            [],
+        )
+        .unwrap();
+        let pattern_id = conn.last_insert_rowid();
+
+        // Create a solution
+        conn.execute(
+            "INSERT INTO solutions (pattern_id, description, confidence) VALUES (?1, 'fix it', 0.8)",
+            [pattern_id],
+        )
+        .unwrap();
+        let solution_id = conn.last_insert_rowid();
+
+        // Iteration 1: failure auto-resolved by solution
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, duration_seconds) VALUES (?1, 1, 60.0)",
+            [task_id],
+        )
+        .unwrap();
+        let iter1 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text, resolved, resolved_by_solution_id) VALUES (?1, ?2, 'fail 1', 1, ?3)",
+            rusqlite::params![iter1, pattern_id, solution_id],
+        )
+        .unwrap();
+
+        // Iteration 2: failure manually resolved (no solution)
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, duration_seconds) VALUES (?1, 2, 30.0)",
+            [task_id],
+        )
+        .unwrap();
+        let iter2 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text, resolved) VALUES (?1, ?2, 'fail 2', 1)",
+            rusqlite::params![iter2, pattern_id],
+        )
+        .unwrap();
+
+        // Iteration 3: unresolved failure
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, duration_seconds) VALUES (?1, 3, 45.0)",
+            [task_id],
+        )
+        .unwrap();
+        let iter3 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text) VALUES (?1, ?2, 'fail 3')",
+            rusqlite::params![iter3, pattern_id],
+        )
+        .unwrap();
+
+        let metrics = compute_pattern_metrics(&conn).unwrap();
+        assert_eq!(metrics.len(), 1);
+
+        let m = &metrics[0];
+        assert_eq!(m.total_occurrences, 3);
+        assert_eq!(m.auto_resolved_count, 1);
+        assert_eq!(m.manual_resolved_count, 1);
+        assert_eq!(m.unresolved_count, 1);
+        assert!((m.total_resolution_time_secs - 135.0).abs() < 0.1);
+        assert!((m.avg_resolution_time_secs - 45.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_compute_pattern_metrics_multiple_patterns() {
+        let conn = setup_metrics_test_db();
+
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Pattern A: 3 occurrences
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category) VALUES ('ErrorA', 'Error A', 'build')",
+            [],
+        )
+        .unwrap();
+        let pattern_a = conn.last_insert_rowid();
+
+        // Pattern B: 1 occurrence
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category) VALUES ('ErrorB', 'Error B', 'test')",
+            [],
+        )
+        .unwrap();
+        let pattern_b = conn.last_insert_rowid();
+
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO iterations (task_id, attempt_number, duration_seconds) VALUES (?1, ?2, 10.0)",
+                rusqlite::params![task_id, i + 1],
+            )
+            .unwrap();
+            let iter_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO failures (iteration_id, pattern_id, error_text) VALUES (?1, ?2, 'err a')",
+                rusqlite::params![iter_id, pattern_a],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, duration_seconds) VALUES (?1, 4, 20.0)",
+            [task_id],
+        )
+        .unwrap();
+        let iter_b = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text) VALUES (?1, ?2, 'err b')",
+            rusqlite::params![iter_b, pattern_b],
+        )
+        .unwrap();
+
+        let metrics = compute_pattern_metrics(&conn).unwrap();
+        assert_eq!(metrics.len(), 2);
+
+        // Default sort is by occurrences DESC
+        assert_eq!(metrics[0].pattern_key, "ErrorA");
+        assert_eq!(metrics[0].total_occurrences, 3);
+        assert_eq!(metrics[1].pattern_key, "ErrorB");
+        assert_eq!(metrics[1].total_occurrences, 1);
+    }
+
+    #[test]
+    fn test_compute_pattern_metrics_no_provider_usage() {
+        let conn = setup_metrics_test_db();
+
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, duration_seconds) VALUES (?1, 1, 50.0)",
+            [task_id],
+        )
+        .unwrap();
+        let iter_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category) VALUES ('NoUsage', 'No usage', 'runtime')",
+            [],
+        )
+        .unwrap();
+        let pattern_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text) VALUES (?1, ?2, 'some error')",
+            rusqlite::params![iter_id, pattern_id],
+        )
+        .unwrap();
+
+        let metrics = compute_pattern_metrics(&conn).unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].total_tokens_consumed, 0);
+        assert!((metrics[0].total_cost_usd - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_pattern_metrics_to_json() {
+        let m = PatternMetrics {
+            pattern_key: "TestError".to_string(),
+            category: "test".to_string(),
+            total_occurrences: 5,
+            total_resolution_time_secs: 300.0,
+            avg_resolution_time_secs: 60.0,
+            total_tokens_consumed: 5000,
+            total_cost_usd: 0.25,
+            auto_resolved_count: 2,
+            manual_resolved_count: 1,
+            unresolved_count: 2,
+            first_seen: "2026-01-01T00:00:00".to_string(),
+            last_seen: "2026-03-12T00:00:00".to_string(),
+        };
+
+        let json = m.to_json();
+        assert!(json.contains("\"pattern_key\":\"TestError\""));
+        assert!(json.contains("\"total_occurrences\":5"));
+        assert!(json.contains("\"auto_resolved_count\":2"));
+    }
 }
