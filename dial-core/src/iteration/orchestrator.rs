@@ -216,6 +216,41 @@ fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<S
     Ok(SubagentResult::parse(&output))
 }
 
+/// Iteration mode controlling review/approval behavior
+#[derive(Debug, Clone, PartialEq)]
+pub enum IterationMode {
+    /// Run all tasks without stopping
+    Autonomous,
+    /// Pause for review after every N completed tasks
+    ReviewEvery(u32),
+    /// Pause after every task for approval
+    ReviewEach,
+}
+
+impl IterationMode {
+    /// Parse from config string (e.g., "autonomous", "review_every:3", "review_each")
+    pub fn from_config(s: &str) -> Self {
+        if s == "review_each" {
+            IterationMode::ReviewEach
+        } else if let Some(n_str) = s.strip_prefix("review_every:") {
+            match n_str.parse::<u32>() {
+                Ok(n) if n > 0 => IterationMode::ReviewEvery(n),
+                _ => IterationMode::Autonomous,
+            }
+        } else {
+            IterationMode::Autonomous
+        }
+    }
+
+    pub fn display_name(&self) -> String {
+        match self {
+            IterationMode::Autonomous => "autonomous".to_string(),
+            IterationMode::ReviewEvery(n) => format!("review_every:{}", n),
+            IterationMode::ReviewEach => "review_each".to_string(),
+        }
+    }
+}
+
 /// The main auto-run orchestration loop
 pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Result<()> {
     // Determine which AI CLI to use
@@ -242,6 +277,11 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
         .and_then(|s| s.parse().ok())
         .unwrap_or(1800); // 30 minutes default
 
+    // Read iteration_mode from config
+    let iteration_mode = config_get("iteration_mode")?
+        .map(|s| IterationMode::from_config(&s))
+        .unwrap_or(IterationMode::Autonomous);
+
     let dial_dir = get_dial_dir();
     let stop_file = dial_dir.join("stop");
     let prompt_file = dial_dir.join("subagent_prompt.md");
@@ -257,6 +297,7 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
     println!();
     println!("AI CLI:     {}", ai_cli.name());
     println!("Timeout:    {}s per task", timeout_secs);
+    println!("Mode:       {}", iteration_mode.display_name());
     if let Some(max) = max_iterations {
         println!("Max tasks:  {}", max);
     }
@@ -417,6 +458,29 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
 
                 println!("{}", green(&format!("Task #{} completed successfully!", task.id)));
                 completed_count += 1;
+
+                // Check iteration_mode for review pause
+                let should_pause = match &iteration_mode {
+                    IterationMode::ReviewEach => true,
+                    IterationMode::ReviewEvery(n) => completed_count % n == 0,
+                    IterationMode::Autonomous => false,
+                };
+
+                if should_pause {
+                    // Set the iteration to awaiting_approval so approve/reject flow works
+                    conn.execute(
+                        "UPDATE iterations SET status = 'awaiting_approval' WHERE id = ?1",
+                        [iteration_id],
+                    )?;
+
+                    println!();
+                    println!("{}", yellow(&format!(
+                        "Review pause ({}) — {} task(s) completed.",
+                        iteration_mode.display_name(), completed_count
+                    )));
+                    println!("{}", yellow("Run `dial approve` to continue or `dial reject` to stop."));
+                    break;
+                }
             } else {
                 // Validation failed
                 println!("{}", red("Validation failed."));
@@ -618,5 +682,42 @@ DIAL_COMPLETE: Implemented the feature successfully
         let output = "When done, output: DIAL_COMPLETE: your message here";
         let result = SubagentResult::parse(output);
         assert!(!result.complete); // Should be ignored as it contains "output:"
+    }
+
+    #[test]
+    fn test_iteration_mode_autonomous() {
+        assert_eq!(IterationMode::from_config("autonomous"), IterationMode::Autonomous);
+    }
+
+    #[test]
+    fn test_iteration_mode_review_each() {
+        assert_eq!(IterationMode::from_config("review_each"), IterationMode::ReviewEach);
+    }
+
+    #[test]
+    fn test_iteration_mode_review_every() {
+        assert_eq!(IterationMode::from_config("review_every:3"), IterationMode::ReviewEvery(3));
+        assert_eq!(IterationMode::from_config("review_every:1"), IterationMode::ReviewEvery(1));
+        assert_eq!(IterationMode::from_config("review_every:10"), IterationMode::ReviewEvery(10));
+    }
+
+    #[test]
+    fn test_iteration_mode_review_every_invalid_falls_back() {
+        // Zero or negative → falls back to autonomous
+        assert_eq!(IterationMode::from_config("review_every:0"), IterationMode::Autonomous);
+        assert_eq!(IterationMode::from_config("review_every:abc"), IterationMode::Autonomous);
+    }
+
+    #[test]
+    fn test_iteration_mode_unknown_falls_back() {
+        assert_eq!(IterationMode::from_config("unknown"), IterationMode::Autonomous);
+        assert_eq!(IterationMode::from_config(""), IterationMode::Autonomous);
+    }
+
+    #[test]
+    fn test_iteration_mode_display_name() {
+        assert_eq!(IterationMode::Autonomous.display_name(), "autonomous");
+        assert_eq!(IterationMode::ReviewEach.display_name(), "review_each");
+        assert_eq!(IterationMode::ReviewEvery(5).display_name(), "review_every:5");
     }
 }
