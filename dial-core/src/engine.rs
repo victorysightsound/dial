@@ -880,6 +880,43 @@ impl Engine {
         Ok(())
     }
 
+    /// Run the full new-project wizard (phases 1-9).
+    ///
+    /// Used by `dial new` to create a project from scratch, including
+    /// spec generation, task review, build/test config, iteration mode,
+    /// and launch summary.
+    pub async fn new_project(
+        &self,
+        template: &str,
+        from_doc: Option<&str>,
+        resume: bool,
+    ) -> Result<()> {
+        let provider = self.provider.as_ref()
+            .ok_or(DialError::ProviderRequired)?;
+
+        let conn = self.prd_conn()?;
+
+        if resume {
+            self.emit(Event::WizardResumed { phase: 0 });
+        }
+
+        let result = prd::wizard::run_wizard(
+            provider.as_ref(),
+            &conn,
+            template,
+            from_doc,
+            resume,
+            true,
+        ).await?;
+
+        self.emit(Event::WizardCompleted {
+            sections_generated: result.sections_generated,
+            tasks_generated: result.tasks_generated,
+        });
+
+        Ok(())
+    }
+
     /// Migrate existing spec_sections from the phase DB into prd.db.
     pub async fn prd_migrate(&self) -> Result<usize> {
         let count = prd::import::migrate_spec_sections_to_prd()?;
