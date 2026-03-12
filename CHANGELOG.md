@@ -1,5 +1,42 @@
 # Changelog
 
+## 3.2.0 — 2026-03-12
+
+### Unified Project Wizard (`dial new`)
+
+Rewrites the 5-phase PRD wizard into a seamless 9-phase guided flow that takes a user from zero to autonomous iteration with one command.
+
+#### New Command: `dial new`
+- **One command to go from zero to ready**: `dial new --template mvp` handles init, spec generation, task creation, build/test config, and iteration mode selection
+- **Full pause/resume**: close terminal at any phase, `dial new --resume` picks up where you left off
+- **`dial spec wizard` unchanged**: still runs phases 1-5 only for PRD-only workflows
+
+#### New Wizard Phases
+- **Phase 6 — Task Review**: AI reviews auto-generated tasks, reorders by implementation sequence, adds missing tasks, removes redundant ones, sets dependency relationships
+- **Phase 7 — Build & Test Config**: AI suggests build/test commands and validation pipeline steps based on technical stack
+- **Phase 8 — Iteration Mode**: AI recommends iteration mode (autonomous, review every N tasks, or review each task) based on project complexity
+- **Phase 9 — Launch Summary**: Prints configured project summary, ready for `dial auto-run`
+
+#### Iteration Mode Support
+- **`autonomous`** — run all tasks, commit on pass, no stops (default)
+- **`review_every:N`** — pause for review after every N completed tasks
+- **`review_each`** — pause after every task for approval
+- `auto_run` reads `iteration_mode` from config and pauses with `awaiting_approval` status
+- Resume with `dial approve` or stop with `dial reject`
+
+#### Bug Fixes
+- **Fix nested Claude Code sessions**: `auto_run` now unsets `CLAUDECODE` env var before spawning subagent, preventing "cannot launch inside another session" errors
+- **Fix release workflow**: build from workspace root instead of legacy `dial/` subdirectory
+- **Switch to rustls**: replaced native-tls/OpenSSL with rustls for cross-compilation support
+
+#### Testing
+- 201 total tests (up from 142)
+- 27 new unit tests for WizardPhase enum, prompt builders, JSON parsing
+- 3 new integration test suites for phases 6-8
+- Full 9-phase wizard integration test with mock provider and resume verification
+
+---
+
 ## 3.1.0 — 2026-03-11
 
 ### PRD Wizard & Structured Spec Database
