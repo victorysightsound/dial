@@ -2,7 +2,7 @@ pub mod context;
 pub mod orchestrator;
 pub mod validation;
 
-use crate::db::{get_db, get_dial_dir};
+use crate::db::{get_db, get_dial_dir, with_transaction};
 use crate::errors::{DialError, Result};
 use crate::failure::{find_trusted_solutions, record_failure};
 use crate::git::{git_commit, git_has_changes, git_is_repo, git_revert_to};
@@ -119,16 +119,22 @@ pub fn iterate_once() -> Result<(bool, String)> {
             ))
         );
 
-        conn.execute(
-            "UPDATE tasks SET status = 'blocked', blocked_by = ?1 WHERE id = ?2",
-            rusqlite::params![format!("Failed {} times", MAX_FIX_ATTEMPTS), task.id],
-        )?;
+        // Wrap the block operation in a transaction
+        with_transaction(&conn, |conn| {
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', blocked_by = ?1 WHERE id = ?2",
+                rusqlite::params![format!("Failed {} times", MAX_FIX_ATTEMPTS), task.id],
+            )?;
+            Ok(())
+        })?;
 
         return Ok((true, "max_attempts".to_string()));
     }
 
-    // Create iteration
-    let _iteration_id = create_iteration(&conn, task.id, attempt_number)?;
+    // Create iteration + update task status atomically
+    let _iteration_id = with_transaction(&conn, |conn| {
+        create_iteration(conn, task.id, attempt_number)
+    })?;
     println!("Attempt {} of {}", attempt_number, MAX_FIX_ATTEMPTS);
 
     // Gather context
@@ -193,7 +199,7 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
     let step_results = validation.step_results;
 
     if success {
-        // Commit changes
+        // Commit changes (git operations happen outside the DB transaction)
         let commit_hash = if git_is_repo() && git_has_changes() {
             let message = format!("DIAL: {}", task_description);
             if let Some(hash) = git_commit(&message)? {
@@ -206,18 +212,19 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             None
         };
 
-        // Complete iteration
-        complete_iteration(&conn, iteration_id, "completed", commit_hash.as_deref(), None)?;
+        // Complete iteration + task + auto-unblock atomically
+        with_transaction(&conn, |conn| {
+            complete_iteration(conn, iteration_id, "completed", commit_hash.as_deref(), None)?;
 
-        // Complete task
-        let now = Local::now().to_rfc3339();
-        conn.execute(
-            "UPDATE tasks SET status = 'completed', completed_at = ?1 WHERE id = ?2",
-            rusqlite::params![now, task_id],
-        )?;
+            let now = Local::now().to_rfc3339();
+            conn.execute(
+                "UPDATE tasks SET status = 'completed', completed_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, task_id],
+            )?;
 
-        // Auto-unblock dependents
-        crate::task::auto_unblock_dependents(&conn, task_id)?;
+            crate::task::auto_unblock_dependents(conn, task_id)?;
+            Ok(())
+        })?;
 
         println!("{}", green(&format!("\nIteration #{} completed successfully!", iteration_id)));
         println!("{}", green(&format!("Task #{} marked as completed.", task_id)));
@@ -232,7 +239,7 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
 
         Ok(ValidateResult { success: true, step_results })
     } else {
-        // Record failure
+        // Record failure (already wrapped in its own transaction internally)
         let (failure_id, pattern_id) = record_failure(&conn, iteration_id, &error_output, None, None)?;
         println!("{}", red(&format!("Recorded failure #{}", failure_id)));
 
@@ -245,56 +252,58 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             }
         }
 
-        // Complete iteration as failed
+        // Complete iteration as failed + update task status atomically
         let notes = if error_output.len() > 500 {
             &error_output[..500]
         } else {
             &error_output
         };
-        complete_iteration(&conn, iteration_id, "failed", None, Some(notes))?;
 
-        // Check if we should revert
-        let fail_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM iterations WHERE task_id = ?1 AND status = 'failed'",
-            [task_id],
-            |row| row.get(0),
-        )?;
+        with_transaction(&conn, |conn| {
+            complete_iteration(conn, iteration_id, "failed", None, Some(notes))?;
 
-        if fail_count >= MAX_FIX_ATTEMPTS as i64 {
-            println!("{}", red(&format!("\nMax attempts ({}) reached.", MAX_FIX_ATTEMPTS)));
+            let fail_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM iterations WHERE task_id = ?1 AND status = 'failed'",
+                [task_id],
+                |row| row.get(0),
+            )?;
 
-            // Find last successful commit
-            let last_good_commit: Option<String> = conn
-                .query_row(
-                    "SELECT commit_hash FROM iterations
-                     WHERE status = 'completed' AND commit_hash IS NOT NULL
-                     ORDER BY id DESC LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .ok();
+            if fail_count >= MAX_FIX_ATTEMPTS as i64 {
+                println!("{}", red(&format!("\nMax attempts ({}) reached.", MAX_FIX_ATTEMPTS)));
 
-            if let Some(hash) = last_good_commit {
-                if git_is_repo() {
-                    println!("{}", yellow(&format!("Reverting to last good commit: {}", &hash[..8])));
-                    git_revert_to(&hash)?;
+                // Find last successful commit
+                let last_good_commit: Option<String> = conn
+                    .query_row(
+                        "SELECT commit_hash FROM iterations
+                         WHERE status = 'completed' AND commit_hash IS NOT NULL
+                         ORDER BY id DESC LIMIT 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .ok();
+
+                if let Some(hash) = last_good_commit {
+                    if git_is_repo() {
+                        println!("{}", yellow(&format!("Reverting to last good commit: {}", &hash[..8])));
+                        git_revert_to(&hash)?;
+                    }
                 }
+
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', blocked_by = ?1 WHERE id = ?2",
+                    rusqlite::params![format!("Failed {} attempts", MAX_FIX_ATTEMPTS), task_id],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE tasks SET status = 'pending' WHERE id = ?1",
+                    [task_id],
+                )?;
+                let remaining = MAX_FIX_ATTEMPTS as i64 - fail_count;
+                println!("{}", yellow(&format!("\nTask reset to pending. {} attempts remaining.", remaining)));
             }
 
-            // Block the task
-            conn.execute(
-                "UPDATE tasks SET status = 'blocked', blocked_by = ?1 WHERE id = ?2",
-                rusqlite::params![format!("Failed {} attempts", MAX_FIX_ATTEMPTS), task_id],
-            )?;
-        } else {
-            // Reset task to pending for retry
-            conn.execute(
-                "UPDATE tasks SET status = 'pending' WHERE id = ?1",
-                [task_id],
-            )?;
-            let remaining = MAX_FIX_ATTEMPTS as i64 - fail_count;
-            println!("{}", yellow(&format!("\nTask reset to pending. {} attempts remaining.", remaining)));
-        }
+            Ok(())
+        })?;
 
         Ok(ValidateResult { success: false, step_results })
     }

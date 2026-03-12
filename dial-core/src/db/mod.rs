@@ -37,6 +37,31 @@ pub fn set_current_phase(phase: &str) -> Result<()> {
     Ok(())
 }
 
+/// Execute a closure inside a SQLite transaction (BEGIN IMMEDIATE / COMMIT / ROLLBACK).
+///
+/// Uses BEGIN IMMEDIATE to acquire a write lock up front, preventing
+/// SQLITE_BUSY errors in WAL mode when multiple writers contend.
+/// On success the transaction is committed; on any error it is rolled back
+/// and the error is propagated.
+pub fn with_transaction<F, T>(conn: &Connection, f: F) -> Result<T>
+where
+    F: FnOnce(&Connection) -> Result<T>,
+{
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match f(conn) {
+        Ok(val) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(val)
+        }
+        Err(e) => {
+            // Best-effort rollback — if it fails the connection is left in
+            // an indeterminate state, but the original error is more useful.
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
 pub fn get_db(phase: Option<&str>) -> Result<Connection> {
     let db_path = get_db_path(phase);
     if !db_path.exists() {
@@ -311,4 +336,107 @@ pub fn setup_agents_md(skip_if_exists: bool) -> Result<bool> {
 
     crate::output::print_success(&format!("Added DIAL instructions to {}", agents_path.display()));
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::errors::DialError;
+
+    /// Create an in-memory SQLite connection with a simple test table.
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn row_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn with_transaction_commits_on_success() {
+        let conn = test_conn();
+
+        let result = with_transaction(&conn, |c| {
+            c.execute("INSERT INTO items (name) VALUES ('a')", [])?;
+            c.execute("INSERT INTO items (name) VALUES ('b')", [])?;
+            Ok(42)
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(row_count(&conn), 2);
+    }
+
+    #[test]
+    fn with_transaction_rolls_back_on_error() {
+        let conn = test_conn();
+
+        // Insert a row outside the transaction so we can verify it survives
+        conn.execute("INSERT INTO items (name) VALUES ('pre')", [])
+            .unwrap();
+        assert_eq!(row_count(&conn), 1);
+
+        let result: Result<()> = with_transaction(&conn, |c| {
+            c.execute("INSERT INTO items (name) VALUES ('x')", [])?;
+            c.execute("INSERT INTO items (name) VALUES ('y')", [])?;
+            // Simulate a domain error mid-transaction
+            Err(DialError::UserError("deliberate failure".into()))
+        });
+
+        assert!(result.is_err());
+        // The two inserts inside the transaction should be rolled back;
+        // only the pre-existing row remains.
+        assert_eq!(row_count(&conn), 1);
+    }
+
+    #[test]
+    fn with_transaction_propagates_original_error() {
+        let conn = test_conn();
+
+        let result: Result<()> = with_transaction(&conn, |_c| {
+            Err(DialError::TaskNotFound(999))
+        });
+
+        match result {
+            Err(DialError::TaskNotFound(id)) => assert_eq!(id, 999),
+            other => panic!("Expected TaskNotFound(999), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn with_transaction_returns_value_on_success() {
+        let conn = test_conn();
+
+        let id = with_transaction(&conn, |c| {
+            c.execute("INSERT INTO items (name) VALUES ('z')", [])?;
+            Ok(c.last_insert_rowid())
+        })
+        .unwrap();
+
+        assert!(id > 0);
+        assert_eq!(row_count(&conn), 1);
+    }
+
+    #[test]
+    fn with_transaction_partial_writes_rolled_back() {
+        let conn = test_conn();
+
+        // Multiple inserts where the closure fails after the first succeeds
+        let result = with_transaction(&conn, |c| {
+            c.execute("INSERT INTO items (name) VALUES ('first')", [])?;
+            // This will fail: NOT NULL constraint on name
+            c.execute("INSERT INTO items (name) VALUES (NULL)", [])?;
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        // Both writes should be rolled back
+        assert_eq!(row_count(&conn), 0);
+    }
 }

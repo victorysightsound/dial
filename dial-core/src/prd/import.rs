@@ -1,3 +1,4 @@
+use crate::db::with_transaction;
 use crate::errors::{DialError, Result};
 use crate::prd::{get_or_init_prd_db, prd_delete_all_sections, prd_insert_section, prd_meta_set, prd_record_source};
 use crate::prd::parser::parse_markdown_file;
@@ -39,25 +40,12 @@ pub fn prd_import(specs_dir: &str) -> Result<ImportResult> {
         return Ok(ImportResult { files: 0, sections: 0 });
     }
 
-    // Clear existing data for fresh import
-    prd_delete_all_sections(&conn)?;
-    conn.execute("DELETE FROM sources", [])?;
-
-    let mut total_sections = 0;
-    let mut global_sort_offset = 0;
-    let mut top_level_offset = 0u32;
-
+    // Parse all files before starting the transaction so parse failures
+    // don't leave the DB in a partially-cleared state.
+    let mut parsed_files = Vec::new();
     for entry in &md_files {
         let md_path = entry.path();
         let sections = parse_markdown_file(md_path)?;
-        let count = import_sections_to_db(&conn, &sections, global_sort_offset, top_level_offset)?;
-        total_sections += count;
-        global_sort_offset += count as i32;
-        // Count top-level (h1) sections in this file to offset the next file's IDs
-        let h1_count = sections.iter().filter(|s| s.level == 1).count() as u32;
-        top_level_offset += h1_count.max(1);
-
-        // Record source
         let metadata = std::fs::metadata(md_path).ok();
         let file_size = metadata.as_ref().map(|m| m.len() as i64);
         let modified = metadata
@@ -66,16 +54,37 @@ pub fn prd_import(specs_dir: &str) -> Result<ImportResult> {
                 let datetime: chrono::DateTime<chrono::Utc> = t.into();
                 datetime.format("%Y-%m-%dT%H:%M:%S").to_string()
             });
-
-        prd_record_source(
-            &conn,
-            &md_path.to_string_lossy(),
-            file_size,
-            modified.as_deref(),
-        )?;
+        parsed_files.push((md_path.to_path_buf(), sections, file_size, modified));
     }
 
-    prd_meta_set(&conn, "last_import", &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string())?;
+    // Wrap the entire clear-and-reimport in a transaction
+    let total_sections = with_transaction(&conn, |conn| {
+        prd_delete_all_sections(conn)?;
+        conn.execute("DELETE FROM sources", [])?;
+
+        let mut total_sections = 0;
+        let mut global_sort_offset = 0;
+        let mut top_level_offset = 0u32;
+
+        for (md_path, sections, file_size, modified) in &parsed_files {
+            let count = import_sections_to_db(conn, sections, global_sort_offset, top_level_offset)?;
+            total_sections += count;
+            global_sort_offset += count as i32;
+            let h1_count = sections.iter().filter(|s| s.level == 1).count() as u32;
+            top_level_offset += h1_count.max(1);
+
+            prd_record_source(
+                conn,
+                &md_path.to_string_lossy(),
+                *file_size,
+                modified.as_deref(),
+            )?;
+        }
+
+        prd_meta_set(conn, "last_import", &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string())?;
+
+        Ok(total_sections)
+    })?;
 
     Ok(ImportResult {
         files: md_files.len(),

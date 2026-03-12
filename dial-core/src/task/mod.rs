@@ -1,6 +1,6 @@
 pub mod models;
 
-use crate::db::get_db;
+use crate::db::{get_db, with_transaction};
 use crate::errors::{DialError, Result};
 use crate::output::{bold, dim, green, red, yellow};
 use chrono::Local;
@@ -117,21 +117,24 @@ pub fn task_next() -> Result<Option<Task>> {
 
 pub fn task_done(task_id: i64) -> Result<()> {
     let conn = get_db(None)?;
-    let now = Local::now().to_rfc3339();
 
-    let changed = conn.execute(
-        "UPDATE tasks SET status = 'completed', completed_at = ?1 WHERE id = ?2",
-        rusqlite::params![now, task_id],
-    )?;
+    with_transaction(&conn, |conn| {
+        let now = Local::now().to_rfc3339();
 
-    if changed == 0 {
-        return Err(DialError::TaskNotFound(task_id));
-    }
+        let changed = conn.execute(
+            "UPDATE tasks SET status = 'completed', completed_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, task_id],
+        )?;
 
-    // Auto-unblock dependents whose deps are now all satisfied
-    auto_unblock_dependents(&conn, task_id)?;
+        if changed == 0 {
+            return Err(DialError::TaskNotFound(task_id));
+        }
 
-    Ok(())
+        // Auto-unblock dependents whose deps are now all satisfied
+        auto_unblock_dependents(conn, task_id)?;
+
+        Ok(())
+    })
 }
 
 /// Check dependents of a completed task and unblock any whose dependencies are all satisfied.

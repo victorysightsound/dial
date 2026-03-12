@@ -1,7 +1,7 @@
 pub mod patterns;
 pub mod solutions;
 
-use crate::db::get_db;
+use crate::db::{get_db, with_transaction};
 use crate::errors::Result;
 use crate::output::{bold, dim, green, red, yellow};
 use crate::TRUST_THRESHOLD;
@@ -48,17 +48,19 @@ pub fn record_failure(
     file_path: Option<&str>,
     line_number: Option<i64>,
 ) -> Result<(i64, i64)> {
-    let (pattern_key, category) = detect_failure_pattern_from_db(conn, error_text);
-    let pattern_id = get_or_create_failure_pattern(conn, &pattern_key, &category)?;
+    with_transaction(conn, |conn| {
+        let (pattern_key, category) = detect_failure_pattern_from_db(conn, error_text);
+        let pattern_id = get_or_create_failure_pattern(conn, &pattern_key, &category)?;
 
-    conn.execute(
-        "INSERT INTO failures (iteration_id, pattern_id, error_text, file_path, line_number)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![iteration_id, pattern_id, error_text, file_path, line_number],
-    )?;
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text, file_path, line_number)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![iteration_id, pattern_id, error_text, file_path, line_number],
+        )?;
 
-    let failure_id = conn.last_insert_rowid();
-    Ok((failure_id, pattern_id))
+        let failure_id = conn.last_insert_rowid();
+        Ok((failure_id, pattern_id))
+    })
 }
 
 pub fn show_failures(unresolved_only: bool) -> Result<()> {
