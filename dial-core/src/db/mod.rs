@@ -112,6 +112,7 @@ pub fn init_db(phase: &str, import_solutions_from: Option<&str>, setup_agents: b
         ("test_cmd", ""),
         ("build_timeout", "600"),
         ("test_timeout", "600"),
+        ("enable_checkpoints", "true"),
         ("created_at", &now),
     ];
 

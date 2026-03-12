@@ -17,7 +17,7 @@ pub mod errors;
 pub mod event;
 /// Failure pattern detection and solution tracking.
 pub mod failure;
-/// Git repository helpers (status, commit, revert).
+/// Git repository helpers (status, commit, revert, checkpoints).
 pub mod git;
 /// Iteration lifecycle: context gathering, validation, commit.
 pub mod iteration;

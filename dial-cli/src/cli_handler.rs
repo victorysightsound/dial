@@ -196,6 +196,21 @@ impl EventHandler for CliEventHandler {
                     project_name, task_count
                 ));
             }
+            Event::CheckpointCreated { iteration_id, checkpoint_id } => {
+                println!("{}", output::dim(&format!(
+                    "Checkpoint '{}' created (iteration #{})", checkpoint_id, iteration_id
+                )));
+            }
+            Event::CheckpointRestored { iteration_id } => {
+                println!("{}", output::yellow(&format!(
+                    "Checkpoint restored for iteration #{}", iteration_id
+                )));
+            }
+            Event::CheckpointDropped { iteration_id } => {
+                println!("{}", output::dim(&format!(
+                    "Checkpoint dropped (iteration #{} passed)", iteration_id
+                )));
+            }
             Event::Info(msg) => {
                 println!("{}", msg);
             }

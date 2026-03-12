@@ -105,6 +105,14 @@ pub enum Event {
     /// Project is ready for launch.
     LaunchReady { project_name: String, task_count: usize },
 
+    // --- Checkpoint Events ---
+    /// A checkpoint was created before task execution.
+    CheckpointCreated { iteration_id: i64, checkpoint_id: String },
+    /// A checkpoint was restored after validation failure.
+    CheckpointRestored { iteration_id: i64 },
+    /// A checkpoint was dropped after successful validation.
+    CheckpointDropped { iteration_id: i64 },
+
     // --- General Events ---
     /// Informational message.
     Info(String),

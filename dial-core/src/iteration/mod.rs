@@ -5,7 +5,10 @@ pub mod validation;
 use crate::db::{get_db, get_dial_dir, with_transaction};
 use crate::errors::{DialError, Result};
 use crate::failure::{find_trusted_solutions, record_failure};
-use crate::git::{git_commit, git_has_changes, git_is_repo, git_revert_to};
+use crate::git::{
+    checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled,
+    git_commit, git_has_changes, git_is_repo, git_revert_to,
+};
 use crate::output::{bold, dim, green, print_success, red, yellow};
 use crate::task::models::Task;
 use crate::MAX_FIX_ATTEMPTS;
@@ -132,10 +135,26 @@ pub fn iterate_once() -> Result<(bool, String)> {
     }
 
     // Create iteration + update task status atomically
-    let _iteration_id = with_transaction(&conn, |conn| {
+    let iteration_id = with_transaction(&conn, |conn| {
         create_iteration(conn, task.id, attempt_number)
     })?;
     println!("Attempt {} of {}", attempt_number, MAX_FIX_ATTEMPTS);
+
+    // Create checkpoint before task execution (if enabled and in a git repo)
+    if git_is_repo() && checkpoints_enabled() {
+        let checkpoint_id = format!("{}", iteration_id);
+        match checkpoint_create(&checkpoint_id) {
+            Ok(true) => {
+                println!("{}", dim(&format!("Checkpoint created (iteration #{})", iteration_id)));
+            }
+            Ok(false) => {
+                // Working tree clean — no checkpoint needed
+            }
+            Err(e) => {
+                println!("{}", yellow(&format!("Warning: checkpoint creation failed: {}", e)));
+            }
+        }
+    }
 
     // Gather context
     let context = gather_context(&conn, &task)?;
@@ -212,6 +231,15 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             None
         };
 
+        // Drop checkpoint on success — the stash is no longer needed
+        if git_is_repo() && checkpoints_enabled() {
+            match checkpoint_drop() {
+                Ok(true) => println!("{}", dim("Checkpoint dropped (validation passed)")),
+                Ok(false) => {} // no stash to drop
+                Err(e) => println!("{}", yellow(&format!("Warning: checkpoint drop failed: {}", e))),
+            }
+        }
+
         // Complete iteration + task + auto-unblock atomically
         with_transaction(&conn, |conn| {
             complete_iteration(conn, iteration_id, "completed", commit_hash.as_deref(), None)?;
@@ -239,6 +267,15 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
 
         Ok(ValidateResult { success: true, step_results })
     } else {
+        // Restore checkpoint on failure (rolls back working tree to pre-task state)
+        if git_is_repo() && checkpoints_enabled() {
+            match checkpoint_restore() {
+                Ok(true) => println!("{}", yellow("Checkpoint restored (rolling back changes)")),
+                Ok(false) => {} // no checkpoint to restore
+                Err(e) => println!("{}", yellow(&format!("Warning: checkpoint restore failed: {}", e))),
+            }
+        }
+
         // Record failure (already wrapped in its own transaction internally)
         let (failure_id, pattern_id) = record_failure(&conn, iteration_id, &error_output, None, None)?;
         println!("{}", red(&format!("Recorded failure #{}", failure_id)));

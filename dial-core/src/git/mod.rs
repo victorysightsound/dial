@@ -1,5 +1,105 @@
+use crate::config::config_get;
 use crate::errors::{DialError, Result};
 use std::process::Command;
+
+/// Check if checkpoints are enabled via the `enable_checkpoints` config key.
+/// Defaults to true when the key is absent or not "false"/"0".
+pub fn checkpoints_enabled() -> bool {
+    match config_get("enable_checkpoints") {
+        Ok(Some(val)) => !matches!(val.as_str(), "false" | "0"),
+        _ => true,
+    }
+}
+
+/// Create a checkpoint by stashing the current working tree (including untracked files).
+/// Returns `Ok(true)` if a stash was created, `Ok(false)` if the tree was clean (no-op).
+pub fn checkpoint_create(id: &str) -> Result<bool> {
+    if !git_is_repo() {
+        return Err(DialError::NotGitRepo);
+    }
+
+    if !git_has_changes() {
+        return Ok(false);
+    }
+
+    let msg = format!("dial-checkpoint-{}", id);
+    let result = Command::new("git")
+        .args(["stash", "push", "-u", "-m", &msg])
+        .output()?;
+
+    if result.status.success() {
+        Ok(true)
+    } else {
+        let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+        Err(DialError::GitError(format!("Failed to create checkpoint: {}", stderr)))
+    }
+}
+
+/// Restore a checkpoint by popping the most recent stash, then resetting the index
+/// so all changes are unstaged (matching pre-checkpoint state).
+/// Returns `Ok(true)` on success, `Ok(false)` if there is no stash to pop.
+pub fn checkpoint_restore() -> Result<bool> {
+    if !git_is_repo() {
+        return Err(DialError::NotGitRepo);
+    }
+
+    // Check if there are any stashes
+    let list_result = Command::new("git")
+        .args(["stash", "list"])
+        .output()?;
+
+    let stash_list = String::from_utf8_lossy(&list_result.stdout);
+    if stash_list.trim().is_empty() {
+        return Ok(false);
+    }
+
+    // First, clean any current changes so the pop doesn't conflict
+    let _ = Command::new("git")
+        .args(["checkout", "--", "."])
+        .output();
+    let _ = Command::new("git")
+        .args(["clean", "-fd"])
+        .output();
+
+    let pop_result = Command::new("git")
+        .args(["stash", "pop"])
+        .output()?;
+
+    if pop_result.status.success() {
+        Ok(true)
+    } else {
+        let stderr = String::from_utf8_lossy(&pop_result.stderr).to_string();
+        Err(DialError::GitError(format!("Failed to restore checkpoint: {}", stderr)))
+    }
+}
+
+/// Drop the most recent stash entry (used after successful validation to discard the checkpoint).
+/// Returns `Ok(true)` if a stash was dropped, `Ok(false)` if there is no stash.
+pub fn checkpoint_drop() -> Result<bool> {
+    if !git_is_repo() {
+        return Err(DialError::NotGitRepo);
+    }
+
+    let list_result = Command::new("git")
+        .args(["stash", "list"])
+        .output()?;
+
+    let stash_list = String::from_utf8_lossy(&list_result.stdout);
+    if stash_list.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let drop_result = Command::new("git")
+        .args(["stash", "drop"])
+        .output()?;
+
+    if drop_result.status.success() {
+        Ok(true)
+    } else {
+        let stderr = String::from_utf8_lossy(&drop_result.stderr).to_string();
+        Err(DialError::GitError(format!("Failed to drop checkpoint: {}", stderr)))
+    }
+}
 
 pub fn git_is_repo() -> bool {
     Command::new("git")
