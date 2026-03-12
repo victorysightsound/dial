@@ -858,7 +858,7 @@ pub async fn run_wizard_phase_6(
 /// task list, and sets up dependency relationships between them.
 ///
 /// Returns (tasks_kept, tasks_added, tasks_removed) counts.
-fn apply_task_review(
+pub fn apply_task_review(
     conn: &Connection,
     review_data: &JsonValue,
 ) -> Result<(usize, usize, usize)> {
