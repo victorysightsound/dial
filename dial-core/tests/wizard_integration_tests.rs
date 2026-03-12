@@ -1196,3 +1196,431 @@ async fn test_wizard_provider_failure_propagates_error() {
     assert!(state.completed_phases.contains(&1));
     assert!(!state.completed_phases.contains(&2));
 }
+
+// ===========================================================================
+// Test: Phase 6 — task replacement with dependency relationships
+// ===========================================================================
+
+#[tokio::test]
+async fn test_phase_6_task_replacement_with_dependencies() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+    save_state_through_phase(&prd_conn, 5);
+    setup_db_through_phase(&prd_conn, 5);
+
+    // Pre-condition: 3 original tasks from phase 5 exist
+    let phase_conn = dial_core::get_db(None).unwrap();
+    let original_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(original_count, 3, "Should have 3 original tasks from phase 5");
+
+    // Verify original tasks have "Implement: " prefix
+    let old_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE description LIKE 'Implement: %'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_count, 3, "All 3 original tasks should have 'Implement: ' prefix");
+
+    // Load state and run phase 6 directly
+    let mut state = prd::wizard::load_wizard_state(&prd_conn)
+        .unwrap()
+        .unwrap();
+    let provider = SequentialMockProvider::new(vec![phase_6_response()]);
+
+    let (kept, added, removed) =
+        prd::wizard::run_wizard_phase_6(&provider, &prd_conn, &mut state)
+            .await
+            .unwrap();
+
+    assert_eq!(kept, 2);
+    assert_eq!(added, 1);
+    assert_eq!(removed, 1);
+
+    // Original "Implement: ..." tasks should be gone
+    let phase_conn = dial_core::get_db(None).unwrap();
+    let old_remaining: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE description LIKE 'Implement: %'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_remaining, 0, "Original phase 5 tasks should be deleted");
+
+    // 3 reviewed tasks should exist
+    let mut stmt = phase_conn
+        .prepare(
+            "SELECT id, description, priority, prd_section_id
+             FROM tasks WHERE status = 'pending' ORDER BY priority, id",
+        )
+        .unwrap();
+    let tasks: Vec<(i64, String, i32, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(tasks.len(), 3, "Should have 3 reviewed tasks");
+
+    // Verify descriptions, priorities, and prd_section_ids
+    assert_eq!(tasks[0].1, "Set up project scaffolding");
+    assert_eq!(tasks[0].2, 1);
+    assert_eq!(tasks[0].3, Some("1".to_string()));
+
+    assert_eq!(tasks[1].1, "Implement wizard phase engine");
+    assert_eq!(tasks[1].2, 2);
+    assert_eq!(tasks[1].3, Some("2".to_string()));
+
+    assert_eq!(tasks[2].1, "Add integration tests");
+    assert_eq!(tasks[2].2, 3);
+    assert_eq!(tasks[2].3, Some("3".to_string()));
+
+    // Verify dependency count
+    let dep_count: i64 = phase_conn
+        .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(dep_count, 2, "Should have 2 dependency relationships");
+
+    let scaffolding_id = tasks[0].0;
+    let engine_id = tasks[1].0;
+    let tests_id = tasks[2].0;
+
+    // "Implement wizard phase engine" depends on "Set up project scaffolding"
+    let dep_exists: bool = phase_conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM task_dependencies
+             WHERE task_id = ?1 AND depends_on_id = ?2",
+            rusqlite::params![engine_id, scaffolding_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(dep_exists, "Engine task should depend on scaffolding task");
+
+    // "Add integration tests" depends on "Implement wizard phase engine"
+    let dep_exists: bool = phase_conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM task_dependencies
+             WHERE task_id = ?1 AND depends_on_id = ?2",
+            rusqlite::params![tests_id, engine_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(dep_exists, "Tests task should depend on engine task");
+
+    // "Set up project scaffolding" has no dependencies
+    let scaffolding_deps: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_dependencies WHERE task_id = ?1",
+            rusqlite::params![scaffolding_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        scaffolding_deps, 0,
+        "Scaffolding task should have no dependencies"
+    );
+
+    // Verify auto_run's dependency-aware query finds ONLY scaffolding as eligible
+    // (same query from orchestrator.rs lines 330-338)
+    let eligible_id: i64 = phase_conn
+        .query_row(
+            "SELECT id FROM tasks WHERE status = 'pending'
+             AND id NOT IN (
+                 SELECT td.task_id FROM task_dependencies td
+                 INNER JOIN tasks dep ON dep.id = td.depends_on_id
+                 WHERE dep.status != 'completed'
+             )
+             ORDER BY priority, id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        eligible_id, scaffolding_id,
+        "Only scaffolding task should be eligible (no unmet dependencies)"
+    );
+
+    // Verify total eligible count is exactly 1
+    let eligible_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'
+             AND id NOT IN (
+                 SELECT td.task_id FROM task_dependencies td
+                 INNER JOIN tasks dep ON dep.id = td.depends_on_id
+                 WHERE dep.status != 'completed'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        eligible_count, 1,
+        "Exactly 1 task should be eligible when dependencies block the others"
+    );
+}
+
+// ===========================================================================
+// Test: Phase 7 — config values and pipeline step writing
+// ===========================================================================
+
+#[tokio::test]
+async fn test_phase_7_config_and_pipeline_writing() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+    save_state_through_phase(&prd_conn, 6);
+    setup_db_through_phase(&prd_conn, 6);
+
+    // Insert a pre-existing validation step to verify it gets cleared
+    let phase_conn = dial_core::get_db(None).unwrap();
+    phase_conn
+        .execute(
+            "INSERT INTO validation_steps (name, command, sort_order, required, timeout_secs)
+             VALUES ('old_step', 'echo old', 0, 1, 10)",
+            [],
+        )
+        .unwrap();
+    let pre_count: i64 = phase_conn
+        .query_row("SELECT COUNT(*) FROM validation_steps", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(pre_count, 1, "Should have 1 pre-existing validation step");
+
+    // Load state and run phase 7 directly
+    let mut state = prd::wizard::load_wizard_state(&prd_conn)
+        .unwrap()
+        .unwrap();
+    let provider = SequentialMockProvider::new(vec![phase_7_response()]);
+
+    let (build_cmd, test_cmd, steps_count) =
+        prd::wizard::run_wizard_phase_7(&provider, &prd_conn, &mut state)
+            .await
+            .unwrap();
+
+    assert_eq!(build_cmd, "cargo build --release");
+    assert_eq!(test_cmd, "cargo test --all");
+    assert_eq!(steps_count, 3);
+
+    // Verify all 4 config values
+    assert_eq!(
+        dial_core::config::config_get("build_cmd").unwrap(),
+        Some("cargo build --release".to_string())
+    );
+    assert_eq!(
+        dial_core::config::config_get("test_cmd").unwrap(),
+        Some("cargo test --all".to_string())
+    );
+    assert_eq!(
+        dial_core::config::config_get("build_timeout").unwrap(),
+        Some("300".to_string())
+    );
+    assert_eq!(
+        dial_core::config::config_get("test_timeout").unwrap(),
+        Some("120".to_string())
+    );
+
+    // Verify pre-existing step was cleared and 3 new steps inserted
+    let phase_conn = dial_core::get_db(None).unwrap();
+    let step_count: i64 = phase_conn
+        .query_row("SELECT COUNT(*) FROM validation_steps", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        step_count, 3,
+        "Old step should be cleared, 3 new steps inserted"
+    );
+
+    // No trace of the old step
+    let old_step: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM validation_steps WHERE name = 'old_step'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_step, 0, "Pre-existing 'old_step' should be cleared");
+
+    // Verify each step's properties in order
+    let mut stmt = phase_conn
+        .prepare(
+            "SELECT name, command, sort_order, required, timeout_secs
+             FROM validation_steps ORDER BY sort_order",
+        )
+        .unwrap();
+    let steps: Vec<(String, String, i32, bool, Option<i64>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i32>(2)?,
+                row.get::<_, i32>(3)? != 0,
+                row.get::<_, Option<i64>>(4)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(
+        steps[0],
+        (
+            "lint".to_string(),
+            "cargo clippy".to_string(),
+            1,
+            true,
+            Some(60)
+        )
+    );
+    assert_eq!(
+        steps[1],
+        (
+            "build".to_string(),
+            "cargo build".to_string(),
+            2,
+            true,
+            Some(300)
+        )
+    );
+    assert_eq!(
+        steps[2],
+        (
+            "test".to_string(),
+            "cargo test".to_string(),
+            3,
+            true,
+            Some(120)
+        )
+    );
+
+    // Verify wizard state was updated
+    let updated_state = prd::wizard::load_wizard_state(&prd_conn)
+        .unwrap()
+        .unwrap();
+    assert!(updated_state.completed_phases.contains(&7));
+    assert!(updated_state.gathered_info.get("build_&_test_config").is_some());
+}
+
+// ===========================================================================
+// Test: Phase 8 — iteration_mode written and readable by auto_run logic
+// ===========================================================================
+
+#[tokio::test]
+async fn test_phase_8_iteration_mode_read_by_auto_run() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+    save_state_through_phase(&prd_conn, 7);
+    setup_db_through_phase(&prd_conn, 7);
+
+    // Load state and run phase 8 directly
+    let mut state = prd::wizard::load_wizard_state(&prd_conn)
+        .unwrap()
+        .unwrap();
+    let provider = SequentialMockProvider::new(vec![phase_8_response()]);
+
+    let mode = prd::wizard::run_wizard_phase_8(&provider, &prd_conn, &mut state)
+        .await
+        .unwrap();
+
+    assert_eq!(mode, "review_every:3");
+
+    // Verify all 3 config values written by phase 8
+    let stored_mode = dial_core::config::config_get("iteration_mode")
+        .unwrap()
+        .unwrap();
+    let stored_cli = dial_core::config::config_get("ai_cli").unwrap().unwrap();
+    let stored_timeout = dial_core::config::config_get("subagent_timeout")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(stored_mode, "review_every:3");
+    assert_eq!(stored_cli, "claude");
+    assert_eq!(stored_timeout, "1800");
+
+    // Verify IterationMode::from_config parses the written value correctly.
+    // This is the SAME code path that auto_run() uses (orchestrator.rs:281-283).
+    use dial_core::iteration::orchestrator::IterationMode;
+
+    let parsed = IterationMode::from_config(&stored_mode);
+    assert_eq!(parsed, IterationMode::ReviewEvery(3));
+    assert_eq!(parsed.display_name(), "review_every:3");
+
+    // Reproduce auto_run's exact config reading pattern end-to-end
+    let auto_run_mode = dial_core::config::config_get("iteration_mode")
+        .unwrap()
+        .map(|s| IterationMode::from_config(&s))
+        .unwrap_or(IterationMode::Autonomous);
+    assert_eq!(auto_run_mode, IterationMode::ReviewEvery(3));
+
+    // Verify other IterationMode variants parse correctly
+    assert_eq!(
+        IterationMode::from_config("autonomous"),
+        IterationMode::Autonomous
+    );
+    assert_eq!(
+        IterationMode::from_config("review_each"),
+        IterationMode::ReviewEach
+    );
+    assert_eq!(
+        IterationMode::from_config("review_every:5"),
+        IterationMode::ReviewEvery(5)
+    );
+    assert_eq!(
+        IterationMode::from_config("review_every:1"),
+        IterationMode::ReviewEvery(1)
+    );
+
+    // Edge cases: invalid values fall back to Autonomous
+    assert_eq!(
+        IterationMode::from_config("review_every:0"),
+        IterationMode::Autonomous
+    );
+    assert_eq!(
+        IterationMode::from_config("review_every:abc"),
+        IterationMode::Autonomous
+    );
+    assert_eq!(
+        IterationMode::from_config("unknown_mode"),
+        IterationMode::Autonomous
+    );
+    assert_eq!(IterationMode::from_config(""), IterationMode::Autonomous);
+
+    // Verify no config means auto_run defaults to Autonomous
+    // (simulates fresh project with no phase 8)
+    dial_core::config::config_set("iteration_mode", "").unwrap();
+    let default_mode = dial_core::config::config_get("iteration_mode")
+        .unwrap()
+        .map(|s| IterationMode::from_config(&s))
+        .unwrap_or(IterationMode::Autonomous);
+    assert_eq!(default_mode, IterationMode::Autonomous);
+
+    // Verify wizard state was updated
+    let updated_state = prd::wizard::load_wizard_state(&prd_conn)
+        .unwrap()
+        .unwrap();
+    assert!(updated_state.completed_phases.contains(&8));
+    assert!(updated_state.gathered_info.get("iteration_mode").is_some());
+}
