@@ -863,15 +863,19 @@ impl Engine {
             self.emit(Event::WizardResumed { phase: 0 });
         }
 
-        let (sections_generated, tasks_generated) = prd::wizard::run_wizard(
+        let result = prd::wizard::run_wizard(
             provider.as_ref(),
             &conn,
             template,
             from_doc,
             resume,
+            false,
         ).await?;
 
-        self.emit(Event::WizardCompleted { sections_generated, tasks_generated });
+        self.emit(Event::WizardCompleted {
+            sections_generated: result.sections_generated,
+            tasks_generated: result.tasks_generated,
+        });
 
         Ok(())
     }

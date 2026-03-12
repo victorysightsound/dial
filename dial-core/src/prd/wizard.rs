@@ -94,6 +94,24 @@ impl WizardState {
     }
 }
 
+/// Result from running the wizard.
+///
+/// Captures outputs from all phases so callers can emit events or inspect results.
+#[derive(Debug, Clone, Default)]
+pub struct WizardResult {
+    pub sections_generated: usize,
+    pub tasks_generated: usize,
+    pub tasks_kept: usize,
+    pub tasks_added: usize,
+    pub tasks_removed: usize,
+    pub build_cmd: String,
+    pub test_cmd: String,
+    pub pipeline_steps: usize,
+    pub iteration_mode: String,
+    pub project_name: String,
+    pub task_count: usize,
+}
+
 /// Save wizard state to the database (upsert).
 pub fn save_wizard_state(conn: &Connection, state: &WizardState) -> Result<()> {
     let completed_json = serde_json::to_string(&state.completed_phases)
@@ -530,14 +548,19 @@ pub async fn run_wizard_phases_4_5(
     Ok((sections_generated, tasks_generated))
 }
 
-/// Run the complete wizard (all 5 phases).
+/// Run the wizard as a single phase loop.
+///
+/// When `full` is true (used by `dial new`), runs all 9 phases.
+/// When `full` is false (used by `dial spec wizard`), runs phases 1-5 only
+/// for backward compatibility.
 pub async fn run_wizard(
     provider: &dyn Provider,
     prd_conn: &Connection,
     template: &str,
     from_doc: Option<&str>,
     resume: bool,
-) -> Result<(usize, usize)> {
+    full: bool,
+) -> Result<WizardResult> {
     let mut state = if resume {
         load_wizard_state(prd_conn)?
             .unwrap_or_else(|| WizardState::new(template))
@@ -551,11 +574,142 @@ pub async fn run_wizard(
         return Err(DialError::TemplateNotFound(state.template.clone()));
     }
 
-    // Phases 1-3: Information gathering
-    run_wizard_phases_1_3(provider, prd_conn, &mut state, from_doc).await?;
+    let max_phase: i32 = if full { 9 } else { 5 };
+    let mut result = WizardResult::default();
 
-    // Phases 4-5: Gap analysis and generation
-    let result = run_wizard_phases_4_5(provider, prd_conn, &mut state, from_doc).await?;
+    for phase_num in 1..=max_phase {
+        let phase = WizardPhase::from_i32(phase_num).unwrap();
+
+        if state.completed_phases.contains(&phase_num) {
+            continue;
+        }
+
+        match phase {
+            // Phases 1-4: generic prompt → parse → store
+            WizardPhase::Vision
+            | WizardPhase::Functionality
+            | WizardPhase::Technical
+            | WizardPhase::GapAnalysis => {
+                state.current_phase = phase;
+                save_wizard_state(prd_conn, &state)?;
+
+                let prompt = build_phase_prompt(phase, &state, from_doc);
+                let response = execute_wizard_prompt(provider, &prompt).await?;
+                let data = parse_json_response(&response, provider, &prompt).await?;
+                state.set_phase_data(phase, data);
+                state.mark_phase_complete(phase);
+                save_wizard_state(prd_conn, &state)?;
+            }
+
+            // Phase 5: generate PRD sections, terminology, and DIAL tasks
+            WizardPhase::Generate => {
+                state.current_phase = phase;
+                save_wizard_state(prd_conn, &state)?;
+
+                let prompt = build_phase_prompt(phase, &state, from_doc);
+                let response = execute_wizard_prompt(provider, &prompt).await?;
+                let data = parse_json_response(&response, provider, &prompt).await?;
+
+                // Insert generated sections into prd.db
+                if let Some(sections) = data.get("sections").and_then(|s| s.as_array()) {
+                    crate::prd::prd_delete_all_sections(prd_conn)?;
+
+                    for (i, section) in sections.iter().enumerate() {
+                        let title = section.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+                        let content = section.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                        let word_count = content.split_whitespace().count() as i32;
+                        let section_id = format!("{}", i + 1);
+
+                        crate::prd::prd_insert_section(
+                            prd_conn,
+                            &section_id,
+                            title,
+                            None,
+                            1,
+                            i as i32,
+                            content,
+                            word_count,
+                        )?;
+                        result.sections_generated += 1;
+                    }
+                }
+
+                // Extract and store terminology
+                if let Some(terms) = data.get("terminology").and_then(|t| t.as_array()) {
+                    for term in terms {
+                        let canonical = term.get("term").and_then(|t| t.as_str()).unwrap_or_default();
+                        let definition = term.get("definition").and_then(|d| d.as_str()).unwrap_or_default();
+                        let category = term.get("category").and_then(|c| c.as_str()).unwrap_or("general");
+
+                        if !canonical.is_empty() {
+                            let _ = crate::prd::prd_add_term(
+                                prd_conn,
+                                canonical,
+                                "[]",
+                                definition,
+                                category,
+                                None,
+                            );
+                        }
+                    }
+                }
+
+                // Generate DIAL tasks from sections
+                let phase_conn = crate::db::get_db(None)?;
+                if let Some(sections) = data.get("sections").and_then(|s| s.as_array()) {
+                    for (i, section) in sections.iter().enumerate() {
+                        let title = section.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+                        let desc = format!("Implement: {}", title);
+                        let priority = (i + 1) as i32;
+
+                        phase_conn.execute(
+                            "INSERT INTO tasks (description, status, priority, spec_section_id)
+                             VALUES (?1, 'pending', ?2, ?3)",
+                            rusqlite::params![desc, priority, (i + 1) as i64],
+                        )?;
+                        result.tasks_generated += 1;
+                    }
+                }
+
+                state.set_phase_data(phase, data);
+                state.mark_phase_complete(phase);
+                save_wizard_state(prd_conn, &state)?;
+            }
+
+            // Phase 6: task review
+            WizardPhase::TaskReview => {
+                let (kept, added, removed) =
+                    run_wizard_phase_6(provider, prd_conn, &mut state).await?;
+                result.tasks_kept = kept;
+                result.tasks_added = added;
+                result.tasks_removed = removed;
+            }
+
+            // Phase 7: build & test config
+            WizardPhase::BuildTestConfig => {
+                let (build_cmd, test_cmd, steps) =
+                    run_wizard_phase_7(provider, prd_conn, &mut state).await?;
+                result.build_cmd = build_cmd;
+                result.test_cmd = test_cmd;
+                result.pipeline_steps = steps;
+            }
+
+            // Phase 8: iteration mode
+            WizardPhase::IterationMode => {
+                let mode =
+                    run_wizard_phase_8(provider, prd_conn, &mut state).await?;
+                result.iteration_mode = mode;
+            }
+
+            // Phase 9: launch summary (no provider call)
+            WizardPhase::Launch => {
+                let (name, count) =
+                    run_wizard_phase_9(prd_conn, &mut state)?;
+                result.project_name = name;
+                result.task_count = count;
+            }
+        }
+    }
 
     Ok(result)
 }
