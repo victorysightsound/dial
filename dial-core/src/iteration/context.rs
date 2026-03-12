@@ -1,6 +1,7 @@
 use crate::budget::{self, ContextItem};
 use crate::errors::Result;
 use crate::learning::increment_learning_reference;
+use crate::prd;
 use crate::task::models::Task;
 use crate::TRUST_THRESHOLD;
 use rusqlite::Connection;
@@ -36,40 +37,66 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
         context.push(String::new());
     }
 
-    // Get relevant spec sections
-    if let Some(spec_id) = task.spec_section_id {
+    // Get relevant spec sections — prefer prd.db, fall back to spec_sections
+    let prd_conn = if prd::prd_db_exists() { prd::get_prd_db().ok() } else { None };
+
+    if let Some(ref prd_db) = prd_conn {
+        // PRD: linked section via prd_section_id
+        if let Some(ref prd_sid) = task.prd_section_id {
+            if let Ok(Some(section)) = prd::prd_get_section(prd_db, prd_sid) {
+                context.push(format!("## Relevant Specification ({})\n\n{}", section.title, section.content));
+            }
+        }
+
+        // PRD: FTS search
+        if let Ok(results) = prd::prd_search_sections(prd_db, &task.description) {
+            if !results.is_empty() {
+                context.push("## Related Specifications\n".to_string());
+                for section in results.iter().take(3) {
+                    let preview = if section.content.len() > 500 {
+                        &section.content[..500]
+                    } else {
+                        &section.content
+                    };
+                    context.push(format!("### {} ({})\n{}", section.title, section.section_id, preview));
+                }
+            }
+        }
+    } else {
+        // Fallback: spec_sections in phase DB
+        if let Some(spec_id) = task.spec_section_id {
+            let mut stmt = conn.prepare(
+                "SELECT content FROM spec_sections WHERE id = ?1",
+            )?;
+
+            if let Ok(content) = stmt.query_row([spec_id], |row| row.get::<_, String>(0)) {
+                context.push(format!("## Relevant Specification\n\n{}", content));
+            }
+        }
+
         let mut stmt = conn.prepare(
-            "SELECT content FROM spec_sections WHERE id = ?1",
+            "SELECT s.heading_path, s.content
+             FROM spec_sections s
+             INNER JOIN spec_sections_fts fts ON s.id = fts.rowid
+             WHERE spec_sections_fts MATCH ?1
+             ORDER BY rank LIMIT 3",
         )?;
 
-        if let Ok(content) = stmt.query_row([spec_id], |row| row.get::<_, String>(0)) {
-            context.push(format!("## Relevant Specification\n\n{}", content));
-        }
-    }
+        let related_specs: Vec<(String, String)> = stmt
+            .query_map([&task.description], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
 
-    // Search for task-related specs
-    let mut stmt = conn.prepare(
-        "SELECT s.heading_path, s.content
-         FROM spec_sections s
-         INNER JOIN spec_sections_fts fts ON s.id = fts.rowid
-         WHERE spec_sections_fts MATCH ?1
-         ORDER BY rank LIMIT 3",
-    )?;
-
-    let related_specs: Vec<(String, String)> = stmt
-        .query_map([&task.description], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    if !related_specs.is_empty() {
-        context.push("## Related Specifications\n".to_string());
-        for (heading, content) in related_specs {
-            let preview = if content.len() > 500 {
-                &content[..500]
-            } else {
-                &content
-            };
-            context.push(format!("### {}\n{}", heading, preview));
+        if !related_specs.is_empty() {
+            context.push("## Related Specifications\n".to_string());
+            for (heading, content) in related_specs {
+                let preview = if content.len() > 500 {
+                    &content[..500]
+                } else {
+                    &content
+                };
+                context.push(format!("### {}\n{}", heading, preview));
+            }
         }
     }
 
@@ -166,38 +193,69 @@ pub fn gather_context_items(conn: &Connection, task: &Task) -> Result<Vec<Contex
         .join("\n");
     items.push(ContextItem::new("Signs (Critical Rules)", &signs_content, PRIORITY_SIGNS));
 
-    // Task-linked spec section
-    if let Some(spec_id) = task.spec_section_id {
+    // Task-linked and FTS spec sections — prefer prd.db, fall back to spec_sections
+    let prd_conn = if prd::prd_db_exists() { prd::get_prd_db().ok() } else { None };
+
+    if let Some(ref prd_db) = prd_conn {
+        // PRD: linked section via prd_section_id
+        if let Some(ref prd_sid) = task.prd_section_id {
+            if let Ok(Some(section)) = prd::prd_get_section(prd_db, prd_sid) {
+                items.push(ContextItem::new(
+                    &format!("PRD: {}", section.title),
+                    &section.content,
+                    PRIORITY_TASK_SPEC,
+                ));
+            }
+        }
+
+        // PRD: FTS search
+        if let Ok(results) = prd::prd_search_sections(prd_db, &task.description) {
+            for section in results.iter().take(3) {
+                let preview = if section.content.len() > 500 {
+                    &section.content[..500]
+                } else {
+                    &section.content
+                };
+                items.push(ContextItem::new(
+                    &format!("PRD: {}", section.title),
+                    preview,
+                    PRIORITY_FTS_SPECS,
+                ));
+            }
+        }
+    } else {
+        // Fallback: spec_sections in phase DB
+        if let Some(spec_id) = task.spec_section_id {
+            let mut stmt = conn.prepare(
+                "SELECT content FROM spec_sections WHERE id = ?1",
+            )?;
+
+            if let Ok(content) = stmt.query_row([spec_id], |row| row.get::<_, String>(0)) {
+                items.push(ContextItem::new("Task Specification", &content, PRIORITY_TASK_SPEC));
+            }
+        }
+
         let mut stmt = conn.prepare(
-            "SELECT content FROM spec_sections WHERE id = ?1",
+            "SELECT s.heading_path, s.content
+             FROM spec_sections s
+             INNER JOIN spec_sections_fts fts ON s.id = fts.rowid
+             WHERE spec_sections_fts MATCH ?1
+             ORDER BY rank LIMIT 3",
         )?;
 
-        if let Ok(content) = stmt.query_row([spec_id], |row| row.get::<_, String>(0)) {
-            items.push(ContextItem::new("Task Specification", &content, PRIORITY_TASK_SPEC));
+        let related_specs: Vec<(String, String)> = stmt
+            .query_map([&task.description], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (heading, content) in related_specs {
+            let preview = if content.len() > 500 { &content[..500] } else { &content };
+            items.push(ContextItem::new(
+                &format!("Spec: {}", heading),
+                preview,
+                PRIORITY_FTS_SPECS,
+            ));
         }
-    }
-
-    // FTS-matched spec sections
-    let mut stmt = conn.prepare(
-        "SELECT s.heading_path, s.content
-         FROM spec_sections s
-         INNER JOIN spec_sections_fts fts ON s.id = fts.rowid
-         WHERE spec_sections_fts MATCH ?1
-         ORDER BY rank LIMIT 3",
-    )?;
-
-    let related_specs: Vec<(String, String)> = stmt
-        .query_map([&task.description], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    for (heading, content) in related_specs {
-        let preview = if content.len() > 500 { &content[..500] } else { &content };
-        items.push(ContextItem::new(
-            &format!("Spec: {}", heading),
-            preview,
-            PRIORITY_FTS_SPECS,
-        ));
     }
 
     // Trusted solutions
