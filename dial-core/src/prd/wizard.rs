@@ -1116,8 +1116,8 @@ pub async fn run_wizard_phase_8(
 /// to the config table.
 ///
 /// Returns the resolved mode string (e.g., "autonomous", "review_every:5", "review_each").
-fn apply_iteration_mode(
-    conn: &Connection,
+pub fn apply_iteration_mode(
+    _conn: &Connection,
     mode_data: &JsonValue,
 ) -> Result<String> {
     let raw_mode = mode_data
@@ -1148,23 +1148,10 @@ fn apply_iteration_mode(
         .and_then(|v| v.as_u64())
         .unwrap_or(1800);
 
-    // Write config values
-    let now = chrono::Local::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params!["iteration_mode", &mode, &now],
-    )?;
-    conn.execute(
-        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params!["ai_cli", &ai_cli, &now],
-    )?;
-    conn.execute(
-        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params!["subagent_timeout", &subagent_timeout.to_string(), &now],
-    )?;
+    // Write config values via config_set (consistent with phase 7)
+    crate::config::config_set("iteration_mode", &mode)?;
+    crate::config::config_set("ai_cli", &ai_cli)?;
+    crate::config::config_set("subagent_timeout", &subagent_timeout.to_string())?;
 
     Ok(mode)
 }

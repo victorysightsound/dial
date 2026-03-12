@@ -436,6 +436,132 @@ async fn test_apply_build_test_config_defaults() {
     env::set_current_dir(original_dir).unwrap();
 }
 
+// --- Phase 8: Iteration Mode Config Writing ---
+
+#[tokio::test]
+async fn test_apply_iteration_mode_writes_config() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    let mode_data = json!({
+        "recommended_mode": "autonomous",
+        "review_interval": null,
+        "ai_cli": "claude",
+        "subagent_timeout": 1800,
+        "rationale": "Simple project with low complexity"
+    });
+
+    let mode = prd::wizard::apply_iteration_mode(&phase_conn, &mode_data).unwrap();
+
+    assert_eq!(mode, "autonomous");
+
+    // Verify config values were written
+    let stored_mode = dial_core::config::config_get("iteration_mode").unwrap();
+    assert_eq!(stored_mode, Some("autonomous".to_string()));
+
+    let stored_cli = dial_core::config::config_get("ai_cli").unwrap();
+    assert_eq!(stored_cli, Some("claude".to_string()));
+
+    let stored_timeout = dial_core::config::config_get("subagent_timeout").unwrap();
+    assert_eq!(stored_timeout, Some("1800".to_string()));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_iteration_mode_review_every_builds_mode_string() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    let mode_data = json!({
+        "recommended_mode": "review_every",
+        "review_interval": 3,
+        "ai_cli": "codex",
+        "subagent_timeout": 900,
+        "rationale": "Medium complexity, review every 3 tasks"
+    });
+
+    let mode = prd::wizard::apply_iteration_mode(&phase_conn, &mode_data).unwrap();
+
+    assert_eq!(mode, "review_every:3");
+
+    let stored_mode = dial_core::config::config_get("iteration_mode").unwrap();
+    assert_eq!(stored_mode, Some("review_every:3".to_string()));
+
+    let stored_cli = dial_core::config::config_get("ai_cli").unwrap();
+    assert_eq!(stored_cli, Some("codex".to_string()));
+
+    let stored_timeout = dial_core::config::config_get("subagent_timeout").unwrap();
+    assert_eq!(stored_timeout, Some("900".to_string()));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_iteration_mode_defaults() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    // Minimal JSON — missing optional fields should use defaults
+    let mode_data = json!({
+        "rationale": "defaults test"
+    });
+
+    let mode = prd::wizard::apply_iteration_mode(&phase_conn, &mode_data).unwrap();
+
+    // Default mode is "autonomous"
+    assert_eq!(mode, "autonomous");
+
+    let stored_mode = dial_core::config::config_get("iteration_mode").unwrap();
+    assert_eq!(stored_mode, Some("autonomous".to_string()));
+
+    // Default ai_cli is "claude"
+    let stored_cli = dial_core::config::config_get("ai_cli").unwrap();
+    assert_eq!(stored_cli, Some("claude".to_string()));
+
+    // Default subagent_timeout is 1800
+    let stored_timeout = dial_core::config::config_get("subagent_timeout").unwrap();
+    assert_eq!(stored_timeout, Some("1800".to_string()));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_iteration_mode_review_each() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    let mode_data = json!({
+        "recommended_mode": "review_each",
+        "ai_cli": "gemini",
+        "subagent_timeout": 3600,
+        "rationale": "Complex project, review each task"
+    });
+
+    let mode = prd::wizard::apply_iteration_mode(&phase_conn, &mode_data).unwrap();
+
+    assert_eq!(mode, "review_each");
+
+    let stored_mode = dial_core::config::config_get("iteration_mode").unwrap();
+    assert_eq!(stored_mode, Some("review_each".to_string()));
+
+    let stored_cli = dial_core::config::config_get("ai_cli").unwrap();
+    assert_eq!(stored_cli, Some("gemini".to_string()));
+
+    let stored_timeout = dial_core::config::config_get("subagent_timeout").unwrap();
+    assert_eq!(stored_timeout, Some("3600".to_string()));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
 // --- Load Existing Doc ---
 
 #[tokio::test]
