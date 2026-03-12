@@ -637,7 +637,8 @@ Respond ONLY with valid JSON."#
 /// Read all pending/in-progress tasks from the DIAL database as tuples.
 fn read_task_list(conn: &Connection) -> Result<Vec<(i64, String, i32, Option<String>)>> {
     let mut stmt = conn.prepare(
-        "SELECT id, description, priority, prd_section_id
+        "SELECT id, description, priority,
+                COALESCE(prd_section_id, CAST(spec_section_id AS TEXT))
          FROM tasks WHERE status IN ('pending', 'in_progress')
          ORDER BY priority, id",
     )?;
@@ -730,9 +731,11 @@ fn apply_task_review(
         }
     };
 
-    // Delete existing pending/in-progress tasks and their dependencies
+    // Delete existing pending/in-progress tasks and their dependencies (both directions)
     conn.execute(
         "DELETE FROM task_dependencies WHERE task_id IN (
+            SELECT id FROM tasks WHERE status IN ('pending', 'in_progress')
+        ) OR depends_on_id IN (
             SELECT id FROM tasks WHERE status IN ('pending', 'in_progress')
         )",
         [],
