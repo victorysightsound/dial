@@ -75,6 +75,22 @@ pub enum DialError {
     #[error("{0}")]
     UserError(String),
 
+    /// A PRD section with the given section_id was not found.
+    #[error("PRD section '{0}' not found")]
+    PrdSectionNotFound(String),
+
+    /// An error occurred during the spec wizard process.
+    #[error("Wizard error: {0}")]
+    WizardError(String),
+
+    /// The requested template does not exist.
+    #[error("Template '{0}' not found. Available: spec, architecture, api, mvp")]
+    TemplateNotFound(String),
+
+    /// A provider is required but none is configured.
+    #[error("Provider required for wizard. Set ANTHROPIC_API_KEY or use --cli flag.")]
+    ProviderRequired,
+
     /// Adding a dependency would create a cycle in the task graph.
     #[error("Cyclic dependency detected: task #{0} would create a cycle")]
     CyclicDependency(i64),
