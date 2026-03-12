@@ -2,6 +2,7 @@ pub mod import;
 pub mod parser;
 pub mod schema;
 pub mod templates;
+pub mod wizard;
 
 use crate::errors::{DialError, Result};
 use rusqlite::{params, Connection};
