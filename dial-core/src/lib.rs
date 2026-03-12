@@ -27,6 +27,8 @@ pub mod learning;
 pub mod metrics;
 /// Structured output formatting.
 pub mod output;
+/// PRD database, enhanced parser, templates, and wizard.
+pub mod prd;
 /// AI provider trait and request/response types.
 pub mod provider;
 /// Spec file indexing and full-text search.
