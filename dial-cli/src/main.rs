@@ -31,7 +31,7 @@ enum Commands {
         no_agents: bool,
     },
 
-    /// Index spec files
+    /// Index spec files (deprecated: use 'dial spec import' instead)
     Index {
         /// Specs directory
         #[arg(long, default_value = "specs")]
@@ -419,6 +419,9 @@ async fn run_command(command: Commands) -> Result<()> {
         Commands::Init { .. } => unreachable!(),
 
         Commands::Index { dir } => {
+            println!("{}", output::yellow("Note: 'dial index' is deprecated. Use 'dial spec import --dir <path>' instead."));
+            println!("{}", output::dim("'dial spec import' writes to the new prd.db with hierarchical sections and FTS5 search."));
+            println!();
             engine.index_specs(&dir).await?;
         }
 
