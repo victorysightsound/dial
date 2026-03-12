@@ -1,3 +1,4 @@
+pub mod parser;
 pub mod schema;
 
 use crate::errors::{DialError, Result};
