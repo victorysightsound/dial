@@ -1,7 +1,9 @@
-use crate::errors::Result;
+use crate::errors::{DialError, Result};
 use crate::prd::templates::{get_template, Template};
+use crate::provider::{Provider, ProviderRequest};
 use rusqlite::{params, Connection};
 use serde_json::Value as JsonValue;
+use std::path::Path;
 
 /// Wizard phases for PRD creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +291,128 @@ Respond in JSON format:
 Respond ONLY with valid JSON."#
         ),
     }
+}
+
+/// Run the wizard through phases 1-3 (information gathering).
+///
+/// If `from_doc` is provided, the existing document content is included
+/// alongside each phase prompt so the AI can extract information from it.
+/// State is persisted after each phase for pause/resume.
+pub async fn run_wizard_phases_1_3(
+    provider: &dyn Provider,
+    prd_conn: &Connection,
+    state: &mut WizardState,
+    from_doc: Option<&str>,
+) -> Result<()> {
+    let phases = [WizardPhase::Vision, WizardPhase::Functionality, WizardPhase::Technical];
+
+    for phase in &phases {
+        // Skip already completed phases (for resume)
+        if state.completed_phases.contains(&(*phase as i32)) {
+            continue;
+        }
+
+        state.current_phase = *phase;
+        save_wizard_state(prd_conn, state)?;
+
+        let prompt = build_phase_prompt(*phase, state, from_doc);
+        let response = execute_wizard_prompt(provider, &prompt).await?;
+
+        // Parse JSON response
+        let data = parse_json_response(&response, provider, &prompt).await?;
+        state.set_phase_data(*phase, data);
+        state.mark_phase_complete(*phase);
+        save_wizard_state(prd_conn, state)?;
+    }
+
+    Ok(())
+}
+
+/// Load existing document content for --from mode.
+pub fn load_existing_doc(from_path: &str) -> Result<String> {
+    let path = Path::new(from_path);
+    if !path.exists() {
+        return Err(DialError::UserError(format!("File not found: {}", from_path)));
+    }
+    let content = std::fs::read_to_string(path)?;
+    Ok(content)
+}
+
+/// Execute a wizard prompt against the provider.
+async fn execute_wizard_prompt(provider: &dyn Provider, prompt: &str) -> Result<String> {
+    let request = ProviderRequest {
+        prompt: prompt.to_string(),
+        work_dir: std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        max_tokens: Some(4096),
+        model: None,
+        timeout_secs: Some(120),
+    };
+
+    let response = provider.execute(request).await?;
+
+    if !response.success {
+        return Err(DialError::WizardError(format!(
+            "Provider returned failure: {}",
+            response.output
+        )));
+    }
+
+    Ok(response.output)
+}
+
+/// Parse a JSON response from the provider, with one retry on failure.
+async fn parse_json_response(
+    response: &str,
+    provider: &dyn Provider,
+    original_prompt: &str,
+) -> Result<JsonValue> {
+    // Try to extract JSON from the response (it might have markdown wrapping)
+    let json_str = extract_json(response);
+
+    match serde_json::from_str::<JsonValue>(&json_str) {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            // Retry with a clarification prompt
+            let retry_prompt = format!(
+                "{}\n\nYour previous response was not valid JSON. Please respond with ONLY a valid JSON object. No markdown, no explanation, just JSON.",
+                original_prompt
+            );
+            let retry_response = execute_wizard_prompt(provider, &retry_prompt).await?;
+            let retry_json = extract_json(&retry_response);
+            serde_json::from_str::<JsonValue>(&retry_json)
+                .map_err(|e| DialError::WizardError(format!("Failed to parse JSON response: {}", e)))
+        }
+    }
+}
+
+/// Extract JSON from a response that might be wrapped in markdown code blocks.
+fn extract_json(text: &str) -> String {
+    let trimmed = text.trim();
+
+    // Try to find JSON in code block
+    if let Some(start) = trimmed.find("```json") {
+        let after_marker = &trimmed[start + 7..];
+        if let Some(end) = after_marker.find("```") {
+            return after_marker[..end].trim().to_string();
+        }
+    }
+
+    // Try plain code block
+    if let Some(start) = trimmed.find("```") {
+        let after_marker = &trimmed[start + 3..];
+        if let Some(end) = after_marker.find("```") {
+            let inner = after_marker[..end].trim();
+            if inner.starts_with('{') || inner.starts_with('[') {
+                return inner.to_string();
+            }
+        }
+    }
+
+    // Return as-is if it looks like JSON
+    trimmed.to_string()
 }
 
 fn format_template_context(template: &Template) -> String {
