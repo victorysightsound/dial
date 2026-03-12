@@ -388,6 +388,143 @@ async fn parse_json_response(
     }
 }
 
+/// Run wizard phases 4-5 (gap analysis and generation).
+///
+/// Phase 4: Sends all gathered info to the provider for gap analysis.
+/// Phase 5: Generates PRD sections, inserts into prd.db, extracts terminology,
+///          and creates linked DIAL tasks.
+pub async fn run_wizard_phases_4_5(
+    provider: &dyn Provider,
+    prd_conn: &Connection,
+    state: &mut WizardState,
+    from_doc: Option<&str>,
+) -> Result<(usize, usize)> {
+    let mut sections_generated = 0;
+    let mut tasks_generated = 0;
+
+    // Phase 4: Gap Analysis
+    if !state.completed_phases.contains(&(WizardPhase::GapAnalysis as i32)) {
+        state.current_phase = WizardPhase::GapAnalysis;
+        save_wizard_state(prd_conn, state)?;
+
+        let prompt = build_phase_prompt(WizardPhase::GapAnalysis, state, from_doc);
+        let response = execute_wizard_prompt(provider, &prompt).await?;
+        let data = parse_json_response(&response, provider, &prompt).await?;
+        state.set_phase_data(WizardPhase::GapAnalysis, data);
+        state.mark_phase_complete(WizardPhase::GapAnalysis);
+        save_wizard_state(prd_conn, state)?;
+    }
+
+    // Phase 5: Generate
+    if !state.completed_phases.contains(&(WizardPhase::Generate as i32)) {
+        state.current_phase = WizardPhase::Generate;
+        save_wizard_state(prd_conn, state)?;
+
+        let prompt = build_phase_prompt(WizardPhase::Generate, state, from_doc);
+        let response = execute_wizard_prompt(provider, &prompt).await?;
+        let data = parse_json_response(&response, provider, &prompt).await?;
+
+        // Insert generated sections into prd.db
+        if let Some(sections) = data.get("sections").and_then(|s| s.as_array()) {
+            crate::prd::prd_delete_all_sections(prd_conn)?;
+
+            for (i, section) in sections.iter().enumerate() {
+                let title = section.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+                let content = section.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                let word_count = content.split_whitespace().count() as i32;
+
+                // Generate section_id from position
+                let section_id = format!("{}", i + 1);
+
+                crate::prd::prd_insert_section(
+                    prd_conn,
+                    &section_id,
+                    title,
+                    None,
+                    1,
+                    i as i32,
+                    content,
+                    word_count,
+                )?;
+                sections_generated += 1;
+            }
+        }
+
+        // Extract and store terminology
+        if let Some(terms) = data.get("terminology").and_then(|t| t.as_array()) {
+            for term in terms {
+                let canonical = term.get("term").and_then(|t| t.as_str()).unwrap_or_default();
+                let definition = term.get("definition").and_then(|d| d.as_str()).unwrap_or_default();
+                let category = term.get("category").and_then(|c| c.as_str()).unwrap_or("general");
+
+                if !canonical.is_empty() {
+                    let _ = crate::prd::prd_add_term(
+                        prd_conn,
+                        canonical,
+                        "[]",
+                        definition,
+                        category,
+                        None,
+                    );
+                }
+            }
+        }
+
+        // Generate DIAL tasks from sections
+        let phase_conn = crate::db::get_db(None)?;
+        if let Some(sections) = data.get("sections").and_then(|s| s.as_array()) {
+            for (i, section) in sections.iter().enumerate() {
+                let title = section.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+                let desc = format!("Implement: {}", title);
+                let priority = (i + 1) as i32;
+
+                phase_conn.execute(
+                    "INSERT INTO tasks (description, status, priority, spec_section_id)
+                     VALUES (?1, 'pending', ?2, ?3)",
+                    rusqlite::params![desc, priority, (i + 1) as i64],
+                )?;
+                tasks_generated += 1;
+            }
+        }
+
+        state.set_phase_data(WizardPhase::Generate, data);
+        state.mark_phase_complete(WizardPhase::Generate);
+        save_wizard_state(prd_conn, state)?;
+    }
+
+    Ok((sections_generated, tasks_generated))
+}
+
+/// Run the complete wizard (all 5 phases).
+pub async fn run_wizard(
+    provider: &dyn Provider,
+    prd_conn: &Connection,
+    template: &str,
+    from_doc: Option<&str>,
+    resume: bool,
+) -> Result<(usize, usize)> {
+    let mut state = if resume {
+        load_wizard_state(prd_conn)?
+            .unwrap_or_else(|| WizardState::new(template))
+    } else {
+        clear_wizard_state(prd_conn)?;
+        WizardState::new(template)
+    };
+
+    // Validate template exists
+    if get_template(&state.template).is_none() {
+        return Err(DialError::TemplateNotFound(state.template.clone()));
+    }
+
+    // Phases 1-3: Information gathering
+    run_wizard_phases_1_3(provider, prd_conn, &mut state, from_doc).await?;
+
+    // Phases 4-5: Gap analysis and generation
+    let result = run_wizard_phases_4_5(provider, prd_conn, &mut state, from_doc).await?;
+
+    Ok(result)
+}
+
 /// Extract JSON from a response that might be wrapped in markdown code blocks.
 fn extract_json(text: &str) -> String {
     let trimmed = text.trim();
