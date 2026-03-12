@@ -368,9 +368,24 @@ You are a fresh AI agent spawned by DIAL to complete ONE task with clean context
 
 1. **Implement** the task completely (no placeholders)
 2. **Test** your implementation locally if possible
-3. When done, output: `DIAL_COMPLETE: <summary of what was done>`
-4. If blocked, output: `DIAL_BLOCKED: <what is blocking>`
-5. If you learned something valuable, output: `DIAL_LEARNING: <category>: <what you learned>`
+3. **Signal completion** by writing a JSON file to `.dial/signal.json`:
+
+```json
+{{
+  "signals": [
+    {{"type": "learning", "category": "<category>", "description": "<what you learned>"}},
+    {{"type": "complete", "summary": "<summary of what was done>"}}
+  ],
+  "timestamp": "<ISO 8601 timestamp>"
+}}
+```
+
+Signal types:
+- `complete` — task finished: `{{"type": "complete", "summary": "..."}}`
+- `blocked` — cannot proceed: `{{"type": "blocked", "reason": "..."}}`
+- `learning` — valuable insight: `{{"type": "learning", "category": "...", "description": "..."}}`
+
+Write the file as the **last step** before exiting. Include any learnings alongside your completion or blocked signal. If you cannot write the file, fall back to printing `DIAL_COMPLETE: <summary>`, `DIAL_BLOCKED: <reason>`, or `DIAL_LEARNING: <category>: <description>` as text output.
 
 Do NOT deviate from this task. Do NOT start other tasks.
 "#,

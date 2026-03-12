@@ -15,6 +15,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
 use super::context::generate_subagent_prompt;
+use super::signal::{read_signal_file, signal_file_to_result};
 use super::validation::run_validation;
 use super::{complete_iteration, create_iteration};
 
@@ -213,7 +214,23 @@ fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<S
         }
     }
 
-    Ok(SubagentResult::parse(&output))
+    // Prefer structured signal file over regex parsing of stdout
+    match read_signal_file() {
+        Ok(Some(signal_file)) => {
+            println!("{}", dim("  ├─ Signal file found: using structured signals"));
+            Ok(signal_file_to_result(&signal_file, &output))
+        }
+        Ok(None) => {
+            // No signal file — fall back to regex parsing of stdout
+            println!("{}", dim("  ├─ No signal file: falling back to output parsing"));
+            Ok(SubagentResult::parse(&output))
+        }
+        Err(e) => {
+            // Signal file exists but couldn't be parsed — warn and fall back
+            println!("{}", yellow(&format!("  ├─ Signal file error: {}. Falling back to output parsing.", e)));
+            Ok(SubagentResult::parse(&output))
+        }
+    }
 }
 
 /// Iteration mode controlling review/approval behavior
@@ -578,6 +595,7 @@ fn show_auto_run_summary(completed: u32, failed: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::signal::{self, SignalFile, SubagentSignal};
 
     #[test]
     fn test_parse_complete_signal() {
@@ -719,5 +737,134 @@ DIAL_COMPLETE: Implemented the feature successfully
         assert_eq!(IterationMode::Autonomous.display_name(), "autonomous");
         assert_eq!(IterationMode::ReviewEach.display_name(), "review_each");
         assert_eq!(IterationMode::ReviewEvery(5).display_name(), "review_every:5");
+    }
+
+    // --- Signal file integration tests ---
+
+    /// Mutex to serialize tests that modify the process-wide current directory.
+    static CWD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn setup_temp_dial_dir() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let dial_dir = tmp.path().join(".dial");
+        std::fs::create_dir_all(&dial_dir).unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn test_signal_file_preferred_over_regex() {
+        let _lock = CWD_MUTEX.lock().unwrap();
+        let _tmp = setup_temp_dial_dir();
+
+        // Write a signal file that says "complete"
+        let sf = SignalFile {
+            signals: vec![SubagentSignal::Complete {
+                summary: "Done via signal file".to_string(),
+            }],
+            timestamp: "2026-03-12T10:00:00Z".to_string(),
+        };
+        signal::write_signal_file(&sf).unwrap();
+
+        // Also provide output with a DIFFERENT DIAL_COMPLETE message
+        let output = "DIAL_COMPLETE: Done via regex";
+
+        // read_signal_file should consume the file
+        let signal_result = signal::read_signal_file().unwrap();
+        assert!(signal_result.is_some());
+
+        let result = signal::signal_file_to_result(&signal_result.unwrap(), output);
+        // Should use signal file values, not regex
+        assert!(result.complete);
+        assert_eq!(result.complete_message, Some("Done via signal file".to_string()));
+    }
+
+    #[test]
+    fn test_fallback_to_regex_when_no_signal_file() {
+        let _lock = CWD_MUTEX.lock().unwrap();
+        let _tmp = setup_temp_dial_dir();
+
+        // No signal file written — read returns None
+        let signal_result = signal::read_signal_file().unwrap();
+        assert!(signal_result.is_none());
+
+        // Regex parsing should work as fallback
+        let output = "DIAL_COMPLETE: Done via regex fallback";
+        let result = SubagentResult::parse(output);
+        assert!(result.complete);
+        assert_eq!(result.complete_message, Some("Done via regex fallback".to_string()));
+    }
+
+    #[test]
+    fn test_fallback_to_regex_on_invalid_signal_file() {
+        let _lock = CWD_MUTEX.lock().unwrap();
+        let _tmp = setup_temp_dial_dir();
+
+        // Write invalid JSON to the signal file
+        std::fs::write(signal::signal_file_path(), "{{bad json}}").unwrap();
+
+        // read_signal_file should return an error
+        let result = signal::read_signal_file();
+        assert!(result.is_err());
+
+        // In the orchestrator, this error triggers regex fallback
+        let output = "DIAL_COMPLETE: Recovered via regex";
+        let parsed = SubagentResult::parse(output);
+        assert!(parsed.complete);
+        assert_eq!(parsed.complete_message, Some("Recovered via regex".to_string()));
+    }
+
+    #[test]
+    fn test_signal_file_with_mock_subagent_flow() {
+        // Simulates the full orchestrator signal flow:
+        // 1. Subagent writes signal.json
+        // 2. Orchestrator reads it
+        // 3. Converts to SubagentResult
+        // 4. Processes learnings and completion
+        let _lock = CWD_MUTEX.lock().unwrap();
+        let _tmp = setup_temp_dial_dir();
+
+        // Simulate subagent writing signal file
+        let sf = SignalFile {
+            signals: vec![
+                SubagentSignal::Learning {
+                    category: "pattern".to_string(),
+                    description: "Always check return values".to_string(),
+                },
+                SubagentSignal::Learning {
+                    category: "gotcha".to_string(),
+                    description: "Timeouts need explicit handling".to_string(),
+                },
+                SubagentSignal::Complete {
+                    summary: "Implemented error handling with proper timeouts".to_string(),
+                },
+            ],
+            timestamp: "2026-03-12T10:30:00Z".to_string(),
+        };
+        signal::write_signal_file(&sf).unwrap();
+
+        // Simulate orchestrator reading signals after subprocess exits
+        let raw_output = "... lots of subprocess output ...";
+        let signal_result = signal::read_signal_file().unwrap().unwrap();
+
+        // File should be deleted after read
+        assert!(!signal::signal_file_path().exists());
+
+        // Convert to SubagentResult
+        let result = signal::signal_file_to_result(&signal_result, raw_output);
+
+        // Verify all signals were captured
+        assert!(result.complete);
+        assert_eq!(
+            result.complete_message,
+            Some("Implemented error handling with proper timeouts".to_string())
+        );
+        assert!(!result.blocked);
+        assert_eq!(result.learnings.len(), 2);
+        assert_eq!(result.learnings[0].0, "pattern");
+        assert_eq!(result.learnings[0].1, "Always check return values");
+        assert_eq!(result.learnings[1].0, "gotcha");
+        assert_eq!(result.learnings[1].1, "Timeouts need explicit handling");
+        assert_eq!(result.raw_output, raw_output);
     }
 }

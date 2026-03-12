@@ -1,5 +1,6 @@
 pub mod context;
 pub mod orchestrator;
+pub mod signal;
 pub mod validation;
 
 use crate::db::{get_db, get_dial_dir, with_transaction};
@@ -18,6 +19,7 @@ use std::fs;
 
 pub use context::{gather_context, gather_context_budgeted, gather_context_items, generate_subagent_prompt};
 pub use orchestrator::auto_run;
+pub use signal::{read_signal_file, write_signal_file, SignalFile, SubagentSignal};
 pub use validation::{run_validation, run_validation_with_details, PipelineStepResult, ValidationResult};
 
 pub fn create_iteration(conn: &Connection, task_id: i64, attempt_number: i32) -> Result<i64> {
