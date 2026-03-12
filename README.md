@@ -1,16 +1,12 @@
-<div align="center">
-  <img src="assets/dial-icon.svg" width="160" alt="DIAL">
-  <h1>DIAL</h1>
-  <p><strong>Deterministic Iterative Agent Loop</strong></p>
-  <p>
-    A Rust library and CLI for autonomous AI-assisted software development.<br>
-    Persistent memory. Failure pattern detection. Structured task execution.<br>
-    Build entire projects iteratively without losing context or repeating mistakes.
-  </p>
-  <p>
-    <a href="#quick-start">Quick Start</a>&ensp;&middot;&ensp;<a href="#library-usage">Library</a>&ensp;&middot;&ensp;<a href="docs/cli-reference.md">CLI Reference</a>&ensp;&middot;&ensp;<a href="docs/ai-integration.md">AI Integration</a>
-  </p>
-</div>
+<h1><img src="assets/dial-icon.svg" width="36" alt="DIAL" style="vertical-align: middle;">&ensp;DIAL</h1>
+
+**Deterministic Iterative Agent Loop**
+
+A Rust library and CLI for autonomous AI-assisted software development.
+Persistent memory. Failure pattern detection. Structured task execution.
+Build entire projects iteratively without losing context or repeating mistakes.
+
+[Quick Start](#quick-start)&ensp;&middot;&ensp;[Recommended Workflow](#recommended-workflow)&ensp;&middot;&ensp;[Library](#library-usage)&ensp;&middot;&ensp;[CLI Reference](docs/cli-reference.md)&ensp;&middot;&ensp;[AI Integration](docs/ai-integration.md)
 
 ---
 
@@ -23,9 +19,9 @@ When you use AI coding assistants (Claude Code, Codex, Gemini) to build software
 - **Duplicate implementation** - the AI rewrites code that already exists
 - **Placeholder code** - incomplete implementations with TODO comments
 - **Cascading failures** - one error triggers increasingly desperate "fixes" that break more things
-- **Test amnesia** - solutions that passed tests before are forgotten and reimplemented poorly
+- **Specification drift** - the implementation diverges from requirements as the AI stops referencing them
 
-DIAL solves these by externalizing memory to SQLite, detecting failure patterns automatically, building a trust-scored solution database, and enforcing one-task-at-a-time discipline.
+DIAL solves these by externalizing memory to SQLite, linking tasks to specifications, detecting failure patterns automatically, building a trust-scored solution database, and enforcing one-task-at-a-time discipline.
 
 ## Architecture
 
@@ -48,7 +44,8 @@ The core library (`dial-core`) is embeddable — you can build custom tools, das
                     Get next task
                          |
                Gather context from DB
-          (specs, solutions, learnings)
+          (linked spec, related specs,
+           trusted solutions, learnings)
                          |
               AI implements the task
                          |
@@ -79,7 +76,11 @@ cp target/release/dial /usr/local/bin/
 
 **Requirements:** Rust 1.70+. No runtime dependencies. The binary is fully self-contained.
 
-### Start a Project
+## Recommended Workflow
+
+The most effective way to use DIAL is spec-driven: write a specification first, index it, then link tasks to spec sections. This gives the AI grounded requirements at every iteration, preventing drift and duplicate work.
+
+### 1. Initialize
 
 ```bash
 cd your-project
@@ -89,21 +90,70 @@ dial config set build_cmd "cargo build"
 dial config set test_cmd "cargo test"
 ```
 
-### Add Tasks
+### 2. Write Your Specification
+
+Create a `specs/` directory with markdown files describing what you're building. This can be a PRD, architecture doc, or any structured requirements document.
 
 ```bash
-dial task add "Set up project structure" -p 1
-dial task add "Implement core data types" -p 2
-dial task add "Add CLI argument parsing" -p 3
-dial task add "Write unit tests" -p 4
+mkdir -p specs
 ```
 
-### Run the Loop
+Write your spec in `specs/PRD.md` using numbered sections:
+
+```markdown
+# My Project
+
+## 1. Data Model
+Users have an id, email, and name. Emails must be unique.
+Passwords are hashed with bcrypt, minimum 12 rounds.
+
+## 2. API Endpoints
+### 2.1 POST /users
+Create a new user. Validate email format and uniqueness.
+Return 201 with user object (no password field).
+
+### 2.2 GET /users/:id
+Return user by ID. Return 404 if not found.
+
+## 3. Authentication
+JWT tokens with 24h expiry. Refresh tokens stored in database.
+```
+
+DIAL parses markdown headers into sections and builds FTS5 full-text search indexes over them. Numbered sections make it easy to reference specific requirements.
+
+### 3. Index the Spec
+
+```bash
+dial index
+```
+
+This scans `specs/` and indexes every section into the database. You can re-run `dial index` any time you update the spec.
+
+### 4. Add Tasks Linked to Spec Sections
+
+```bash
+dial task add "Create User model with email uniqueness" -p 1 --spec 1
+dial task add "Implement POST /users endpoint" -p 2 --spec 2
+dial task add "Implement GET /users/:id endpoint" -p 3 --spec 3
+dial task add "Add JWT authentication middleware" -p 4 --spec 4
+dial task add "Write integration tests" -p 5
+```
+
+The `--spec` flag links a task to a spec section ID. When DIAL gathers context for that task, it includes the linked section automatically. Even without explicit links, DIAL searches the spec by task description and surfaces relevant sections.
+
+### 5. Set Up Dependencies (Optional)
+
+```bash
+dial task depends 4 1    # Auth depends on User model
+dial task depends 5 2    # Tests depend on endpoints
+```
+
+### 6. Run the Loop
 
 **Manual mode** (you control the AI):
 
 ```bash
-dial iterate          # Get next task + context
+dial iterate          # Get next task + spec context
 # ... implement the task with your AI tool ...
 dial validate         # Build, test, commit on success
 ```
@@ -115,6 +165,17 @@ dial auto-run --cli claude --max 10
 ```
 
 This spawns a fresh AI subprocess per task, parses completion signals, runs validation, and loops until done.
+
+### Why Specs Matter
+
+Without a spec, DIAL assembles context from learnings, solutions, and failures — useful, but the AI has no requirements to validate against. With a spec:
+
+- Each task carries **what to build** alongside **how previous attempts went**
+- FTS search surfaces relevant requirements even for unlinked tasks
+- Specification drift is prevented because the AI re-reads requirements every iteration
+- The token budget is spent on high-value context instead of generic history
+
+For quick prototypes or small utilities, you can skip the spec and just use tasks. But for any project with more than a handful of tasks, the spec-driven workflow is what makes DIAL effective at scale.
 
 ## Library Usage
 
@@ -180,6 +241,14 @@ dial task block 3 "waiting on API"  # Block with reason
 dial task depends 5 3               # Task 5 depends on task 3
 ```
 
+### Specification Search
+```bash
+dial index                         # Index specs/ directory
+dial spec search "auth"            # Full-text search
+dial spec show 5                   # Show full section
+dial spec list                     # List all indexed sections
+```
+
 ### Configurable Validation Pipeline
 ```bash
 dial pipeline add "lint" "cargo clippy" --sort 0 --optional --timeout 60
@@ -239,13 +308,6 @@ dial learnings list -c gotcha
 dial learnings search "database"
 ```
 
-### Specification Search
-```bash
-dial index                     # Index specs/ directory
-dial spec search "auth"        # Full-text search
-dial spec show 5               # Show full section
-```
-
 ## Project Structure
 
 ```
@@ -255,7 +317,7 @@ your-project/
 │   ├── current_phase        # Active phase name
 │   ├── current_context.md   # Latest context (auto-generated)
 │   └── subagent_prompt.md   # Latest sub-agent prompt (auto-generated)
-├── specs/                   # Optional — specification files
+├── specs/                   # Specification files (PRD, architecture, etc.)
 │   └── PRD.md
 └── ... your project files
 ```
