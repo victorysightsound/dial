@@ -419,6 +419,10 @@ enum LearningsCommands {
         /// Filter by category
         #[arg(short, long)]
         category: Option<String>,
+
+        /// Filter by failure pattern ID
+        #[arg(short, long)]
+        pattern: Option<i64>,
     },
     /// Search learnings
     Search { query: String },
@@ -735,8 +739,12 @@ async fn run_command(command: Commands) -> Result<()> {
         }
 
         Commands::Learnings { command } => match command {
-            Some(LearningsCommands::List { category }) => {
-                engine.learnings_list(category.as_deref()).await?;
+            Some(LearningsCommands::List { category, pattern }) => {
+                if let Some(pid) = pattern {
+                    engine.learnings_list_for_pattern(pid).await?;
+                } else {
+                    engine.learnings_list(category.as_deref()).await?;
+                }
             }
             Some(LearningsCommands::Search { query }) => {
                 engine.learnings_search(&query).await?;

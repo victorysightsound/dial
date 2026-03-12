@@ -790,7 +790,18 @@ impl Engine {
 
     /// Add a learning. Returns the learning ID.
     pub async fn learn(&self, description: &str, category: Option<&str>) -> Result<i64> {
-        let result = learning::add_learning(description, category);
+        self.learn_linked(description, category, None, None).await
+    }
+
+    /// Add a learning with optional pattern and iteration linking. Returns the learning ID.
+    pub async fn learn_linked(
+        &self,
+        description: &str,
+        category: Option<&str>,
+        pattern_id: Option<i64>,
+        iteration_id: Option<i64>,
+    ) -> Result<i64> {
+        let result = learning::add_learning_linked(description, category, pattern_id, iteration_id);
         if let Ok(id) = &result {
             self.emit(Event::LearningAdded {
                 id: *id,
@@ -804,6 +815,17 @@ impl Engine {
     /// List learnings.
     pub async fn learnings_list(&self, category: Option<&str>) -> Result<()> {
         learning::list_learnings(category)
+    }
+
+    /// List learnings for a specific pattern.
+    pub async fn learnings_for_pattern(&self, pattern_id: i64) -> Result<Vec<learning::LearningResult>> {
+        let conn = self.conn()?;
+        learning::learnings_for_pattern(&conn, pattern_id)
+    }
+
+    /// Display learnings for a specific pattern (CLI output).
+    pub async fn learnings_list_for_pattern(&self, pattern_id: i64) -> Result<()> {
+        learning::list_learnings_for_pattern(pattern_id)
     }
 
     /// Search learnings.

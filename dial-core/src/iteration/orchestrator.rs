@@ -3,7 +3,7 @@ use crate::db::{get_db, get_dial_dir};
 use crate::errors::{DialError, Result};
 use crate::failure::record_failure;
 use crate::git::{git_commit, git_has_changes, git_is_repo};
-use crate::learning::add_learning;
+use crate::learning::{add_learning_with_conn, auto_link_pattern_for_iteration};
 use crate::output::{bold, dim, green, red, yellow};
 use crate::task::auto_unblock_dependents;
 use crate::task::models::Task;
@@ -459,10 +459,20 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
         println!();
         let result = run_subagent(ai_cli, prompt_file.to_str().unwrap(), timeout_secs)?;
 
-        // Process learnings
+        // Process learnings — auto-link to failure pattern if current iteration has failures
+        let auto_pattern_id = auto_link_pattern_for_iteration(&conn, iteration_id);
         for (category, description) in &result.learnings {
-            println!("{}", green(&format!("Learning captured: [{}] {}", category, description)));
-            let _ = add_learning(&description, Some(category));
+            let pattern_str = auto_pattern_id
+                .map(|pid| format!(" (linked to pattern #{})", pid))
+                .unwrap_or_default();
+            println!("{}", green(&format!("Learning captured: [{}]{} {}", category, pattern_str, description)));
+            let _ = add_learning_with_conn(
+                &conn,
+                description,
+                Some(category),
+                auto_pattern_id,
+                Some(iteration_id),
+            );
         }
 
         // Handle blocked

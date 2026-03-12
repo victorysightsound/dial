@@ -1,6 +1,6 @@
 use crate::budget::{self, ContextItem};
 use crate::errors::Result;
-use crate::learning::increment_learning_reference;
+use crate::learning::{increment_learning_reference, learnings_for_pattern};
 use crate::prd;
 use crate::task::find_similar_completed_tasks;
 use crate::task::models::Task;
@@ -172,13 +172,56 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
 
     if !failures.is_empty() {
         context.push("## Recent Unresolved Failures (avoid these)\n".to_string());
-        for (error_text, pattern_key) in failures {
+
+        // Collect pattern IDs for pattern-linked learnings
+        let mut seen_pattern_ids: Vec<i64> = Vec::new();
+
+        for (error_text, pattern_key) in &failures {
             let preview = if error_text.len() > 200 {
                 &error_text[..200]
             } else {
-                &error_text
+                error_text
             };
             context.push(format!("- **{}**: {}", pattern_key, preview));
+        }
+
+        // Gather pattern-linked learnings for each failure's pattern
+        {
+            let mut pattern_stmt = conn.prepare(
+                "SELECT DISTINCT f.pattern_id, fp.pattern_key
+                 FROM failures f
+                 INNER JOIN failure_patterns fp ON f.pattern_id = fp.id
+                 WHERE f.resolved = 0
+                 ORDER BY f.created_at DESC LIMIT 5",
+            )?;
+
+            let pattern_ids: Vec<(i64, String)> = pattern_stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let mut pattern_learnings_block = Vec::new();
+            for (pid, pkey) in &pattern_ids {
+                if seen_pattern_ids.contains(pid) {
+                    continue;
+                }
+                seen_pattern_ids.push(*pid);
+                let plearnings = learnings_for_pattern(conn, *pid)?;
+                for pl in plearnings.iter().take(3) {
+                    pattern_learnings_block.push(format!(
+                        "- LEARNING (from pattern: {}): {}",
+                        pkey, pl.description
+                    ));
+                    let _ = increment_learning_reference(conn, pl.id);
+                }
+            }
+
+            if !pattern_learnings_block.is_empty() {
+                context.push("## Pattern-Linked Learnings\n".to_string());
+                for line in pattern_learnings_block {
+                    context.push(line);
+                }
+            }
         }
     }
 
@@ -216,6 +259,7 @@ pub const PRIORITY_SUGGESTED_SOLUTIONS: u32 = 15;
 pub const PRIORITY_TRUSTED_SOLUTIONS: u32 = 20;
 pub const PRIORITY_SIMILAR_TASKS: u32 = 25;
 pub const PRIORITY_FAILURES: u32 = 30;
+pub const PRIORITY_PATTERN_LEARNINGS: u32 = 35;
 pub const PRIORITY_LEARNINGS: u32 = 40;
 
 /// Gather context as priority-ranked ContextItems for budget-aware assembly.
@@ -380,6 +424,42 @@ pub fn gather_context_items(conn: &Connection, task: &Task) -> Result<Vec<Contex
             .collect::<Vec<_>>()
             .join("\n");
         items.push(ContextItem::new("Recent Failures", &content, PRIORITY_FAILURES));
+
+        // Pattern-linked learnings
+        let mut pattern_stmt = conn.prepare(
+            "SELECT DISTINCT f.pattern_id, fp.pattern_key
+             FROM failures f
+             INNER JOIN failure_patterns fp ON f.pattern_id = fp.id
+             WHERE f.resolved = 0
+             ORDER BY f.created_at DESC LIMIT 5",
+        )?;
+
+        let pattern_ids: Vec<(i64, String)> = pattern_stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut seen_pattern_ids: Vec<i64> = Vec::new();
+        let mut pattern_learnings_lines = Vec::new();
+        for (pid, pkey) in &pattern_ids {
+            if seen_pattern_ids.contains(pid) {
+                continue;
+            }
+            seen_pattern_ids.push(*pid);
+            let plearnings = learnings_for_pattern(conn, *pid)?;
+            for pl in plearnings.iter().take(3) {
+                pattern_learnings_lines.push(format!(
+                    "- LEARNING (from pattern: {}): {}",
+                    pkey, pl.description
+                ));
+                let _ = increment_learning_reference(conn, pl.id);
+            }
+        }
+
+        if !pattern_learnings_lines.is_empty() {
+            let content = pattern_learnings_lines.join("\n");
+            items.push(ContextItem::new("Pattern-Linked Learnings", &content, PRIORITY_PATTERN_LEARNINGS));
+        }
     }
 
     // Learnings
@@ -472,4 +552,220 @@ Do NOT deviate from this task. Do NOT start other tasks.
     );
 
     Ok(prompt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::schema;
+    use crate::learning::add_learning_with_conn;
+    use crate::task::models::{Task, TaskStatus};
+
+    /// Set up an in-memory DB with base schema + migration columns needed for context tests.
+    fn setup_context_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .unwrap();
+        conn.execute_batch(schema::SCHEMA).unwrap();
+        // Add migration columns
+        conn.execute_batch(
+            r#"
+            ALTER TABLE learnings ADD COLUMN pattern_id INTEGER REFERENCES failure_patterns(id);
+            ALTER TABLE learnings ADD COLUMN iteration_id INTEGER REFERENCES iterations(id);
+            ALTER TABLE tasks ADD COLUMN prd_section_id TEXT;
+            ALTER TABLE tasks ADD COLUMN total_attempts INTEGER DEFAULT 0;
+            ALTER TABLE tasks ADD COLUMN total_failures INTEGER DEFAULT 0;
+            ALTER TABLE tasks ADD COLUMN last_failure_at TEXT;
+            ALTER TABLE failure_patterns ADD COLUMN regex_pattern TEXT;
+            ALTER TABLE failure_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'trusted';
+            ALTER TABLE solutions ADD COLUMN source TEXT NOT NULL DEFAULT 'auto-learned';
+            ALTER TABLE solutions ADD COLUMN last_validated_at TEXT;
+            ALTER TABLE solutions ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+            "#,
+        )
+        .unwrap();
+        conn
+    }
+
+    fn make_test_task(id: i64) -> Task {
+        Task {
+            id,
+            description: "test task".to_string(),
+            status: TaskStatus::InProgress,
+            priority: 5,
+            blocked_by: None,
+            spec_section_id: None,
+            prd_section_id: None,
+            created_at: "2026-01-01T00:00:00".to_string(),
+            started_at: None,
+            completed_at: None,
+            total_attempts: 0,
+            total_failures: 0,
+            last_failure_at: None,
+        }
+    }
+
+    #[test]
+    fn test_pattern_linked_learnings_included_in_context() {
+        let conn = setup_context_test_db();
+
+        // Create task
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('test task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Create iteration
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number) VALUES (?1, 1)",
+            [task_id],
+        )
+        .unwrap();
+        let iteration_id = conn.last_insert_rowid();
+
+        // Create pattern
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category) VALUES ('CompileErr', 'Compile error', 'build')",
+            [],
+        )
+        .unwrap();
+        let pattern_id = conn.last_insert_rowid();
+
+        // Create unresolved failure
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text) VALUES (?1, ?2, 'error[E0308]')",
+            rusqlite::params![iteration_id, pattern_id],
+        )
+        .unwrap();
+
+        // Add pattern-linked learning
+        add_learning_with_conn(
+            &conn,
+            "Always check type annotations when E0308 occurs",
+            Some("pattern"),
+            Some(pattern_id),
+            Some(iteration_id),
+        )
+        .unwrap();
+
+        // Add an unlinked learning too
+        add_learning_with_conn(
+            &conn,
+            "General learning not linked",
+            Some("other"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let task = make_test_task(task_id);
+        let context = gather_context(&conn, &task).unwrap();
+
+        // Should contain the pattern-linked learning with the expected format
+        assert!(
+            context.contains("LEARNING (from pattern: CompileErr): Always check type annotations"),
+            "Context should contain pattern-linked learning. Got:\n{}",
+            context
+        );
+    }
+
+    #[test]
+    fn test_pattern_linked_learnings_in_context_items() {
+        let conn = setup_context_test_db();
+
+        // Create task
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('test task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Create iteration
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number) VALUES (?1, 1)",
+            [task_id],
+        )
+        .unwrap();
+        let iteration_id = conn.last_insert_rowid();
+
+        // Create pattern
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category) VALUES ('TestFail', 'Test failure', 'test')",
+            [],
+        )
+        .unwrap();
+        let pattern_id = conn.last_insert_rowid();
+
+        // Create unresolved failure
+        conn.execute(
+            "INSERT INTO failures (iteration_id, pattern_id, error_text) VALUES (?1, ?2, 'FAILED test_foo')",
+            rusqlite::params![iteration_id, pattern_id],
+        )
+        .unwrap();
+
+        // Add pattern-linked learning
+        add_learning_with_conn(
+            &conn,
+            "Run with --nocapture for verbose test output",
+            Some("test"),
+            Some(pattern_id),
+            None,
+        )
+        .unwrap();
+
+        let task = make_test_task(task_id);
+        let items = gather_context_items(&conn, &task).unwrap();
+
+        // Should have a "Pattern-Linked Learnings" item at priority 35
+        let pattern_item = items.iter().find(|i| i.label == "Pattern-Linked Learnings");
+        assert!(
+            pattern_item.is_some(),
+            "Should have a Pattern-Linked Learnings context item"
+        );
+        let item = pattern_item.unwrap();
+        assert_eq!(item.priority, PRIORITY_PATTERN_LEARNINGS);
+        assert!(item.content.contains("LEARNING (from pattern: TestFail)"));
+        assert!(item.content.contains("Run with --nocapture"));
+    }
+
+    #[test]
+    fn test_no_pattern_linked_learnings_when_no_failures() {
+        let conn = setup_context_test_db();
+
+        // Create task with no failures
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('clean task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Add a learning linked to a pattern (but no failures reference it)
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category) VALUES ('SomeErr', 'Some err', 'build')",
+            [],
+        )
+        .unwrap();
+        let pattern_id = conn.last_insert_rowid();
+        add_learning_with_conn(
+            &conn,
+            "This should not appear",
+            Some("pattern"),
+            Some(pattern_id),
+            None,
+        )
+        .unwrap();
+
+        let task = make_test_task(task_id);
+        let context = gather_context(&conn, &task).unwrap();
+
+        // No failures, so no pattern-linked learnings section
+        assert!(
+            !context.contains("Pattern-Linked Learnings"),
+            "Should not have pattern-linked learnings without failures"
+        );
+    }
 }
