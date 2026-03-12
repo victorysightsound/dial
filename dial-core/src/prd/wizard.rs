@@ -307,30 +307,11 @@ Respond ONLY with valid JSON."#
             // when tasks are available. This fallback uses only gathered_info.
             build_task_review_prompt(&[], &state.gathered_info)
         }
-        WizardPhase::BuildTestConfig => format!(
-            r#"You are configuring build and test commands for a project.
-
-{prior_context}
-
-Based on the technical details (languages, frameworks, platform), suggest build and test commands
-and validation pipeline steps.
-
-Respond in JSON format:
-{{
-  "build_cmd": "cargo build",
-  "test_cmd": "cargo test",
-  "pipeline_steps": [
-    {{"name": "lint", "command": "cargo clippy", "order": 1, "required": true, "timeout": 120}},
-    {{"name": "build", "command": "cargo build", "order": 2, "required": true, "timeout": 300}},
-    {{"name": "test", "command": "cargo test", "order": 3, "required": true, "timeout": 300}}
-  ],
-  "build_timeout": 600,
-  "test_timeout": 600,
-  "rationale": "why these commands"
-}}
-
-Respond ONLY with valid JSON."#
-        ),
+        WizardPhase::BuildTestConfig => {
+            // Phase 7 uses build_build_test_config_prompt() for the full prompt
+            // when technical details are available. This fallback uses only gathered_info.
+            build_build_test_config_prompt(&state.gathered_info)
+        }
         WizardPhase::IterationMode => format!(
             r#"You are recommending an iteration mode for autonomous development.
 
@@ -826,6 +807,192 @@ fn apply_task_review(
     let kept_count = tasks.len().saturating_sub(added_count);
 
     Ok((kept_count, added_count, removed_count))
+}
+
+/// Build the phase 7 (Build & Test Configuration) prompt with technical details.
+///
+/// Unlike generic phases that only use `gathered_info` as prior context, phase 7
+/// extracts the technical details from phase 3 and presents them prominently
+/// so the AI can recommend appropriate build/test commands and pipeline steps.
+///
+/// # Arguments
+/// * `gathered_info` - Accumulated wizard state from phases 1-6
+pub fn build_build_test_config_prompt(gathered_info: &JsonValue) -> String {
+    let technical_context = if let Some(technical) = gathered_info.get("technical") {
+        format!(
+            "\n## Technical Details (from Phase 3)\n```json\n{}\n```\n",
+            serde_json::to_string_pretty(technical).unwrap_or_default()
+        )
+    } else {
+        "\nNo technical details available from prior phases.\n".to_string()
+    };
+
+    let prd_context = if gathered_info.is_object()
+        && !gathered_info.as_object().unwrap().is_empty()
+    {
+        format!(
+            "\n## Full PRD Context (from phases 1-6)\n```json\n{}\n```\n",
+            serde_json::to_string_pretty(gathered_info).unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+
+    format!(
+        r#"You are configuring build and test commands for a software project.
+{technical_context}
+{prd_context}
+Based on the technical details above (languages, frameworks, platform, constraints),
+suggest the appropriate build and test commands and a validation pipeline.
+
+The pipeline_steps should cover all validation concerns for this project
+(e.g., linting, building, testing, integration tests). Order them by execution sequence.
+
+Respond in JSON format:
+{{
+  "build_cmd": "the primary build command",
+  "test_cmd": "the primary test command",
+  "pipeline_steps": [
+    {{"name": "step name", "command": "shell command", "order": 1, "required": true, "timeout": 120}},
+    {{"name": "step name", "command": "shell command", "order": 2, "required": true, "timeout": 300}}
+  ],
+  "build_timeout": 600,
+  "test_timeout": 600,
+  "rationale": "why these commands and steps are appropriate for this project"
+}}
+
+Respond ONLY with valid JSON."#
+    )
+}
+
+/// Run wizard phase 7: Build & Test Configuration.
+///
+/// Sends the technical details from phase 3 to the AI provider to get recommended
+/// build/test commands and validation pipeline steps. Writes the results to the
+/// config table and optionally inserts pipeline steps into validation_steps.
+///
+/// Returns (build_cmd, test_cmd, pipeline_steps_count).
+pub async fn run_wizard_phase_7(
+    provider: &dyn Provider,
+    prd_conn: &Connection,
+    state: &mut WizardState,
+) -> Result<(String, String, usize)> {
+    if state.completed_phases.contains(&(WizardPhase::BuildTestConfig as i32)) {
+        return Ok((String::new(), String::new(), 0));
+    }
+
+    state.current_phase = WizardPhase::BuildTestConfig;
+    save_wizard_state(prd_conn, state)?;
+
+    // 1. Build the prompt with technical details from gathered_info
+    let prompt = build_build_test_config_prompt(&state.gathered_info);
+
+    // 2. Send to provider and parse JSON response
+    let response = execute_wizard_prompt(provider, &prompt).await?;
+    let data = parse_json_response(&response, provider, &prompt).await?;
+
+    // 3. Apply config and pipeline steps to the database
+    let phase_conn = crate::db::get_db(None)?;
+    let (build_cmd, test_cmd, steps_count) = apply_build_test_config(&phase_conn, &data)?;
+
+    // 4. Store in wizard state and mark complete
+    state.set_phase_data(WizardPhase::BuildTestConfig, data);
+    state.mark_phase_complete(WizardPhase::BuildTestConfig);
+    save_wizard_state(prd_conn, state)?;
+
+    Ok((build_cmd, test_cmd, steps_count))
+}
+
+/// Apply the AI-recommended build/test configuration to the database.
+///
+/// Writes `build_cmd`, `test_cmd`, `build_timeout`, `test_timeout` to the config
+/// table. If `pipeline_steps` are provided and non-empty, clears existing
+/// validation_steps and inserts the new ones.
+///
+/// Returns (build_cmd, test_cmd, pipeline_steps_count).
+fn apply_build_test_config(
+    conn: &Connection,
+    config_data: &JsonValue,
+) -> Result<(String, String, usize)> {
+    let build_cmd = config_data
+        .get("build_cmd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let test_cmd = config_data
+        .get("test_cmd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let build_timeout = config_data
+        .get("build_timeout")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(600);
+
+    let test_timeout = config_data
+        .get("test_timeout")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(600);
+
+    // Write config values
+    let now = chrono::Local::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        params!["build_cmd", &build_cmd, &now],
+    )?;
+    conn.execute(
+        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        params!["test_cmd", &test_cmd, &now],
+    )?;
+    conn.execute(
+        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        params!["build_timeout", &build_timeout.to_string(), &now],
+    )?;
+    conn.execute(
+        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        params!["test_timeout", &test_timeout.to_string(), &now],
+    )?;
+
+    // Insert pipeline steps if provided
+    let steps_count = if let Some(steps) = config_data.get("pipeline_steps").and_then(|s| s.as_array()) {
+        if !steps.is_empty() {
+            // Clear existing validation steps before inserting new ones
+            conn.execute("DELETE FROM validation_steps", [])?;
+
+            for step in steps {
+                let name = step.get("name").and_then(|v| v.as_str()).unwrap_or("step");
+                let command = step.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let order = step.get("order").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let required = step.get("required").and_then(|v| v.as_bool()).unwrap_or(true);
+                let timeout = step.get("timeout").and_then(|v| v.as_i64());
+
+                conn.execute(
+                    "INSERT INTO validation_steps (name, command, sort_order, required, timeout_secs)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        name,
+                        command,
+                        order,
+                        if required { 1 } else { 0 },
+                        timeout,
+                    ],
+                )?;
+            }
+            steps.len()
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    Ok((build_cmd, test_cmd, steps_count))
 }
 
 /// Extract JSON from a response that might be wrapped in markdown code blocks.
