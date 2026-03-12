@@ -63,6 +63,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Add prd_section_id TEXT column to tasks for PRD section linking",
         apply: migrate_010_prd_section_id,
     },
+    Migration {
+        version: 11,
+        description: "Add attempt/failure tracking to tasks and pattern/iteration linking to learnings",
+        apply: migrate_011_task_attempts_and_learning_links,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -379,6 +384,20 @@ fn migrate_008_iterations_approval_status(conn: &Connection) -> Result<()> {
 fn migrate_010_prd_section_id(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE tasks ADD COLUMN prd_section_id TEXT;",
+    )?;
+    Ok(())
+}
+
+fn migrate_011_task_attempts_and_learning_links(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE tasks ADD COLUMN total_attempts INTEGER DEFAULT 0;
+        ALTER TABLE tasks ADD COLUMN total_failures INTEGER DEFAULT 0;
+        ALTER TABLE tasks ADD COLUMN last_failure_at TEXT;
+
+        ALTER TABLE learnings ADD COLUMN pattern_id INTEGER REFERENCES failure_patterns(id);
+        ALTER TABLE learnings ADD COLUMN iteration_id INTEGER REFERENCES iterations(id);
+        "#,
     )?;
     Ok(())
 }
