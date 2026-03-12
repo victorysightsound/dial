@@ -173,6 +173,29 @@ impl EventHandler for CliEventHandler {
             Event::TermAdded { canonical, category } => {
                 output::print_success(&format!("Term added: {} [{}]", canonical, category));
             }
+            Event::TaskReviewCompleted { tasks_kept, tasks_added, tasks_removed } => {
+                output::print_success(&format!(
+                    "Task review complete: {} kept, {} added, {} removed",
+                    tasks_kept, tasks_added, tasks_removed
+                ));
+            }
+            Event::BuildTestConfigured { build_cmd, test_cmd, pipeline_steps } => {
+                output::print_success(&format!(
+                    "Build/test configured: build='{}', test='{}', {} pipeline steps",
+                    build_cmd, test_cmd, pipeline_steps
+                ));
+            }
+            Event::IterationModeSet { mode } => {
+                output::print_success(&format!("Iteration mode set: {}", mode));
+            }
+            Event::LaunchReady { project_name, task_count } => {
+                println!("\n{}", output::bold("Launch Ready"));
+                println!("{}", "=".repeat(40));
+                output::print_success(&format!(
+                    "Project '{}' ready with {} tasks",
+                    project_name, task_count
+                ));
+            }
             Event::Info(msg) => {
                 println!("{}", msg);
             }

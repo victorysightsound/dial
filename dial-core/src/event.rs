@@ -96,6 +96,14 @@ pub enum Event {
     WizardResumed { phase: u8 },
     /// A terminology entry was added.
     TermAdded { canonical: String, category: String },
+    /// Task review phase completed with summary of changes.
+    TaskReviewCompleted { tasks_kept: usize, tasks_added: usize, tasks_removed: usize },
+    /// Build and test commands were configured.
+    BuildTestConfigured { build_cmd: String, test_cmd: String, pipeline_steps: usize },
+    /// Iteration mode was selected.
+    IterationModeSet { mode: String },
+    /// Project is ready for launch.
+    LaunchReady { project_name: String, task_count: usize },
 
     // --- General Events ---
     /// Informational message.
