@@ -274,6 +274,7 @@ dependencies = [
  "dial-core",
  "dial-providers",
  "predicates",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

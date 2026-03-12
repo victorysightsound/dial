@@ -241,12 +241,77 @@ enum TaskCommands {
 
 #[derive(Subcommand)]
 enum SpecCommands {
-    /// Search specs
+    /// Search specs (legacy spec_sections or PRD)
     Search { query: String },
-    /// Show spec section
+    /// Show spec section (legacy)
     Show { id: i64 },
-    /// List spec sections
+    /// List spec sections (legacy or PRD)
     List,
+    /// Import markdown files into prd.db
+    Import {
+        /// Directory containing markdown spec files
+        #[arg(long, default_value = "specs")]
+        dir: String,
+    },
+    /// Run the PRD wizard to generate a structured spec
+    Wizard {
+        /// Template to use (spec, architecture, api, mvp)
+        #[arg(long, default_value = "spec")]
+        template: String,
+        /// Existing document to refine
+        #[arg(long)]
+        from: Option<String>,
+        /// Resume a paused wizard session
+        #[arg(long)]
+        resume: bool,
+    },
+    /// Migrate existing spec_sections into prd.db
+    Migrate,
+    /// Manage terminology
+    Term {
+        #[command(subcommand)]
+        command: TermCommands,
+    },
+    /// Check PRD status and summary
+    Check,
+    /// Show a PRD section by dotted ID (e.g., "1.2.3")
+    Prd {
+        /// Section ID (e.g., "1", "1.2", "1.2.3")
+        section_id: String,
+    },
+    /// Search PRD sections by query
+    PrdSearch {
+        /// Search query
+        query: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TermCommands {
+    /// Add a terminology entry
+    Add {
+        /// Canonical term name
+        canonical: String,
+        /// Definition
+        definition: String,
+        /// Category (e.g., domain, technical, acronym)
+        #[arg(short, long, default_value = "domain")]
+        category: String,
+        /// Comma-separated alternate names/variants
+        #[arg(long)]
+        variants: Option<String>,
+    },
+    /// List terminology entries
+    List {
+        /// Filter by category
+        #[arg(short, long)]
+        category: Option<String>,
+    },
+    /// Search terminology
+    Search {
+        /// Search query
+        query: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -412,8 +477,125 @@ async fn run_command(command: Commands) -> Result<()> {
             Some(SpecCommands::Show { id }) => {
                 engine.spec_show(id).await?;
             }
-            Some(SpecCommands::List) | None => {
-                engine.spec_list().await?;
+            Some(SpecCommands::List) => {
+                // If prd.db exists, show PRD sections; otherwise legacy
+                if dial_core::prd::prd_db_exists() {
+                    let sections = engine.prd_list().await?;
+                    if sections.is_empty() {
+                        println!("{}", output::dim("No PRD sections. Run 'dial spec import' or 'dial spec wizard'."));
+                    } else {
+                        println!("{}", output::bold("PRD Sections"));
+                        println!("{}", "=".repeat(60));
+                        for s in &sections {
+                            let indent = "  ".repeat((s.level - 1) as usize);
+                            println!("{}{} {} ({} words)", indent, s.section_id, s.title, s.word_count);
+                        }
+                    }
+                } else {
+                    engine.spec_list().await?;
+                }
+            }
+            Some(SpecCommands::Import { dir }) => {
+                engine.prd_import(&dir).await?;
+            }
+            Some(SpecCommands::Wizard { template, from, resume }) => {
+                engine.prd_wizard(&template, from.as_deref(), resume).await?;
+            }
+            Some(SpecCommands::Migrate) => {
+                let count = engine.prd_migrate().await?;
+                if count == 0 {
+                    println!("{}", output::dim("No spec_sections found to migrate."));
+                }
+            }
+            Some(SpecCommands::Term { command }) => match command {
+                TermCommands::Add { canonical, definition, category, variants } => {
+                    let variants_json = match variants {
+                        Some(v) => {
+                            let list: Vec<&str> = v.split(',').map(|s| s.trim()).collect();
+                            serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
+                        }
+                        None => "[]".to_string(),
+                    };
+                    engine.prd_term_add(&canonical, &variants_json, &definition, &category, None).await?;
+                }
+                TermCommands::List { category } => {
+                    let terms = engine.prd_term_list(category.as_deref()).await?;
+                    if terms.is_empty() {
+                        println!("{}", output::dim("No terminology entries."));
+                    } else {
+                        println!("{}", output::bold("Terminology"));
+                        println!("{}", "=".repeat(60));
+                        for t in &terms {
+                            println!("  {} [{}]: {}", t.canonical, t.category, t.definition);
+                        }
+                    }
+                }
+                TermCommands::Search { query } => {
+                    let terms = engine.prd_term_search(&query).await?;
+                    if terms.is_empty() {
+                        println!("{}", output::dim("No matching terms."));
+                    } else {
+                        for t in &terms {
+                            println!("  {} [{}]: {}", t.canonical, t.category, t.definition);
+                        }
+                    }
+                }
+            },
+            Some(SpecCommands::Check) => {
+                if dial_core::prd::prd_db_exists() {
+                    let sections = engine.prd_list().await?;
+                    let terms = engine.prd_term_list(None).await?;
+                    let total_words: i32 = sections.iter().map(|s| s.word_count).sum();
+                    println!("{}", output::bold("PRD Status"));
+                    println!("{}", "=".repeat(40));
+                    println!("  Sections:    {}", sections.len());
+                    println!("  Word count:  {}", total_words);
+                    println!("  Terms:       {}", terms.len());
+                    output::print_success("prd.db is healthy.");
+                } else {
+                    println!("{}", output::dim("No prd.db found. Run 'dial spec import' or 'dial spec wizard'."));
+                }
+            }
+            Some(SpecCommands::Prd { section_id }) => {
+                match engine.prd_show(&section_id).await? {
+                    Some(section) => {
+                        println!("{}", output::bold(&format!("{} {}", section.section_id, section.title)));
+                        println!("{}", "=".repeat(60));
+                        println!("{}", section.content);
+                    }
+                    None => {
+                        println!("{}", output::dim(&format!("Section '{}' not found.", section_id)));
+                    }
+                }
+            }
+            Some(SpecCommands::PrdSearch { query }) => {
+                let results = engine.prd_search(&query).await?;
+                if results.is_empty() {
+                    println!("{}", output::dim("No matching PRD sections."));
+                } else {
+                    for s in &results {
+                        let preview = if s.content.len() > 100 { &s.content[..100] } else { &s.content };
+                        println!("  {} {} - {}", s.section_id, s.title, preview);
+                    }
+                }
+            }
+            None => {
+                // Default: show PRD sections if available, else legacy
+                if dial_core::prd::prd_db_exists() {
+                    let sections = engine.prd_list().await?;
+                    if sections.is_empty() {
+                        println!("{}", output::dim("No PRD sections. Run 'dial spec import' or 'dial spec wizard'."));
+                    } else {
+                        println!("{}", output::bold("PRD Sections"));
+                        println!("{}", "=".repeat(60));
+                        for s in &sections {
+                            let indent = "  ".repeat((s.level - 1) as usize);
+                            println!("{}{} {} ({} words)", indent, s.section_id, s.title, s.word_count);
+                        }
+                    }
+                } else {
+                    engine.spec_list().await?;
+                }
             }
         },
 
