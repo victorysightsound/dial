@@ -1280,6 +1280,14 @@ impl Engine {
         Ok(())
     }
 
+    // --- Health ---
+
+    /// Compute the project health score.
+    pub async fn health(&self) -> Result<crate::health::HealthScore> {
+        let conn = self.conn()?;
+        crate::health::compute_health(&conn)
+    }
+
     // --- Metrics ---
 
     /// Compute a structured metrics report.

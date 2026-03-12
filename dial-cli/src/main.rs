@@ -151,6 +151,13 @@ enum Commands {
         command: Option<PipelineCommands>,
     },
 
+    /// Show project health score
+    Health {
+        /// Output format (text, json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
     /// Show statistics
     Stats {
         /// Output format (text, json, csv)
@@ -882,6 +889,15 @@ async fn run_command(command: Commands) -> Result<()> {
             }
         },
 
+        Commands::Health { format } => {
+            let health = engine.health().await?;
+            if format == "json" {
+                println!("{}", serde_json::to_string_pretty(&health).unwrap());
+            } else {
+                print_health(&health);
+            }
+        }
+
         Commands::Stats { format, trend } => {
             if let Some(days) = trend {
                 let trends = engine.trends(days).await?;
@@ -1179,5 +1195,47 @@ fn print_dry_run_result(result: &DryRunResult) {
         println!("{}", output::dim("..."));
     }
     println!("{}", output::dim(&"-".repeat(70)));
+}
+
+fn print_health(health: &dial_core::health::HealthScore) {
+    let score_str = format!("{}", health.score);
+    let colored_score = if health.score >= 70 {
+        output::green(&score_str)
+    } else if health.score >= 40 {
+        output::yellow(&score_str)
+    } else {
+        output::red(&score_str)
+    };
+
+    let trend_str = format!("{}", health.trend);
+    let colored_trend = match health.trend {
+        dial_core::Trend::Improving => output::green(&trend_str),
+        dial_core::Trend::Stable => output::yellow(&trend_str),
+        dial_core::Trend::Declining => output::red(&trend_str),
+    };
+
+    println!("{}", output::bold("Project Health"));
+    println!("{}", "=".repeat(60));
+    println!("Score: {}/100  Trend: {}", colored_score, colored_trend);
+    println!();
+
+    println!("{}", output::bold("Factors"));
+    println!("{}", "-".repeat(60));
+    for factor in &health.factors {
+        let factor_score_str = format!("{:>3}", factor.score);
+        let colored_factor = if factor.score >= 70 {
+            output::green(&factor_score_str)
+        } else if factor.score >= 40 {
+            output::yellow(&factor_score_str)
+        } else {
+            output::red(&factor_score_str)
+        };
+
+        println!(
+            "  {:<28} {} (weight: {:.2})",
+            factor.name, colored_factor, factor.weight
+        );
+        println!("    {}", output::dim(&factor.detail));
+    }
 }
 
