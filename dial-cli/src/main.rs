@@ -2,6 +2,7 @@ mod cli_handler;
 
 use clap::{Parser, Subcommand};
 use dial_core::*;
+use dial_providers::AnthropicProvider;
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -29,6 +30,25 @@ enum Commands {
         /// Skip adding DIAL instructions to AGENTS.md
         #[arg(long)]
         no_agents: bool,
+    },
+
+    /// Create a new DIAL project with guided wizard (init + full spec + tasks + config)
+    New {
+        /// Template to use (spec, architecture, api, mvp)
+        #[arg(long, default_value = "spec")]
+        template: String,
+
+        /// Existing document to refine
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Resume a paused wizard session
+        #[arg(long)]
+        resume: bool,
+
+        /// Phase name
+        #[arg(long, default_value = DEFAULT_PHASE)]
+        phase: String,
     },
 
     /// Index spec files (deprecated: use 'dial spec import' instead)
@@ -411,12 +431,25 @@ async fn run_command(command: Commands) -> Result<()> {
         return Ok(());
     }
 
+    // New creates a project and runs the full wizard (phases 1-9)
+    if let Commands::New { template, from, resume, phase } = command {
+        let mut engine = Engine::init(&phase, None, true).await?;
+        engine.on_event(Arc::new(cli_handler::CliEventHandler));
+
+        let api_key = std::env::var("ANTHROPIC_API_KEY")
+            .map_err(|_| errors::DialError::ProviderRequired)?;
+        engine.set_provider(Arc::new(AnthropicProvider::new(api_key)));
+
+        engine.new_project(&template, from.as_deref(), resume).await?;
+        return Ok(());
+    }
+
     // All other commands require an initialized project
     let mut engine = Engine::open(EngineConfig::default()).await?;
     engine.on_event(Arc::new(cli_handler::CliEventHandler));
 
     match command {
-        Commands::Init { .. } => unreachable!(),
+        Commands::Init { .. } | Commands::New { .. } => unreachable!(),
 
         Commands::Index { dir } => {
             println!("{}", output::yellow("Note: 'dial index' is deprecated. Use 'dial spec import --dir <path>' instead."));
