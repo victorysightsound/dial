@@ -166,6 +166,7 @@ fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<S
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(&shell_cmd)
+        .env_remove("CLAUDECODE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
