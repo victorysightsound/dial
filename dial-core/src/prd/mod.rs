@@ -1,5 +1,6 @@
 pub mod parser;
 pub mod schema;
+pub mod templates;
 
 use crate::errors::{DialError, Result};
 use rusqlite::{params, Connection};
