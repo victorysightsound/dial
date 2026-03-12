@@ -896,7 +896,7 @@ pub async fn run_wizard_phase_7(
 /// validation_steps and inserts the new ones.
 ///
 /// Returns (build_cmd, test_cmd, pipeline_steps_count).
-fn apply_build_test_config(
+pub fn apply_build_test_config(
     conn: &Connection,
     config_data: &JsonValue,
 ) -> Result<(String, String, usize)> {
@@ -922,28 +922,11 @@ fn apply_build_test_config(
         .and_then(|v| v.as_i64())
         .unwrap_or(600);
 
-    // Write config values
-    let now = chrono::Local::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params!["build_cmd", &build_cmd, &now],
-    )?;
-    conn.execute(
-        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params!["test_cmd", &test_cmd, &now],
-    )?;
-    conn.execute(
-        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params!["build_timeout", &build_timeout.to_string(), &now],
-    )?;
-    conn.execute(
-        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params!["test_timeout", &test_timeout.to_string(), &now],
-    )?;
+    // Write config values via config_set
+    crate::config::config_set("build_cmd", &build_cmd)?;
+    crate::config::config_set("test_cmd", &test_cmd)?;
+    crate::config::config_set("build_timeout", &build_timeout.to_string())?;
+    crate::config::config_set("test_timeout", &test_timeout.to_string())?;
 
     // Insert pipeline steps if provided
     let steps_count = if let Some(steps) = config_data.get("pipeline_steps").and_then(|s| s.as_array()) {

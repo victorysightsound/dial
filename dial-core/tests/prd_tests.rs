@@ -1,5 +1,6 @@
 use dial_core::prd;
 use dial_core::Engine;
+use serde_json::json;
 use std::env;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -336,6 +337,101 @@ async fn test_task_prd_section_id_field() {
     let id = engine.task_add("Test task", 5, None).await.unwrap();
     let task = engine.task_get(id).await.unwrap();
     assert!(task.prd_section_id.is_none());
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+// --- Phase 7: Build/Test Config Writing ---
+
+#[tokio::test]
+async fn test_apply_build_test_config_writes_config_and_steps() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    let config_data = json!({
+        "build_cmd": "cargo build --release",
+        "test_cmd": "cargo test",
+        "build_timeout": 300,
+        "test_timeout": 120,
+        "pipeline_steps": [
+            {"name": "lint", "command": "cargo clippy", "order": 1, "required": true, "timeout": 60},
+            {"name": "build", "command": "cargo build", "order": 2, "required": true, "timeout": 300},
+            {"name": "test", "command": "cargo test", "order": 3, "required": true, "timeout": 120},
+            {"name": "docs", "command": "cargo doc", "order": 4, "required": false, "timeout": 90}
+        ],
+        "rationale": "Standard Rust pipeline"
+    });
+
+    let (build_cmd, test_cmd, steps_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data).unwrap();
+
+    assert_eq!(build_cmd, "cargo build --release");
+    assert_eq!(test_cmd, "cargo test");
+    assert_eq!(steps_count, 4);
+
+    // Verify config values were written via config_set
+    let stored_build = dial_core::config::config_get("build_cmd").unwrap();
+    assert_eq!(stored_build, Some("cargo build --release".to_string()));
+
+    let stored_test = dial_core::config::config_get("test_cmd").unwrap();
+    assert_eq!(stored_test, Some("cargo test".to_string()));
+
+    let stored_build_timeout = dial_core::config::config_get("build_timeout").unwrap();
+    assert_eq!(stored_build_timeout, Some("300".to_string()));
+
+    let stored_test_timeout = dial_core::config::config_get("test_timeout").unwrap();
+    assert_eq!(stored_test_timeout, Some("120".to_string()));
+
+    // Verify validation_steps were inserted
+    let mut stmt = phase_conn
+        .prepare("SELECT name, command, sort_order, required, timeout_secs FROM validation_steps ORDER BY sort_order")
+        .unwrap();
+    let steps: Vec<(String, String, i32, i32, Option<i64>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(steps.len(), 4);
+    assert_eq!(steps[0].0, "lint");
+    assert_eq!(steps[0].1, "cargo clippy");
+    assert_eq!(steps[0].2, 1); // sort_order
+    assert_eq!(steps[0].3, 1); // required = true
+    assert_eq!(steps[0].4, Some(60)); // timeout
+    assert_eq!(steps[3].0, "docs");
+    assert_eq!(steps[3].3, 0); // required = false
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_build_test_config_defaults() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    // Minimal JSON — missing optional fields should use defaults
+    let config_data = json!({
+        "build_cmd": "make",
+        "test_cmd": "make test"
+    });
+
+    let (build_cmd, test_cmd, steps_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data).unwrap();
+
+    assert_eq!(build_cmd, "make");
+    assert_eq!(test_cmd, "make test");
+    assert_eq!(steps_count, 0); // No pipeline_steps provided
+
+    // Timeouts should default to 600
+    let stored_build_timeout = dial_core::config::config_get("build_timeout").unwrap();
+    assert_eq!(stored_build_timeout, Some("600".to_string()));
+
+    let stored_test_timeout = dial_core::config::config_get("test_timeout").unwrap();
+    assert_eq!(stored_test_timeout, Some("600".to_string()));
 
     env::set_current_dir(original_dir).unwrap();
 }
