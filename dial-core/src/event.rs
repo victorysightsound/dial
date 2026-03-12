@@ -81,6 +81,22 @@ pub enum Event {
     /// A paused iteration was rejected with a reason.
     Rejected { iteration_id: i64, reason: String },
 
+    // --- PRD Events ---
+    /// Spec files were imported into prd.db.
+    PrdImported { files: usize, sections: usize },
+    /// A wizard phase started.
+    WizardPhaseStarted { phase: u8, name: String },
+    /// A wizard phase completed.
+    WizardPhaseCompleted { phase: u8, name: String },
+    /// The wizard finished, generating sections and tasks.
+    WizardCompleted { sections_generated: usize, tasks_generated: usize },
+    /// The wizard was paused (state saved for resume).
+    WizardPaused { phase: u8 },
+    /// The wizard was resumed from a saved state.
+    WizardResumed { phase: u8 },
+    /// A terminology entry was added.
+    TermAdded { canonical: String, category: String },
+
     // --- General Events ---
     /// Informational message.
     Info(String),

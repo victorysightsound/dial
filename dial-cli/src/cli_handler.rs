@@ -148,6 +148,31 @@ impl EventHandler for CliEventHandler {
                     output::dim(&format!("{} skipped: {}", name, reason))
                 );
             }
+            Event::PrdImported { files, sections } => {
+                output::print_success(&format!("Imported {} sections from {} files into prd.db", sections, files));
+            }
+            Event::WizardPhaseStarted { phase, name } => {
+                println!("\n{}", output::bold(&format!("Phase {}/5: {}", phase, name)));
+                println!("{}", "─".repeat(40));
+            }
+            Event::WizardPhaseCompleted { phase, name } => {
+                println!("{}", output::green(&format!("Phase {}: {} complete", phase, name)));
+            }
+            Event::WizardCompleted { sections_generated, tasks_generated } => {
+                println!("\n{}", output::bold("Wizard Complete"));
+                println!("{}", "=".repeat(40));
+                output::print_success(&format!("Generated {} PRD sections", sections_generated));
+                output::print_success(&format!("Created {} linked tasks", tasks_generated));
+            }
+            Event::WizardPaused { phase } => {
+                println!("{}", output::yellow(&format!("Wizard paused at phase {}/5. Resume with 'dial spec wizard --resume'", phase)));
+            }
+            Event::WizardResumed { phase } => {
+                println!("{}", output::green(&format!("Resuming wizard from phase {}/5", phase)));
+            }
+            Event::TermAdded { canonical, category } => {
+                output::print_success(&format!("Term added: {} [{}]", canonical, category));
+            }
             Event::Info(msg) => {
                 println!("{}", msg);
             }
