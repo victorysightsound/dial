@@ -6,7 +6,7 @@ A Rust library and CLI for autonomous AI-assisted software development.
 Persistent memory. Failure pattern detection. Structured task execution.
 Build entire projects iteratively without losing context or repeating mistakes.
 
-[Quick Start](#quick-start)&ensp;&middot;&ensp;[`dial new`](#dial-new)&ensp;&middot;&ensp;[Manual Workflow](#manual-workflow)&ensp;&middot;&ensp;[Templates](#templates)&ensp;&middot;&ensp;[Library](#library-usage)&ensp;&middot;&ensp;[CLI Reference](docs/cli-reference.md)&ensp;&middot;&ensp;[AI Integration](docs/ai-integration.md)
+[Quick Start](#quick-start)&ensp;&middot;&ensp;[Project Wizard](#project-wizard)&ensp;&middot;&ensp;[Why Specs Matter](#why-specs-matter)&ensp;&middot;&ensp;[Templates](#templates)&ensp;&middot;&ensp;[Manual Workflow](#manual-workflow)&ensp;&middot;&ensp;[Library](#library-usage)&ensp;&middot;&ensp;[CLI Reference](docs/cli-reference.md)&ensp;&middot;&ensp;[AI Integration](docs/ai-integration.md)
 
 ---
 
@@ -76,7 +76,7 @@ cp target/release/dial /usr/local/bin/
 
 **Requirements:** Rust 1.70+. No runtime dependencies. The binary is fully self-contained.
 
-## `dial new`
+## Project Wizard
 
 The fastest way to start a project. One command walks you from zero to autonomous iteration through 9 AI-guided phases:
 
@@ -166,6 +166,16 @@ Problem → MVP Features → Technical Stack → Data Model
 
 The template determines what sections the AI generates in phase 5 and what structure tasks are linked to. You can always add more sections manually after the wizard completes.
 
+## Why Specs Matter
+
+Without a spec, DIAL assembles context from learnings, solutions, and failures — useful, but the AI has no requirements to validate against. With a spec:
+
+- Each task carries **what to build** alongside **how previous attempts went**
+- FTS search surfaces relevant requirements even for unlinked tasks
+- Specification drift is prevented because the AI re-reads requirements every iteration
+
+This is the key difference between DIAL and running an AI assistant in a loop. The spec is externalized memory — it ensures the AI re-reads requirements at every iteration instead of relying on conversation history that degrades over time.
+
 ## Manual Workflow
 
 If you prefer to control each step yourself instead of using `dial new`:
@@ -193,14 +203,6 @@ dial auto-run --cli claude --max 10   # Fully autonomous
 ```
 
 `dial spec wizard` runs phases 1-5 only (PRD generation). Use `dial new` for the full 9-phase flow.
-
-### Why Specs Matter
-
-Without a spec, DIAL assembles context from learnings, solutions, and failures — useful, but the AI has no requirements to validate against. With a spec:
-
-- Each task carries **what to build** alongside **how previous attempts went**
-- FTS search surfaces relevant requirements even for unlinked tasks
-- Specification drift is prevented because the AI re-reads requirements every iteration
 
 ### Querying the PRD
 
