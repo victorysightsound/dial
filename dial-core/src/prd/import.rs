@@ -102,6 +102,90 @@ pub fn prd_import_file(file_path: &Path) -> Result<usize> {
     Ok(count)
 }
 
+/// Migrate existing spec_sections from the phase DB into prd.db.
+///
+/// Reads all rows from spec_sections in the current phase database,
+/// generates synthetic dotted IDs based on row order, extracts title
+/// from heading_path, and inserts into prd.db.
+pub fn migrate_spec_sections_to_prd() -> Result<usize> {
+    let phase_conn = crate::db::get_db(None)?;
+    let prd_conn = get_or_init_prd_db()?;
+
+    let mut stmt = phase_conn.prepare(
+        "SELECT id, file_path, heading_path, level, content FROM spec_sections ORDER BY file_path, id",
+    )?;
+
+    let rows: Vec<(i64, String, String, i32, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    // Clear existing prd sections for clean migration
+    prd_delete_all_sections(&prd_conn)?;
+
+    let mut count = 0;
+    let mut counters = [0u32; 6];
+    let mut level_ids: [Option<String>; 6] = Default::default();
+
+    for (_old_id, _file_path, heading_path, level, content) in &rows {
+        let level = *level as usize;
+        let level_clamped = level.clamp(1, 6);
+
+        // Extract title (last component of heading_path "A > B > C" -> "C")
+        let title = heading_path
+            .rsplit(" > ")
+            .next()
+            .unwrap_or(heading_path)
+            .trim();
+
+        // Generate dotted section_id
+        counters[level_clamped - 1] += 1;
+        for i in level_clamped..6 {
+            counters[i] = 0;
+            level_ids[i] = None;
+        }
+
+        let section_id: String = counters[..level_clamped]
+            .iter()
+            .filter(|&&c| c > 0)
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+
+        let parent_id = if level_clamped > 1 {
+            (0..level_clamped - 1)
+                .rev()
+                .find_map(|i| level_ids[i].clone())
+        } else {
+            None
+        };
+
+        level_ids[level_clamped - 1] = Some(section_id.clone());
+
+        let word_count = content.split_whitespace().count() as i32;
+
+        prd_insert_section(
+            &prd_conn,
+            &section_id,
+            title,
+            parent_id.as_deref(),
+            level_clamped as i32,
+            count as i32,
+            content,
+            word_count,
+        )?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 /// Insert parsed sections into the database.
 fn import_sections_to_db(
     conn: &Connection,
