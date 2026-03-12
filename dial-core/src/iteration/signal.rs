@@ -2,7 +2,7 @@ use crate::db::get_dial_dir;
 use crate::errors::{DialError, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::orchestrator::SubagentResult;
 
@@ -31,24 +31,33 @@ pub fn signal_file_path() -> PathBuf {
     get_dial_dir().join("signal.json")
 }
 
+/// Signal file path relative to a given base directory.
+pub fn signal_file_path_at(base: &Path) -> PathBuf {
+    base.join(".dial").join("signal.json")
+}
+
 /// Read and parse `.dial/signal.json`, then delete it.
 ///
 /// Returns `Ok(Some(file))` if the file exists and parses successfully,
 /// `Ok(None)` if the file does not exist, and `Err` on parse/IO errors.
 pub fn read_signal_file() -> Result<Option<SignalFile>> {
-    let path = signal_file_path();
+    read_signal_file_at(&signal_file_path())
+}
+
+/// Read and parse a signal file at the given path, then delete it.
+pub fn read_signal_file_at(path: &Path) -> Result<Option<SignalFile>> {
     if !path.exists() {
         return Ok(None);
     }
 
-    let contents = fs::read_to_string(&path)
+    let contents = fs::read_to_string(path)
         .map_err(|e| DialError::CommandFailed(format!("Failed to read signal file: {}", e)))?;
 
     let signal_file: SignalFile = serde_json::from_str(&contents)
         .map_err(|e| DialError::CommandFailed(format!("Failed to parse signal file: {}", e)))?;
 
     // Delete the file after successful parse so it's not re-read
-    fs::remove_file(&path)
+    fs::remove_file(path)
         .map_err(|e| DialError::CommandFailed(format!("Failed to delete signal file: {}", e)))?;
 
     Ok(Some(signal_file))
@@ -56,11 +65,15 @@ pub fn read_signal_file() -> Result<Option<SignalFile>> {
 
 /// Write a signal file to `.dial/signal.json` (primarily for testing).
 pub fn write_signal_file(signal_file: &SignalFile) -> Result<()> {
-    let path = signal_file_path();
+    write_signal_file_at(&signal_file_path(), signal_file)
+}
+
+/// Write a signal file to the given path.
+pub fn write_signal_file_at(path: &Path, signal_file: &SignalFile) -> Result<()> {
     let json = serde_json::to_string_pretty(signal_file)
         .map_err(|e| DialError::CommandFailed(format!("Failed to serialize signal file: {}", e)))?;
 
-    fs::write(&path, json)
+    fs::write(path, json)
         .map_err(|e| DialError::CommandFailed(format!("Failed to write signal file: {}", e)))?;
 
     Ok(())
@@ -96,21 +109,15 @@ pub fn signal_file_to_result(signal_file: &SignalFile, raw_output: &str) -> Suba
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::sync::Mutex;
 
-    /// Mutex to serialize tests that modify the process-wide current directory.
-    static CWD_MUTEX: Mutex<()> = Mutex::new(());
-
-    /// Helper: set up a temp `.dial/` directory and return its path.
-    /// Caller must hold CWD_MUTEX to prevent parallel cwd races.
-    fn setup_temp_dial_dir() -> tempfile::TempDir {
+    /// Helper: set up a temp dir with `.dial/` subdirectory, return TempDir and signal path.
+    /// Uses path-based functions — no CWD change needed.
+    fn setup_temp_signal_path() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let dial_dir = tmp.path().join(".dial");
         fs::create_dir_all(&dial_dir).unwrap();
-        // Point get_dial_dir() at our temp dir by changing cwd
-        env::set_current_dir(tmp.path()).unwrap();
-        tmp
+        let path = signal_file_path_at(tmp.path());
+        (tmp, path)
     }
 
     #[test]
@@ -260,8 +267,7 @@ mod tests {
 
     #[test]
     fn test_write_and_read_signal_file() {
-        let _lock = CWD_MUTEX.lock().unwrap();
-        let _tmp = setup_temp_dial_dir();
+        let (_tmp, path) = setup_temp_signal_path();
 
         let signal_file = SignalFile {
             signals: vec![
@@ -277,37 +283,37 @@ mod tests {
         };
 
         // Write
-        write_signal_file(&signal_file).unwrap();
-        assert!(signal_file_path().exists());
+        write_signal_file_at(&path, &signal_file).unwrap();
+        assert!(path.exists());
 
         // Read (should parse and delete)
-        let read_back = read_signal_file().unwrap();
+        let read_back = read_signal_file_at(&path).unwrap();
         assert!(read_back.is_some());
         let read_back = read_back.unwrap();
         assert_eq!(read_back, signal_file);
 
         // File should be deleted after read
-        assert!(!signal_file_path().exists());
+        assert!(!path.exists());
     }
 
     #[test]
     fn test_read_signal_file_missing() {
-        let _lock = CWD_MUTEX.lock().unwrap();
-        let _tmp = setup_temp_dial_dir();
+        let (_tmp, path) = setup_temp_signal_path();
 
-        // No signal file exists
-        let result = read_signal_file().unwrap();
+        // Remove the file to ensure it doesn't exist
+        let _ = fs::remove_file(&path);
+
+        let result = read_signal_file_at(&path).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_read_signal_file_invalid_json() {
-        let _lock = CWD_MUTEX.lock().unwrap();
-        let _tmp = setup_temp_dial_dir();
+        let (_tmp, path) = setup_temp_signal_path();
 
-        fs::write(signal_file_path(), "not valid json").unwrap();
+        fs::write(&path, "not valid json").unwrap();
 
-        let result = read_signal_file();
+        let result = read_signal_file_at(&path);
         assert!(result.is_err());
     }
 

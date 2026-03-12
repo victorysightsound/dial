@@ -741,21 +741,19 @@ DIAL_COMPLETE: Implemented the feature successfully
 
     // --- Signal file integration tests ---
 
-    /// Mutex to serialize tests that modify the process-wide current directory.
-    static CWD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn setup_temp_dial_dir() -> tempfile::TempDir {
+    /// Helper: set up a temp dir with `.dial/` subdirectory, return TempDir and signal path.
+    /// Uses path-based functions — no CWD change needed, safe for parallel tests.
+    fn setup_temp_signal_path() -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let dial_dir = tmp.path().join(".dial");
         std::fs::create_dir_all(&dial_dir).unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-        tmp
+        let path = signal::signal_file_path_at(tmp.path());
+        (tmp, path)
     }
 
     #[test]
     fn test_signal_file_preferred_over_regex() {
-        let _lock = CWD_MUTEX.lock().unwrap();
-        let _tmp = setup_temp_dial_dir();
+        let (_tmp, path) = setup_temp_signal_path();
 
         // Write a signal file that says "complete"
         let sf = SignalFile {
@@ -764,13 +762,13 @@ DIAL_COMPLETE: Implemented the feature successfully
             }],
             timestamp: "2026-03-12T10:00:00Z".to_string(),
         };
-        signal::write_signal_file(&sf).unwrap();
+        signal::write_signal_file_at(&path, &sf).unwrap();
 
         // Also provide output with a DIFFERENT DIAL_COMPLETE message
         let output = "DIAL_COMPLETE: Done via regex";
 
         // read_signal_file should consume the file
-        let signal_result = signal::read_signal_file().unwrap();
+        let signal_result = signal::read_signal_file_at(&path).unwrap();
         assert!(signal_result.is_some());
 
         let result = signal::signal_file_to_result(&signal_result.unwrap(), output);
@@ -781,11 +779,10 @@ DIAL_COMPLETE: Implemented the feature successfully
 
     #[test]
     fn test_fallback_to_regex_when_no_signal_file() {
-        let _lock = CWD_MUTEX.lock().unwrap();
-        let _tmp = setup_temp_dial_dir();
+        let (_tmp, path) = setup_temp_signal_path();
 
         // No signal file written — read returns None
-        let signal_result = signal::read_signal_file().unwrap();
+        let signal_result = signal::read_signal_file_at(&path).unwrap();
         assert!(signal_result.is_none());
 
         // Regex parsing should work as fallback
@@ -797,14 +794,13 @@ DIAL_COMPLETE: Implemented the feature successfully
 
     #[test]
     fn test_fallback_to_regex_on_invalid_signal_file() {
-        let _lock = CWD_MUTEX.lock().unwrap();
-        let _tmp = setup_temp_dial_dir();
+        let (_tmp, path) = setup_temp_signal_path();
 
         // Write invalid JSON to the signal file
-        std::fs::write(signal::signal_file_path(), "{{bad json}}").unwrap();
+        std::fs::write(&path, "{{bad json}}").unwrap();
 
         // read_signal_file should return an error
-        let result = signal::read_signal_file();
+        let result = signal::read_signal_file_at(&path);
         assert!(result.is_err());
 
         // In the orchestrator, this error triggers regex fallback
@@ -821,8 +817,7 @@ DIAL_COMPLETE: Implemented the feature successfully
         // 2. Orchestrator reads it
         // 3. Converts to SubagentResult
         // 4. Processes learnings and completion
-        let _lock = CWD_MUTEX.lock().unwrap();
-        let _tmp = setup_temp_dial_dir();
+        let (_tmp, path) = setup_temp_signal_path();
 
         // Simulate subagent writing signal file
         let sf = SignalFile {
@@ -841,14 +836,14 @@ DIAL_COMPLETE: Implemented the feature successfully
             ],
             timestamp: "2026-03-12T10:30:00Z".to_string(),
         };
-        signal::write_signal_file(&sf).unwrap();
+        signal::write_signal_file_at(&path, &sf).unwrap();
 
         // Simulate orchestrator reading signals after subprocess exits
         let raw_output = "... lots of subprocess output ...";
-        let signal_result = signal::read_signal_file().unwrap().unwrap();
+        let signal_result = signal::read_signal_file_at(&path).unwrap().unwrap();
 
         // File should be deleted after read
-        assert!(!signal::signal_file_path().exists());
+        assert!(!path.exists());
 
         // Convert to SubagentResult
         let result = signal::signal_file_to_result(&signal_result, raw_output);
