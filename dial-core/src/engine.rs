@@ -5,6 +5,7 @@ use crate::event::{Event, EventHandler};
 use crate::failure;
 use crate::iteration;
 use crate::learning;
+use crate::prd;
 use crate::provider::{Provider, ProviderResponse};
 use crate::spec;
 use crate::task;
@@ -785,6 +786,101 @@ impl Engine {
     /// List all spec sections.
     pub async fn spec_list(&self) -> Result<()> {
         spec::spec_list()
+    }
+
+    // --- PRD (Structured Spec Database) ---
+
+    /// Get a connection to the PRD database (creates if needed).
+    fn prd_conn(&self) -> Result<Connection> {
+        prd::get_or_init_prd_db()
+    }
+
+    /// Import spec files from a directory into prd.db.
+    pub async fn prd_import(&self, specs_dir: &str) -> Result<()> {
+        let result = prd::import::prd_import(specs_dir)?;
+        self.emit(Event::PrdImported { files: result.files, sections: result.sections });
+        Ok(())
+    }
+
+    /// Search PRD sections by query (FTS5).
+    pub async fn prd_search(&self, query: &str) -> Result<Vec<prd::PrdSection>> {
+        let conn = self.prd_conn()?;
+        prd::prd_search_sections(&conn, query)
+    }
+
+    /// Show a single PRD section by its dotted section_id.
+    pub async fn prd_show(&self, section_id: &str) -> Result<Option<prd::PrdSection>> {
+        let conn = self.prd_conn()?;
+        prd::prd_get_section(&conn, section_id)
+    }
+
+    /// List all PRD sections.
+    pub async fn prd_list(&self) -> Result<Vec<prd::PrdSection>> {
+        let conn = self.prd_conn()?;
+        prd::prd_list_sections(&conn)
+    }
+
+    /// Add a terminology entry to the PRD.
+    pub async fn prd_term_add(
+        &self,
+        canonical: &str,
+        variants_json: &str,
+        definition: &str,
+        category: &str,
+        first_used_in: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.prd_conn()?;
+        let id = prd::prd_add_term(&conn, canonical, variants_json, definition, category, first_used_in)?;
+        self.emit(Event::TermAdded { canonical: canonical.to_string(), category: category.to_string() });
+        Ok(id)
+    }
+
+    /// List terminology entries, optionally filtered by category.
+    pub async fn prd_term_list(&self, category: Option<&str>) -> Result<Vec<prd::PrdTerm>> {
+        let conn = self.prd_conn()?;
+        prd::prd_list_terms(&conn, category)
+    }
+
+    /// Search terminology by query (FTS5).
+    pub async fn prd_term_search(&self, query: &str) -> Result<Vec<prd::PrdTerm>> {
+        let conn = self.prd_conn()?;
+        prd::prd_search_terms(&conn, query)
+    }
+
+    /// Run the PRD wizard (interactive spec generation).
+    pub async fn prd_wizard(
+        &self,
+        template: &str,
+        from_doc: Option<&str>,
+        resume: bool,
+    ) -> Result<()> {
+        let provider = self.provider.as_ref()
+            .ok_or(DialError::ProviderRequired)?;
+
+        let conn = self.prd_conn()?;
+
+        if resume {
+            self.emit(Event::WizardResumed { phase: 0 });
+        }
+
+        let (sections_generated, tasks_generated) = prd::wizard::run_wizard(
+            provider.as_ref(),
+            &conn,
+            template,
+            from_doc,
+            resume,
+        ).await?;
+
+        self.emit(Event::WizardCompleted { sections_generated, tasks_generated });
+
+        Ok(())
+    }
+
+    /// Migrate existing spec_sections from the phase DB into prd.db.
+    pub async fn prd_migrate(&self) -> Result<usize> {
+        let count = prd::import::migrate_spec_sections_to_prd()?;
+        self.emit(Event::PrdImported { files: 0, sections: count });
+        Ok(count)
     }
 
     // --- Crash Recovery ---
