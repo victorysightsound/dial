@@ -484,28 +484,95 @@ async fn execute_wizard_prompt(provider: &dyn Provider, prompt: &str) -> Result<
 }
 
 /// Parse a JSON response from the provider, with one retry on failure.
+/// Aggressive JSON extraction: find the outermost `{...}` or `[...]` in a string.
+/// Used as a last-resort fallback when `extract_json` (markdown-aware) fails to
+/// produce valid JSON.
+fn extract_json_brute(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    // Find whichever comes first: `{` or `[`, and match to its closing counterpart
+    let brace_pos = trimmed.find('{');
+    let bracket_pos = trimmed.find('[');
+    let (open, close) = match (brace_pos, bracket_pos) {
+        (Some(b), Some(k)) => if b < k { (b, '}') } else { (k, ']') },
+        (Some(b), None) => (b, '}'),
+        (None, Some(k)) => (k, ']'),
+        (None, None) => return None,
+    };
+
+    let bytes = trimmed.as_bytes();
+    let open_char = bytes[open];
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for i in open..bytes.len() {
+        let b = bytes[i];
+        if escape {
+            escape = false;
+            continue;
+        }
+        if b == b'\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if b == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if b == open_char {
+            depth += 1;
+        } else if b == close as u8 {
+            depth -= 1;
+            if depth == 0 {
+                return Some(trimmed[open..=i].to_string());
+            }
+        }
+    }
+    None
+}
+
 async fn parse_json_response(
     response: &str,
     provider: &dyn Provider,
     original_prompt: &str,
 ) -> Result<JsonValue> {
-    // Try to extract JSON from the response (it might have markdown wrapping)
+    // Attempt 1: extract JSON from markdown code blocks
     let json_str = extract_json(response);
+    if let Ok(value) = serde_json::from_str::<JsonValue>(&json_str) {
+        return Ok(value);
+    }
 
-    match serde_json::from_str::<JsonValue>(&json_str) {
-        Ok(value) => Ok(value),
-        Err(_) => {
-            // Retry with a clarification prompt
-            let retry_prompt = format!(
-                "{}\n\nYour previous response was not valid JSON. Please respond with ONLY a valid JSON object. No markdown, no explanation, just JSON.",
-                original_prompt
-            );
-            let retry_response = execute_wizard_prompt(provider, &retry_prompt).await?;
-            let retry_json = extract_json(&retry_response);
-            serde_json::from_str::<JsonValue>(&retry_json)
-                .map_err(|e| DialError::WizardError(format!("Failed to parse JSON response: {}", e)))
+    // Attempt 2: brute-force extract outermost {}/[] from original response
+    if let Some(brute) = extract_json_brute(response) {
+        if let Ok(value) = serde_json::from_str::<JsonValue>(&brute) {
+            return Ok(value);
         }
     }
+
+    // Attempt 3: ask the AI to retry with stricter instructions
+    let retry_prompt = format!(
+        "{}\n\nYour previous response was not valid JSON. Please respond with ONLY a valid JSON object. No markdown, no explanation, just JSON.",
+        original_prompt
+    );
+    let retry_response = execute_wizard_prompt(provider, &retry_prompt).await?;
+    let retry_json = extract_json(&retry_response);
+    if let Ok(value) = serde_json::from_str::<JsonValue>(&retry_json) {
+        return Ok(value);
+    }
+
+    // Attempt 4: brute-force the retry response
+    if let Some(brute) = extract_json_brute(&retry_response) {
+        if let Ok(value) = serde_json::from_str::<JsonValue>(&brute) {
+            return Ok(value);
+        }
+    }
+
+    Err(DialError::WizardError(
+        "Failed to parse JSON response after multiple attempts. The AI provider returned invalid JSON.".to_string()
+    ))
 }
 
 /// Run wizard phases 4-5 (gap analysis and generation).
@@ -2290,5 +2357,52 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| row.get(0))
             .unwrap();
         assert_eq!(dep_count, 1);
+    }
+
+    // --- JSON Extraction Robustness Tests ---
+
+    #[test]
+    fn test_extract_json_brute_simple_object() {
+        let input = r#"Here is the JSON: {"key": "value"} and some trailing text"#;
+        let result = extract_json_brute(input).unwrap();
+        assert_eq!(result, r#"{"key": "value"}"#);
+    }
+
+    #[test]
+    fn test_extract_json_brute_nested_object() {
+        let input = r#"{"outer": {"inner": [1, 2, 3]}, "b": true}"#;
+        let result = extract_json_brute(input).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["outer"]["inner"][1], 2);
+    }
+
+    #[test]
+    fn test_extract_json_brute_with_strings_containing_braces() {
+        let input = r#"Sure! {"msg": "use { and } in strings", "ok": true}"#;
+        let result = extract_json_brute(input).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["ok"], true);
+    }
+
+    #[test]
+    fn test_extract_json_brute_array() {
+        let input = r#"Result: [1, 2, {"a": 3}]"#;
+        let result = extract_json_brute(input).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed[2]["a"], 3);
+    }
+
+    #[test]
+    fn test_extract_json_brute_no_json() {
+        let input = "This has no JSON at all.";
+        assert!(extract_json_brute(input).is_none());
+    }
+
+    #[test]
+    fn test_extract_json_brute_escaped_quotes() {
+        let input = r#"{"path": "C:\\Users\\test", "ok": true}"#;
+        let result = extract_json_brute(input).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["ok"], true);
     }
 }

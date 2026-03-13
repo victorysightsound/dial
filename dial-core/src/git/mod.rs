@@ -38,6 +38,10 @@ pub fn checkpoint_create(id: &str) -> Result<bool> {
 /// Restore a checkpoint by popping the most recent stash, then resetting the index
 /// so all changes are unstaged (matching pre-checkpoint state).
 /// Returns `Ok(true)` on success, `Ok(false)` if there is no stash to pop.
+///
+/// If `git stash pop` fails (e.g. merge conflict from manual commits between
+/// iterate and validate), falls back to `git reset --hard HEAD` + `git stash drop`
+/// to guarantee a clean working tree.
 pub fn checkpoint_restore() -> Result<bool> {
     if !git_is_repo() {
         return Err(DialError::NotGitRepo);
@@ -66,11 +70,31 @@ pub fn checkpoint_restore() -> Result<bool> {
         .output()?;
 
     if pop_result.status.success() {
-        Ok(true)
-    } else {
-        let stderr = String::from_utf8_lossy(&pop_result.stderr).to_string();
-        Err(DialError::GitError(format!("Failed to restore checkpoint: {}", stderr)))
+        return Ok(true);
     }
+
+    // Stash pop failed (likely merge conflict). Recover by resetting to a clean
+    // state and dropping the stash. The pre-checkpoint state is lost, but the
+    // working tree is guaranteed clean for the next attempt.
+    eprintln!(
+        "Warning: checkpoint restore failed ({}), recovering with hard reset",
+        String::from_utf8_lossy(&pop_result.stderr).trim()
+    );
+
+    // Abort any in-progress merge from the failed pop
+    let _ = Command::new("git")
+        .args(["reset", "--hard", "HEAD"])
+        .output();
+    let _ = Command::new("git")
+        .args(["clean", "-fd"])
+        .output();
+
+    // The failed pop leaves the stash in place — drop it
+    let _ = Command::new("git")
+        .args(["stash", "drop"])
+        .output();
+
+    Ok(true)
 }
 
 /// Drop the most recent stash entry (used after successful validation to discard the checkpoint).
@@ -117,6 +141,51 @@ pub fn git_has_changes() -> bool {
         .unwrap_or(false)
 }
 
+/// Patterns that indicate potentially dangerous files (secrets, credentials, keys).
+/// Checked before staging to prevent accidental commits of sensitive data.
+const DANGEROUS_PATTERNS: &[&str] = &[
+    ".env",
+    ".env.local",
+    ".env.production",
+    "credentials.json",
+    "service-account.json",
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    "id_rsa",
+    "id_ed25519",
+    ".secret",
+    ".secrets",
+];
+
+/// Check staged files for potentially dangerous filenames.
+/// Returns a list of warnings (empty if all safe).
+fn check_staged_for_secrets() -> Vec<String> {
+    let output = Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .output();
+
+    let Ok(result) = output else {
+        return vec![];
+    };
+
+    let files = String::from_utf8_lossy(&result.stdout);
+    let mut warnings = Vec::new();
+
+    for file in files.lines() {
+        let lower = file.to_lowercase();
+        for pattern in DANGEROUS_PATTERNS {
+            if lower.ends_with(pattern) || lower.contains(&format!("/{}", pattern)) {
+                warnings.push(file.to_string());
+                break;
+            }
+        }
+    }
+
+    warnings
+}
+
 pub fn git_commit(message: &str) -> Result<Option<String>> {
     // Stage all changes
     let add_result = Command::new("git")
@@ -125,6 +194,22 @@ pub fn git_commit(message: &str) -> Result<Option<String>> {
 
     if !add_result.status.success() {
         return Err(DialError::GitError("Failed to stage changes".to_string()));
+    }
+
+    // Safety check: warn about potentially dangerous files before committing
+    let dangerous = check_staged_for_secrets();
+    if !dangerous.is_empty() {
+        eprintln!(
+            "Warning: potentially sensitive files staged for commit: {}",
+            dangerous.join(", ")
+        );
+        eprintln!("Add these to .gitignore if they should not be committed.");
+        // Unstage the dangerous files and continue with the rest
+        for file in &dangerous {
+            let _ = Command::new("git")
+                .args(["reset", "HEAD", "--", file])
+                .output();
+        }
     }
 
     // Commit
@@ -208,5 +293,40 @@ mod tests {
         let diff = git_diff().unwrap();
         // diff is a valid String; it may be empty or non-empty depending on working tree state
         let _ = diff.len();
+    }
+
+    #[test]
+    fn test_dangerous_patterns_detects_env() {
+        // .env should match DANGEROUS_PATTERNS
+        let lower = ".env".to_lowercase();
+        let matched = DANGEROUS_PATTERNS.iter().any(|p| lower.ends_with(p));
+        assert!(matched, ".env should be flagged as dangerous");
+    }
+
+    #[test]
+    fn test_dangerous_patterns_detects_pem() {
+        let lower = "server.pem".to_lowercase();
+        let matched = DANGEROUS_PATTERNS.iter().any(|p| lower.ends_with(p));
+        assert!(matched, ".pem files should be flagged as dangerous");
+    }
+
+    #[test]
+    fn test_dangerous_patterns_ignores_safe_files() {
+        let safe_files = ["main.rs", "README.md", "Cargo.toml", "test.js"];
+        for file in &safe_files {
+            let lower = file.to_lowercase();
+            let matched = DANGEROUS_PATTERNS.iter().any(|p| lower.ends_with(p));
+            assert!(!matched, "{} should not be flagged as dangerous", file);
+        }
+    }
+
+    #[test]
+    fn test_dangerous_patterns_detects_key_files() {
+        let dangerous = ["id_rsa", "id_ed25519", "private.key", "cert.p12"];
+        for file in &dangerous {
+            let lower = file.to_lowercase();
+            let matched = DANGEROUS_PATTERNS.iter().any(|p| lower.ends_with(p));
+            assert!(matched, "{} should be flagged as dangerous", file);
+        }
     }
 }
