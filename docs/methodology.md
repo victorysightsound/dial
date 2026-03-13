@@ -130,9 +130,10 @@ When DIAL starts a task, it assembles context by querying the database for:
 1. **Behavioral signs** (always first - most important for preventing drift)
 2. **Linked spec section** (if the task has a `--spec` link)
 3. **Related spec sections** (FTS search using the task description)
-4. **Trusted solutions** (confidence >= 0.6, sorted by occurrence count)
-5. **Recent unresolved failures** (so the agent knows what to avoid)
-6. **Project learnings** (sorted by reference frequency, top 10)
+4. **Failed attempt diffs** (on retry attempts, the previous failed diff and error at priority 12 — shows what was tried so the agent doesn't repeat the same approach)
+5. **Trusted solutions** (confidence >= 0.6, sorted by occurrence count)
+6. **Recent unresolved failures** (so the agent knows what to avoid)
+7. **Project learnings** (sorted by reference frequency, top 10)
 
 This gives the agent exactly what it needs without flooding it with irrelevant history.
 

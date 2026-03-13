@@ -1,5 +1,48 @@
 # Changelog
 
+## 4.1.0 — 2026-03-13
+
+4 enhancements to the wizard and iteration systems. 354 total tests (up from 308).
+
+### Failed Attempt Diff Capture
+- `git_diff()` and `git_diff_stat()` helpers in `git.rs` capture the working tree diff as a String
+- On validation failure, captures diff and diff stat **before** `checkpoint_restore()` wipes the working tree
+- Stores both in the iteration `notes` field with `FAILED_DIFF_STAT:` and `FAILED_DIFF:` prefixes (diff truncated to 2000 chars)
+- On retry attempts (attempt > 1), context assembly includes the previous failed diff at priority 12:
+  `PREVIOUS ATTEMPT (failed): Error: {error} / Changes attempted: {diff_stat} {diff} / DO NOT repeat this approach.`
+- Slots between FTS specs (priority 10) and suggested solutions (priority 15) in the context budget
+
+### Spec Specificity Enforcement (Phase 4 Enhancement)
+- Phase 4 (GapAnalysis) prompt now includes a SPECIFICITY CHECK section
+- AI reviews each PRD section for vague language (`should`, `might`, `could`, `etc.`, `various`) and flags sections lacking acceptance criteria
+- Each section rated as `SPECIFIC`, `NEEDS_DETAIL`, or `VAGUE`
+- `VAGUE` sections are rewritten with concrete acceptance criteria before proceeding to Phase 5
+- Rewritten sections are updated in `prd.db` and preserved in `gathered_info` for Phase 5 to reference
+
+### Task Sizing Analysis (Phase 6 Enhancement)
+- Phase 6 (TaskReview) prompt now includes a TASK SIZING ANALYSIS section
+- Evaluates each task for scope (1-3 files), specificity (concrete enough for AI), and testability (verifiable by build+test)
+- Tasks exceeding 3 files or covering multiple features are split into smaller tasks with dependency relationships
+- Vague descriptions rewritten to be concrete (e.g., "Build auth system" → "Add bcrypt password hashing to User model with cost factor 12")
+- Tasks too small for a separate iteration are merged
+- Each task annotated as `[S]mall`, `[M]edium`, `[L]arge`, or `[XL]needs-review`
+- New `TaskSplit` event variant in `event.rs`
+
+### Test Coverage Generation (Phase 7 Enhancement)
+- Phase 7 (BuildTestConfig) prompt now includes a TEST STRATEGY section
+- AI reviews feature tasks and determines whether each needs a dedicated test task or inline tests
+- Complex features get separate test tasks with dependencies on the feature task
+- Test task descriptions are specific: "Write integration tests for POST /users: valid input 201, duplicate email 409, missing fields 422"
+- Suggests test framework based on tech stack (cargo test, pytest, jest, go test)
+- Suggests validation pipeline steps with `sort_order`, `required` flag, and `timeout`
+
+### Testing
+- 354 total tests (up from 308)
+- New unit tests: git_diff helpers, diff truncation, retry context inclusion, specificity prompt content, sizing response parsing, test task parsing
+- New integration tests: fail→capture→retry cycle, vague section rewrite, task splitting, feature-test task pairing
+
+---
+
 ## 4.0.0 — 2026-03-12
 
 10 new features across 3 tiers: foundation infrastructure, intelligent context, and analytics/observability. 308 total tests (up from 201).
