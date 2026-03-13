@@ -284,6 +284,20 @@ Review everything gathered so far and identify:
 4. Edge cases not covered
 5. Security or performance concerns not addressed
 
+## SPECIFICITY CHECK
+
+Review each section of the gathered information for vague language. Flag any section that uses:
+- Vague qualifiers: 'should', 'might', 'could', 'may', 'possibly', 'generally'
+- Placeholder terms: 'etc.', 'various', 'some', 'appropriate', 'as needed', 'TBD'
+- Missing specifics: no concrete inputs/outputs, no acceptance criteria, no measurable behavior
+
+For each section, rate it as:
+- SPECIFIC: Has concrete acceptance criteria, measurable outcomes, defined inputs/outputs
+- NEEDS_DETAIL: Has some concrete details but lacks full acceptance criteria
+- VAGUE: Uses vague language with no concrete acceptance criteria
+
+Do not proceed to Phase 5 with any VAGUE sections. Rewrite them now with specific acceptance criteria.
+
 Respond in JSON format:
 {{
   "gaps": [
@@ -294,6 +308,12 @@ Respond in JSON format:
   ],
   "recommendations": [
     {{"topic": "what to consider", "recommendation": "suggested approach"}}
+  ],
+  "section_ratings": [
+    {{"section": "section name", "rating": "SPECIFIC or NEEDS_DETAIL or VAGUE", "issues": ["vague language found"]}}
+  ],
+  "rewritten_sections": [
+    {{"section": "section name", "original": "original vague text", "rewritten": "concrete rewrite with acceptance criteria"}}
   ]
 }}
 
@@ -455,7 +475,7 @@ pub async fn run_wizard_phases_4_5(
     let mut sections_generated = 0;
     let mut tasks_generated = 0;
 
-    // Phase 4: Gap Analysis
+    // Phase 4: Gap Analysis with specificity check
     if !state.completed_phases.contains(&(WizardPhase::GapAnalysis as i32)) {
         state.current_phase = WizardPhase::GapAnalysis;
         save_wizard_state(prd_conn, state)?;
@@ -463,6 +483,13 @@ pub async fn run_wizard_phases_4_5(
         let prompt = build_phase_prompt(WizardPhase::GapAnalysis, state, from_doc);
         let response = execute_wizard_prompt(provider, &prompt).await?;
         let data = parse_json_response(&response, provider, &prompt).await?;
+
+        // Apply specificity rewrites to prd.db if sections exist
+        let (_, rewrites) = parse_specificity_response(&data);
+        if !rewrites.is_empty() {
+            let _ = apply_specificity_rewrites(prd_conn, &rewrites);
+        }
+
         state.set_phase_data(WizardPhase::GapAnalysis, data);
         state.mark_phase_complete(WizardPhase::GapAnalysis);
         save_wizard_state(prd_conn, state)?;
@@ -585,17 +612,36 @@ pub async fn run_wizard(
         }
 
         match phase {
-            // Phases 1-4: generic prompt → parse → store
+            // Phases 1-3: generic prompt → parse → store
             WizardPhase::Vision
             | WizardPhase::Functionality
-            | WizardPhase::Technical
-            | WizardPhase::GapAnalysis => {
+            | WizardPhase::Technical => {
                 state.current_phase = phase;
                 save_wizard_state(prd_conn, &state)?;
 
                 let prompt = build_phase_prompt(phase, &state, from_doc);
                 let response = execute_wizard_prompt(provider, &prompt).await?;
                 let data = parse_json_response(&response, provider, &prompt).await?;
+                state.set_phase_data(phase, data);
+                state.mark_phase_complete(phase);
+                save_wizard_state(prd_conn, &state)?;
+            }
+
+            // Phase 4: gap analysis with specificity check
+            WizardPhase::GapAnalysis => {
+                state.current_phase = phase;
+                save_wizard_state(prd_conn, &state)?;
+
+                let prompt = build_phase_prompt(phase, &state, from_doc);
+                let response = execute_wizard_prompt(provider, &prompt).await?;
+                let data = parse_json_response(&response, provider, &prompt).await?;
+
+                // Apply specificity rewrites to prd.db if sections exist
+                let (_, rewrites) = parse_specificity_response(&data);
+                if !rewrites.is_empty() {
+                    let _ = apply_specificity_rewrites(prd_conn, &rewrites);
+                }
+
                 state.set_phase_data(phase, data);
                 state.mark_phase_complete(phase);
                 save_wizard_state(prd_conn, &state)?;
@@ -1407,6 +1453,108 @@ pub fn run_wizard_phase_9(
     save_wizard_state(prd_conn, state)?;
 
     Ok((project_name, task_count))
+}
+
+/// A specificity rating for a PRD section from Phase 4 gap analysis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionRating {
+    pub section: String,
+    pub rating: String,
+    pub issues: Vec<String>,
+}
+
+/// A rewritten section from Phase 4 specificity check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RewrittenSection {
+    pub section: String,
+    pub original: String,
+    pub rewritten: String,
+}
+
+/// Parse specificity ratings and rewritten sections from a Phase 4 gap analysis response.
+///
+/// Extracts `section_ratings` and `rewritten_sections` arrays from the JSON response.
+/// Returns empty vectors if the fields are missing (backward compatible with
+/// older Phase 4 responses that lack specificity data).
+pub fn parse_specificity_response(data: &JsonValue) -> (Vec<SectionRating>, Vec<RewrittenSection>) {
+    let ratings = data
+        .get("section_ratings")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let section = item.get("section")?.as_str()?.to_string();
+                    let rating = item.get("rating")?.as_str()?.to_string();
+                    let issues = item
+                        .get("issues")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|i| i.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(SectionRating {
+                        section,
+                        rating,
+                        issues,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let rewrites = data
+        .get("rewritten_sections")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let section = item.get("section")?.as_str()?.to_string();
+                    let original = item.get("original")?.as_str()?.to_string();
+                    let rewritten = item.get("rewritten")?.as_str()?.to_string();
+                    Some(RewrittenSection {
+                        section,
+                        original,
+                        rewritten,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    (ratings, rewrites)
+}
+
+/// Apply rewritten sections from Phase 4 specificity check to the PRD database.
+///
+/// Looks up sections by title and updates their content with the rewritten text.
+/// Returns the number of sections successfully updated.
+pub fn apply_specificity_rewrites(conn: &Connection, rewrites: &[RewrittenSection]) -> Result<usize> {
+    let mut updated = 0;
+    for rewrite in rewrites {
+        // Look up the section by title
+        let section_id: Option<String> = conn
+            .query_row(
+                "SELECT section_id FROM sections WHERE title = ?1",
+                params![rewrite.section],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(sid) = section_id {
+            let word_count = rewrite.rewritten.split_whitespace().count() as i32;
+            let rows = conn.execute(
+                "UPDATE sections SET content = ?1, word_count = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now')
+                 WHERE section_id = ?3",
+                params![rewrite.rewritten, word_count, sid],
+            )?;
+            if rows > 0 {
+                updated += 1;
+            }
+        }
+    }
+    Ok(updated)
 }
 
 /// Extract JSON from a response that might be wrapped in markdown code blocks.

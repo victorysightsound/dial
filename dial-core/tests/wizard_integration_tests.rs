@@ -146,7 +146,13 @@ fn phase_4_response() -> String {
             {"area": "testing", "description": "Integration tests missing for wizard flow"},
             {"area": "error handling", "description": "Need retry on provider timeout"}
         ],
-        "recommendations": ["Add integration test suite", "Implement timeout retry logic"]
+        "recommendations": ["Add integration test suite", "Implement timeout retry logic"],
+        "section_ratings": [
+            {"section": "vision", "rating": "SPECIFIC", "issues": []},
+            {"section": "functionality", "rating": "NEEDS_DETAIL", "issues": ["mvp_features lacks acceptance criteria"]},
+            {"section": "technical", "rating": "SPECIFIC", "issues": []}
+        ],
+        "rewritten_sections": []
     }))
     .unwrap()
 }
@@ -275,7 +281,13 @@ fn gathered_info_through_phase(n: i32) -> JsonValue {
                 {"area": "testing", "description": "Integration tests missing for wizard flow"},
                 {"area": "error handling", "description": "Need retry on provider timeout"}
             ],
-            "recommendations": ["Add integration test suite", "Implement timeout retry logic"]
+            "recommendations": ["Add integration test suite", "Implement timeout retry logic"],
+            "section_ratings": [
+                {"section": "vision", "rating": "SPECIFIC", "issues": []},
+                {"section": "functionality", "rating": "NEEDS_DETAIL", "issues": ["mvp_features lacks acceptance criteria"]},
+                {"section": "technical", "rating": "SPECIFIC", "issues": []}
+            ],
+            "rewritten_sections": []
         });
     }
     if n >= 5 {
@@ -1623,4 +1635,367 @@ async fn test_phase_8_iteration_mode_read_by_auto_run() {
         .unwrap();
     assert!(updated_state.completed_phases.contains(&8));
     assert!(updated_state.gathered_info.get("iteration_mode").is_some());
+}
+
+// ===========================================================================
+// Test: Phase 4 prompt contains SPECIFICITY CHECK section
+// ===========================================================================
+
+#[test]
+fn test_phase_4_prompt_contains_specificity_check() {
+    let state = prd::wizard::WizardState::new("spec");
+    let prompt = prd::wizard::build_phase_prompt(
+        prd::wizard::WizardPhase::GapAnalysis,
+        &state,
+        None,
+    );
+
+    // Verify SPECIFICITY CHECK section is present
+    assert!(
+        prompt.contains("## SPECIFICITY CHECK"),
+        "Phase 4 prompt should contain SPECIFICITY CHECK header"
+    );
+
+    // Verify vague language markers are listed
+    assert!(
+        prompt.contains("'should'"),
+        "Prompt should flag 'should' as vague"
+    );
+    assert!(
+        prompt.contains("'might'"),
+        "Prompt should flag 'might' as vague"
+    );
+    assert!(
+        prompt.contains("'could'"),
+        "Prompt should flag 'could' as vague"
+    );
+    assert!(
+        prompt.contains("'etc.'"),
+        "Prompt should flag 'etc.' as vague"
+    );
+    assert!(
+        prompt.contains("'various'"),
+        "Prompt should flag 'various' as vague"
+    );
+
+    // Verify rating categories
+    assert!(
+        prompt.contains("SPECIFIC"),
+        "Prompt should define SPECIFIC rating"
+    );
+    assert!(
+        prompt.contains("NEEDS_DETAIL"),
+        "Prompt should define NEEDS_DETAIL rating"
+    );
+    assert!(
+        prompt.contains("VAGUE"),
+        "Prompt should define VAGUE rating"
+    );
+
+    // Verify the critical instruction
+    assert!(
+        prompt.contains("Do not proceed to Phase 5 with any VAGUE sections"),
+        "Prompt must contain the Phase 5 gate instruction"
+    );
+    assert!(
+        prompt.contains("Rewrite them now with specific acceptance criteria"),
+        "Prompt must instruct rewriting VAGUE sections"
+    );
+
+    // Verify JSON response format includes new fields
+    assert!(
+        prompt.contains("section_ratings"),
+        "Prompt should request section_ratings in JSON format"
+    );
+    assert!(
+        prompt.contains("rewritten_sections"),
+        "Prompt should request rewritten_sections in JSON format"
+    );
+
+    // Verify the prompt still includes the original gap analysis fields
+    assert!(prompt.contains("\"gaps\""), "Prompt should still include gaps");
+    assert!(
+        prompt.contains("\"contradictions\""),
+        "Prompt should still include contradictions"
+    );
+    assert!(
+        prompt.contains("\"recommendations\""),
+        "Prompt should still include recommendations"
+    );
+}
+
+// ===========================================================================
+// Test: Phase 4 prompt includes prior context from phases 1-3
+// ===========================================================================
+
+#[test]
+fn test_phase_4_prompt_with_prior_context() {
+    let mut state = prd::wizard::WizardState::new("spec");
+    state.gathered_info = gathered_info_through_phase(3);
+    for p in 1..=3 {
+        state.completed_phases.push(p);
+    }
+
+    let prompt = prd::wizard::build_phase_prompt(
+        prd::wizard::WizardPhase::GapAnalysis,
+        &state,
+        None,
+    );
+
+    // Should include prior gathered info
+    assert!(
+        prompt.contains("Previously Gathered Information"),
+        "Prompt should include prior context"
+    );
+    assert!(
+        prompt.contains("WizardTestProject"),
+        "Prompt should include project name from phase 1"
+    );
+
+    // Should still have specificity check
+    assert!(
+        prompt.contains("## SPECIFICITY CHECK"),
+        "Prompt with prior context should contain SPECIFICITY CHECK"
+    );
+}
+
+// ===========================================================================
+// Test: parse_specificity_response extracts ratings and rewrites
+// ===========================================================================
+
+#[test]
+fn test_parse_specificity_response() {
+    let data = json!({
+        "gaps": [{"area": "testing", "issue": "missing tests", "suggestion": "add tests"}],
+        "contradictions": [],
+        "recommendations": [],
+        "section_ratings": [
+            {"section": "vision", "rating": "SPECIFIC", "issues": []},
+            {"section": "functionality", "rating": "VAGUE", "issues": ["uses 'should'", "no acceptance criteria"]},
+            {"section": "technical", "rating": "NEEDS_DETAIL", "issues": ["missing performance targets"]}
+        ],
+        "rewritten_sections": [
+            {
+                "section": "functionality",
+                "original": "The system should handle various user inputs",
+                "rewritten": "The system accepts UTF-8 text input up to 10,000 characters. Acceptance criteria: (1) Rejects input >10,000 chars with error code 413, (2) Strips HTML tags from input, (3) Returns processed result within 200ms p95."
+            }
+        ]
+    });
+
+    let (ratings, rewrites) = prd::wizard::parse_specificity_response(&data);
+
+    // Verify ratings
+    assert_eq!(ratings.len(), 3);
+
+    assert_eq!(ratings[0].section, "vision");
+    assert_eq!(ratings[0].rating, "SPECIFIC");
+    assert!(ratings[0].issues.is_empty());
+
+    assert_eq!(ratings[1].section, "functionality");
+    assert_eq!(ratings[1].rating, "VAGUE");
+    assert_eq!(ratings[1].issues.len(), 2);
+    assert_eq!(ratings[1].issues[0], "uses 'should'");
+    assert_eq!(ratings[1].issues[1], "no acceptance criteria");
+
+    assert_eq!(ratings[2].section, "technical");
+    assert_eq!(ratings[2].rating, "NEEDS_DETAIL");
+    assert_eq!(ratings[2].issues.len(), 1);
+
+    // Verify rewrites
+    assert_eq!(rewrites.len(), 1);
+    assert_eq!(rewrites[0].section, "functionality");
+    assert!(rewrites[0].original.contains("should handle various"));
+    assert!(rewrites[0].rewritten.contains("UTF-8 text input"));
+    assert!(rewrites[0].rewritten.contains("Acceptance criteria"));
+}
+
+// ===========================================================================
+// Test: parse_specificity_response handles missing fields gracefully
+// ===========================================================================
+
+#[test]
+fn test_parse_specificity_response_missing_fields() {
+    // Old-style Phase 4 response without specificity fields
+    let data = json!({
+        "gaps": [{"area": "testing", "issue": "missing", "suggestion": "add"}],
+        "contradictions": [],
+        "recommendations": []
+    });
+
+    let (ratings, rewrites) = prd::wizard::parse_specificity_response(&data);
+
+    assert!(ratings.is_empty(), "Should return empty ratings for old-style response");
+    assert!(rewrites.is_empty(), "Should return empty rewrites for old-style response");
+}
+
+// ===========================================================================
+// Test: parse_specificity_response handles malformed entries
+// ===========================================================================
+
+#[test]
+fn test_parse_specificity_response_malformed_entries() {
+    let data = json!({
+        "section_ratings": [
+            {"section": "valid", "rating": "SPECIFIC", "issues": []},
+            {"section": "missing_rating"},
+            {"rating": "VAGUE", "issues": ["no section field"]},
+            {"section": "no_issues", "rating": "NEEDS_DETAIL"}
+        ],
+        "rewritten_sections": [
+            {"section": "valid", "original": "old text", "rewritten": "new text"},
+            {"section": "missing_rewritten", "original": "old"},
+            {"original": "no section", "rewritten": "new"}
+        ]
+    });
+
+    let (ratings, rewrites) = prd::wizard::parse_specificity_response(&data);
+
+    // Only entries with all required fields are included
+    assert_eq!(ratings.len(), 2, "Should parse valid entries and skip malformed");
+    assert_eq!(ratings[0].section, "valid");
+    assert_eq!(ratings[1].section, "no_issues");
+    assert!(ratings[1].issues.is_empty(), "Missing issues field defaults to empty vec");
+
+    assert_eq!(rewrites.len(), 1, "Should only parse fully valid rewrites");
+    assert_eq!(rewrites[0].section, "valid");
+}
+
+// ===========================================================================
+// Test: Integration — Phase 4 rewrites vague sections in prd.db
+// ===========================================================================
+
+#[tokio::test]
+async fn test_phase_4_vague_section_rewrite_in_prd_db() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+
+    // Pre-populate prd.db with sections (as if imported via `--from`)
+    prd::prd_insert_section(&prd_conn, "1", "Overview", None, 1, 0,
+        "The system should handle various tasks", 6).unwrap();
+    prd::prd_insert_section(&prd_conn, "2", "Architecture", None, 1, 1,
+        "Uses a modular architecture with defined interfaces", 7).unwrap();
+    prd::prd_insert_section(&prd_conn, "3", "Requirements", None, 1, 2,
+        "Some requirements might be added later etc.", 7).unwrap();
+
+    // Set up wizard state through phase 3
+    save_state_through_phase(&prd_conn, 3);
+
+    // Phase 4 response with rewrites for vague sections
+    let phase_4_with_rewrites = serde_json::to_string(&json!({
+        "gaps": [
+            {"area": "requirements", "issue": "Acceptance criteria missing", "suggestion": "Add measurable criteria"}
+        ],
+        "contradictions": [],
+        "recommendations": [
+            {"topic": "specificity", "recommendation": "All sections need concrete acceptance criteria"}
+        ],
+        "section_ratings": [
+            {"section": "Overview", "rating": "VAGUE", "issues": ["uses 'should'", "uses 'various'"]},
+            {"section": "Architecture", "rating": "SPECIFIC", "issues": []},
+            {"section": "Requirements", "rating": "VAGUE", "issues": ["uses 'some'", "uses 'might'", "uses 'etc.'"]}
+        ],
+        "rewritten_sections": [
+            {
+                "section": "Overview",
+                "original": "The system should handle various tasks",
+                "rewritten": "The system processes exactly 3 task types: build validation, test execution, and deployment. Acceptance criteria: (1) Each task completes within configured timeout, (2) Failed tasks produce structured error output, (3) Task queue supports FIFO ordering with priority override."
+            },
+            {
+                "section": "Requirements",
+                "original": "Some requirements might be added later etc.",
+                "rewritten": "Functional requirements: (1) User authentication via API key with 256-bit entropy, (2) Task scheduling supports cron expressions, (3) Results persisted to SQLite with WAL mode. Non-functional: (1) p95 latency < 500ms, (2) Supports 100 concurrent tasks."
+            }
+        ]
+    })).unwrap();
+
+    // Run with phase 4 rewrite response + phase 5 generate response
+    seed_spec_sections();
+    let responses = vec![
+        phase_4_with_rewrites,
+        phase_5_response(),
+    ];
+    let provider = SequentialMockProvider::new(responses);
+
+    let _result = prd::wizard::run_wizard(&provider, &prd_conn, "spec", None, true, false)
+        .await
+        .unwrap();
+
+    // Verify that the vague sections were rewritten in prd.db
+    // Note: Phase 5 deletes all sections and recreates them, so we need to check
+    // the gathered_info to verify the rewrites were parsed correctly.
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
+    let gap_data = &state.gathered_info["gap_analysis"];
+
+    // Verify section_ratings are stored
+    let ratings = gap_data.get("section_ratings").unwrap().as_array().unwrap();
+    assert_eq!(ratings.len(), 3);
+    assert_eq!(ratings[0]["rating"].as_str().unwrap(), "VAGUE");
+    assert_eq!(ratings[1]["rating"].as_str().unwrap(), "SPECIFIC");
+    assert_eq!(ratings[2]["rating"].as_str().unwrap(), "VAGUE");
+
+    // Verify rewritten_sections are stored
+    let rewrites = gap_data.get("rewritten_sections").unwrap().as_array().unwrap();
+    assert_eq!(rewrites.len(), 2);
+    assert_eq!(rewrites[0]["section"].as_str().unwrap(), "Overview");
+    assert!(rewrites[0]["rewritten"].as_str().unwrap().contains("Acceptance criteria"));
+    assert_eq!(rewrites[1]["section"].as_str().unwrap(), "Requirements");
+    assert!(rewrites[1]["rewritten"].as_str().unwrap().contains("Functional requirements"));
+}
+
+// ===========================================================================
+// Test: apply_specificity_rewrites updates matching sections in prd.db
+// ===========================================================================
+
+#[tokio::test]
+async fn test_apply_specificity_rewrites_updates_sections() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+
+    // Insert sections
+    prd::prd_insert_section(&prd_conn, "1", "Overview", None, 1, 0,
+        "The system should handle various tasks", 6).unwrap();
+    prd::prd_insert_section(&prd_conn, "2", "Architecture", None, 1, 1,
+        "Clean architecture with layers", 5).unwrap();
+
+    let rewrites = vec![
+        prd::wizard::RewrittenSection {
+            section: "Overview".to_string(),
+            original: "The system should handle various tasks".to_string(),
+            rewritten: "The system processes build, test, and deploy tasks with <500ms p95 latency.".to_string(),
+        },
+        prd::wizard::RewrittenSection {
+            section: "Nonexistent Section".to_string(),
+            original: "original text".to_string(),
+            rewritten: "new text".to_string(),
+        },
+    ];
+
+    let updated = prd::wizard::apply_specificity_rewrites(&prd_conn, &rewrites).unwrap();
+    assert_eq!(updated, 1, "Should update 1 section (Overview), skip nonexistent");
+
+    // Verify the content was updated
+    let section = prd::prd_get_section(&prd_conn, "1").unwrap().unwrap();
+    assert_eq!(section.title, "Overview");
+    assert!(
+        section.content.contains("build, test, and deploy"),
+        "Content should be updated to rewritten text"
+    );
+    assert!(
+        section.content.contains("<500ms p95"),
+        "Content should have concrete acceptance criteria"
+    );
+
+    // Verify word count was recalculated
+    let expected_wc = "The system processes build, test, and deploy tasks with <500ms p95 latency."
+        .split_whitespace().count() as i32;
+    assert_eq!(section.word_count, expected_wc);
+
+    // Verify the other section was NOT modified
+    let arch_section = prd::prd_get_section(&prd_conn, "2").unwrap().unwrap();
+    assert_eq!(arch_section.content, "Clean architecture with layers");
 }
