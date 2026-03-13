@@ -58,7 +58,7 @@ dial --version
 
 ## Your First Project
 
-There are two ways to use DIAL: with just tasks (fastest start) or with tasks linked to a specification (richer context). You can always add a spec later.
+There are two ways to use DIAL: with just tasks (fastest start) or with the full project wizard (`dial new`) which guides you through spec creation, task generation, and build/test configuration. The wizard enforces spec specificity (Phase 4 rewrites vague requirements), right-sizes tasks (Phase 6 splits oversized tasks), and generates test tasks (Phase 7 pairs tests with features). You can always start with just tasks and add a spec later.
 
 ### 1. Initialize
 
@@ -245,7 +245,7 @@ This:
 
 To stop gracefully: create a `.dial/stop` file or press Ctrl+C.
 
-**Task sizing tip:** Each task runs in a single AI subprocess with a timeout (default 30 min). If a task is too large, the AI may time out or lose focus. Rule of thumb: if you'd describe the task as "implement the entire auth system," break it into 3-5 smaller tasks.
+**Task sizing tip:** Each task runs in a single AI subprocess with a timeout (default 30 min). If a task is too large, the AI may time out or lose focus. Rule of thumb: a task should touch 1-3 files and do one focused thing. If you use `dial new`, Phase 6 automatically analyzes task sizing and splits oversized tasks for you.
 
 ### 6. Monitor Progress
 

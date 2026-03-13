@@ -113,6 +113,8 @@ dial iterate
     │   ├── Include behavioral signs
     │   ├── SELECT linked spec/PRD section
     │   ├── FTS search for related specs
+    │   ├── IF retry (attempt > 1): SELECT failed diff from previous iteration
+    │   │   └── Priority 12: "PREVIOUS ATTEMPT (failed): {error} / {diff}"
     │   ├── SELECT suggested solutions for recent failures
     │   ├── SELECT similar completed tasks
     │   ├── SELECT trusted solutions (confidence >= 0.6)
@@ -259,11 +261,11 @@ The orchestrator tries the signal file first, falls back to regex if the file do
 cargo test --workspace
 ```
 
-308 tests covering:
-- Unit tests for all core modules (patterns, signals, health, metrics, budget)
+354 tests covering:
+- Unit tests for all core modules (patterns, signals, health, metrics, budget, diffs)
 - Integration tests for full lifecycle (init → task → iterate → validate → complete)
-- Wizard tests (9-phase flow with mock provider, pause/resume)
-- Crash recovery and transaction rollback tests
+- Wizard tests (9-phase flow with mock provider, pause/resume, specificity/sizing/coverage)
+- Crash recovery, transaction rollback, and failed diff capture tests
 
 ## Building
 

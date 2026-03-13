@@ -50,7 +50,7 @@ dial new [--template NAME] [--from PATH] [--resume] [--phase NUMBER]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--template` | `mvp` | PRD template: `spec`, `architecture`, `api`, or `mvp` |
+| `--template` | `spec` | PRD template: `spec`, `architecture`, `api`, or `mvp` |
 | `--from` | (none) | Existing document to refine through the wizard |
 | `--resume` | false | Resume from where the wizard left off |
 | `--phase` | (none) | Start at a specific phase number (1-9) |
@@ -224,7 +224,7 @@ dial task chronic [--threshold N]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--threshold` | `5` | Minimum total failures to be considered chronic |
+| `--threshold` | `10` | Minimum total failures to be considered chronic |
 
 ## The Loop
 

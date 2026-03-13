@@ -2,6 +2,33 @@
 
 ## Version Timeline
 
+### v4.1.0 (March 2026) — Loop Accuracy
+
+4 enhancements targeting first-attempt success rate and spec quality:
+
+**Failed Attempt Diff Capture:**
+- Captures `git diff` and `git diff --stat` before checkpoint restore on validation failure
+- On retry (attempt > 1), includes previous failed diff at context priority 12
+- Prevents the AI from repeating the same failed approach
+
+**Spec Specificity Enforcement (Phase 4):**
+- Phase 4 (Gap Analysis) now includes a SPECIFICITY CHECK pass
+- Rates each PRD section as SPECIFIC, NEEDS_DETAIL, or VAGUE
+- Rewrites VAGUE sections with concrete acceptance criteria before Phase 5 proceeds
+
+**Task Sizing Analysis (Phase 6):**
+- Phase 6 (Task Review) now evaluates scope, specificity, and testability per task
+- Splits tasks touching more than 3 files into smaller focused tasks with dependencies
+- Rewrites vague descriptions, merges tasks too small for a separate iteration
+- Annotates sizing: [S]mall, [M]edium, [L]arge, [XL] needs review
+
+**Test Coverage Generation (Phase 7):**
+- Phase 7 (Build & Test) now generates dedicated test tasks paired with feature tasks
+- Test tasks depend on their feature tasks in the dependency graph
+- Suggests test framework and validation pipeline steps based on tech stack
+
+354 tests (up from 308). No schema migrations needed.
+
 ### v4.0.0 (March 2026) — Engine Hardening
 
 10 architectural improvements across three tiers:
@@ -91,10 +118,11 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 3.1.0 | + PRD database | Yes | 142 |
 | 3.2.0 | + 9-phase wizard | Yes | 201 |
 | 4.0.0 | + Engine hardening | Yes | 308 |
+| 4.1.0 | + Loop accuracy & spec enforcement | Yes | 354 |
 
 ## Performance
 
-| Metric | v2.0 | v4.0 |
+| Metric | v2.0 | v4.1 |
 |--------|------|------|
 | Startup | ~14ms | ~14ms |
 | Binary size | 4.0MB | ~5MB |

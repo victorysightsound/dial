@@ -248,7 +248,7 @@ Add `dial-core` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dial-core = "4.0"
+dial-core = "4.1"
 tokio = { version = "1", features = ["full"] }
 ```
 

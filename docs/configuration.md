@@ -235,6 +235,62 @@ Project knowledge captured during development.
 
 FTS5 virtual table: `learnings_fts` (indexed on `category`, `description`).
 
+#### `task_dependencies`
+
+Task dependency graph for topological ordering.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `task_id` | INTEGER (PK) | FK to tasks — the dependent task |
+| `depends_on_id` | INTEGER (PK) | FK to tasks — the prerequisite task |
+| `created_at` | TEXT | ISO 8601 timestamp |
+
+Composite primary key on (`task_id`, `depends_on_id`). Both columns have ON DELETE CASCADE foreign keys.
+
+#### `validation_steps`
+
+Configurable validation pipeline steps.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER (PK) | Auto-increment |
+| `name` | TEXT | Step name (e.g., "lint", "build", "test") |
+| `command` | TEXT | Shell command to execute |
+| `sort_order` | INTEGER | Execution order (0 = first) |
+| `required` | INTEGER | 1 = abort on failure, 0 = log and continue |
+| `timeout_secs` | INTEGER | Per-step timeout (nullable) |
+| `created_at` | TEXT | ISO 8601 timestamp |
+
+#### `provider_usage`
+
+Token and cost tracking per iteration.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER (PK) | Auto-increment |
+| `iteration_id` | INTEGER | FK to iterations |
+| `provider` | TEXT | Provider name (e.g., "anthropic", "cli-passthrough") |
+| `model` | TEXT | Model identifier (nullable) |
+| `tokens_in` | INTEGER | Input tokens (default 0) |
+| `tokens_out` | INTEGER | Output tokens (default 0) |
+| `cost_usd` | REAL | Estimated cost in USD (default 0.0) |
+| `duration_secs` | REAL | API call duration (nullable) |
+| `created_at` | TEXT | ISO 8601 timestamp |
+
+#### `solution_history`
+
+Confidence change log for solutions.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER (PK) | Auto-increment |
+| `solution_id` | INTEGER | FK to solutions |
+| `event_type` | TEXT | Event: `applied_success`, `applied_failure`, `decay`, `manual_refresh` |
+| `old_confidence` | REAL | Confidence before change |
+| `new_confidence` | REAL | Confidence after change |
+| `notes` | TEXT | Context for the change (nullable) |
+| `created_at` | TEXT | ISO 8601 timestamp |
+
 ### Database Pragmas
 
 ```sql
