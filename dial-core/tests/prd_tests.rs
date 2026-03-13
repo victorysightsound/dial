@@ -364,8 +364,8 @@ async fn test_apply_build_test_config_writes_config_and_steps() {
         "rationale": "Standard Rust pipeline"
     });
 
-    let (build_cmd, test_cmd, steps_count) =
-        prd::wizard::apply_build_test_config(&phase_conn, &config_data).unwrap();
+    let (build_cmd, test_cmd, steps_count, _test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &[]).unwrap();
 
     assert_eq!(build_cmd, "cargo build --release");
     assert_eq!(test_cmd, "cargo test");
@@ -419,8 +419,8 @@ async fn test_apply_build_test_config_defaults() {
         "test_cmd": "make test"
     });
 
-    let (build_cmd, test_cmd, steps_count) =
-        prd::wizard::apply_build_test_config(&phase_conn, &config_data).unwrap();
+    let (build_cmd, test_cmd, steps_count, _test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &[]).unwrap();
 
     assert_eq!(build_cmd, "make");
     assert_eq!(test_cmd, "make test");
@@ -898,7 +898,7 @@ fn test_build_build_test_config_prompt_with_technical() {
         }
     });
 
-    let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info);
+    let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info, &[]);
 
     assert!(prompt.contains("Technical Details (from Phase 3)"));
     assert!(prompt.contains("Rust"));
@@ -914,7 +914,7 @@ fn test_build_build_test_config_prompt_no_technical() {
         "vision": {"project_name": "SimpleApp"}
     });
 
-    let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info);
+    let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info, &[]);
 
     assert!(prompt.contains("No technical details available from prior phases."));
     // Should still include PRD context from gathered_info
@@ -925,7 +925,7 @@ fn test_build_build_test_config_prompt_no_technical() {
 fn test_build_build_test_config_prompt_empty_gathered_info() {
     let gathered_info = json!({});
 
-    let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info);
+    let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info, &[]);
 
     assert!(prompt.contains("No technical details available from prior phases."));
     assert!(!prompt.contains("Full PRD Context"));
@@ -1193,8 +1193,8 @@ async fn test_apply_build_test_config_missing_commands() {
         "rationale": "minimal"
     });
 
-    let (build_cmd, test_cmd, steps_count) =
-        prd::wizard::apply_build_test_config(&phase_conn, &config_data).unwrap();
+    let (build_cmd, test_cmd, steps_count, _test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &[]).unwrap();
 
     assert_eq!(build_cmd, "");
     assert_eq!(test_cmd, "");
@@ -1224,8 +1224,8 @@ async fn test_apply_build_test_config_malformed_pipeline_steps() {
         ]
     });
 
-    let (_, _, steps_count) =
-        prd::wizard::apply_build_test_config(&phase_conn, &config_data).unwrap();
+    let (_, _, steps_count, _) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &[]).unwrap();
 
     assert_eq!(steps_count, 3);
 
@@ -1271,8 +1271,8 @@ async fn test_apply_build_test_config_empty_pipeline_steps() {
         "pipeline_steps": []
     });
 
-    let (_, _, steps_count) =
-        prd::wizard::apply_build_test_config(&phase_conn, &config_data).unwrap();
+    let (_, _, steps_count, _) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &[]).unwrap();
 
     assert_eq!(steps_count, 0);
 

@@ -204,6 +204,12 @@ impl EventHandler for CliEventHandler {
                     build_cmd, test_cmd, pipeline_steps
                 ));
             }
+            Event::TestCoverageConfigured { test_tasks_added, pipeline_steps } => {
+                output::print_success(&format!(
+                    "Added {} test tasks, configured {} pipeline steps",
+                    test_tasks_added, pipeline_steps
+                ));
+            }
             Event::IterationModeSet { mode } => {
                 output::print_success(&format!("Iteration mode set: {}", mode));
             }

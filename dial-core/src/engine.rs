@@ -1134,6 +1134,14 @@ impl Engine {
             });
         }
 
+        // Emit test coverage summary if Phase 7 generated test tasks
+        if result.test_tasks_added > 0 || result.pipeline_steps > 0 {
+            self.emit(Event::TestCoverageConfigured {
+                test_tasks_added: result.test_tasks_added,
+                pipeline_steps: result.pipeline_steps,
+            });
+        }
+
         Ok(())
     }
 

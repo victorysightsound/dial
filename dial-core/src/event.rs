@@ -113,6 +113,8 @@ pub enum Event {
     },
     /// Build and test commands were configured.
     BuildTestConfigured { build_cmd: String, test_cmd: String, pipeline_steps: usize },
+    /// Test coverage tasks were generated from test strategy analysis.
+    TestCoverageConfigured { test_tasks_added: usize, pipeline_steps: usize },
     /// Iteration mode was selected.
     IterationModeSet { mode: String },
     /// Project is ready for launch.

@@ -211,10 +211,18 @@ fn phase_7_response() -> String {
     serde_json::to_string(&json!({
         "build_cmd": "cargo build --release",
         "test_cmd": "cargo test --all",
+        "test_framework": "cargo test",
         "pipeline_steps": [
-            {"name": "lint", "command": "cargo clippy", "order": 1, "required": true, "timeout": 60},
-            {"name": "build", "command": "cargo build", "order": 2, "required": true, "timeout": 300},
-            {"name": "test", "command": "cargo test", "order": 3, "required": true, "timeout": 120}
+            {"name": "lint", "command": "cargo clippy", "sort_order": 1, "required": false, "timeout": 60},
+            {"name": "build", "command": "cargo build", "sort_order": 2, "required": true, "timeout": 300},
+            {"name": "test", "command": "cargo test", "sort_order": 3, "required": true, "timeout": 120}
+        ],
+        "test_tasks": [
+            {
+                "description": "Write integration tests for wizard phase engine: phase transitions work correctly, state persists across phases, resume picks up at correct phase",
+                "depends_on_feature": 1,
+                "rationale": "Core engine logic is complex with multiple code paths"
+            }
         ],
         "build_timeout": 300,
         "test_timeout": 120,
@@ -318,10 +326,18 @@ fn gathered_info_through_phase(n: i32) -> JsonValue {
         info["build_&_test_config"] = json!({
             "build_cmd": "cargo build --release",
             "test_cmd": "cargo test --all",
+            "test_framework": "cargo test",
             "pipeline_steps": [
-                {"name": "lint", "command": "cargo clippy", "order": 1, "required": true, "timeout": 60},
-                {"name": "build", "command": "cargo build", "order": 2, "required": true, "timeout": 300},
-                {"name": "test", "command": "cargo test", "order": 3, "required": true, "timeout": 120}
+                {"name": "lint", "command": "cargo clippy", "sort_order": 1, "required": false, "timeout": 60},
+                {"name": "build", "command": "cargo build", "sort_order": 2, "required": true, "timeout": 300},
+                {"name": "test", "command": "cargo test", "sort_order": 3, "required": true, "timeout": 120}
+            ],
+            "test_tasks": [
+                {
+                    "description": "Write integration tests for wizard phase engine: phase transitions work correctly, state persists across phases, resume picks up at correct phase",
+                    "depends_on_feature": 1,
+                    "rationale": "Core engine logic is complex with multiple code paths"
+                }
             ],
             "build_timeout": 300,
             "test_timeout": 120,
@@ -461,7 +477,7 @@ fn setup_db_through_phase(prd_conn: &rusqlite::Connection, n: i32) {
             .execute("DELETE FROM validation_steps", [])
             .unwrap();
         for (name, command, order, required, timeout) in [
-            ("lint", "cargo clippy", 1, true, 60),
+            ("lint", "cargo clippy", 1, false, 60),
             ("build", "cargo build", 2, true, 300),
             ("test", "cargo test", 3, true, 120),
         ] {
@@ -479,6 +495,36 @@ fn setup_db_through_phase(prd_conn: &rusqlite::Connection, n: i32) {
                 )
                 .unwrap();
         }
+
+        // Phase 7 also creates test tasks with dependencies on feature tasks.
+        // The test_tasks response has depends_on_feature=1, which maps to the
+        // second feature task ("Implement wizard phase engine").
+        let feature_task_id: i64 = phase_conn
+            .query_row(
+                "SELECT id FROM tasks WHERE description = 'Implement wizard phase engine'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        phase_conn
+            .execute(
+                "INSERT INTO tasks (description, status, priority, prd_section_id)
+                 VALUES (?1, 'pending', ?2, ?3)",
+                rusqlite::params![
+                    "Write integration tests for wizard phase engine: phase transitions work correctly, state persists across phases, resume picks up at correct phase",
+                    3, // feature priority (2) + 1
+                    "2"
+                ],
+            )
+            .unwrap();
+        let test_task_id = phase_conn.last_insert_rowid();
+        phase_conn
+            .execute(
+                "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id)
+                 VALUES (?1, ?2)",
+                rusqlite::params![test_task_id, feature_task_id],
+            )
+            .unwrap();
     }
 
     if n >= 8 {
@@ -550,10 +596,11 @@ async fn test_full_wizard_all_9_phases() {
     assert_eq!(result.tasks_removed, 1);
     assert_eq!(result.tasks_kept, 2); // 3 total - 1 added = 2 kept
 
-    // Phase 7 build/test config
+    // Phase 7 build/test config with test strategy
     assert_eq!(result.build_cmd, "cargo build --release");
     assert_eq!(result.test_cmd, "cargo test --all");
     assert_eq!(result.pipeline_steps, 3);
+    assert_eq!(result.test_tasks_added, 1, "Phase 7 should add 1 test task");
 
     // Phase 8 iteration mode
     assert_eq!(result.iteration_mode, "review_every:3");
@@ -605,7 +652,7 @@ async fn test_full_wizard_all_9_phases() {
     let ai_cli = dial_core::config::config_get("ai_cli").unwrap();
     assert_eq!(ai_cli, Some("claude".to_string()));
 
-    // Verify DIAL tasks exist (from phase 6 review)
+    // Verify DIAL tasks exist (from phase 6 review + phase 7 test tasks)
     let phase_conn = dial_core::get_db(None).unwrap();
     let task_count: i64 = phase_conn
         .query_row(
@@ -614,15 +661,15 @@ async fn test_full_wizard_all_9_phases() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(task_count, 3);
+    assert_eq!(task_count, 4); // 3 feature tasks + 1 test task from phase 7
 
-    // Verify task dependencies from phase 6
+    // Verify task dependencies from phase 6 + phase 7
     let dep_count: i64 = phase_conn
         .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(dep_count, 2); // task 1->0, task 2->1
+    assert_eq!(dep_count, 3); // task 1->0, task 2->1 (phase 6), test_task->1 (phase 7)
 
     // Verify validation steps from phase 7
     let step_count: i64 = phase_conn
@@ -1612,7 +1659,7 @@ async fn test_phase_7_config_and_pipeline_writing() {
         .unwrap();
     let provider = SequentialMockProvider::new(vec![phase_7_response()]);
 
-    let (build_cmd, test_cmd, steps_count) =
+    let (build_cmd, test_cmd, steps_count, test_tasks_count) =
         prd::wizard::run_wizard_phase_7(&provider, &prd_conn, &mut state)
             .await
             .unwrap();
@@ -1620,6 +1667,7 @@ async fn test_phase_7_config_and_pipeline_writing() {
     assert_eq!(build_cmd, "cargo build --release");
     assert_eq!(test_cmd, "cargo test --all");
     assert_eq!(steps_count, 3);
+    assert_eq!(test_tasks_count, 1, "Should create 1 test task from test_tasks");
 
     // Verify all 4 config values
     assert_eq!(
@@ -1688,7 +1736,7 @@ async fn test_phase_7_config_and_pipeline_writing() {
             "lint".to_string(),
             "cargo clippy".to_string(),
             1,
-            true,
+            false,
             Some(60)
         )
     );
@@ -2185,4 +2233,398 @@ async fn test_apply_specificity_rewrites_updates_sections() {
     // Verify the other section was NOT modified
     let arch_section = prd::prd_get_section(&prd_conn, "2").unwrap().unwrap();
     assert_eq!(arch_section.content, "Clean architecture with layers");
+}
+
+// ===========================================================================
+// Test: Phase 7 prompt contains TEST STRATEGY section
+// ===========================================================================
+
+#[test]
+fn test_phase_7_prompt_contains_test_strategy() {
+    let gathered_info = gathered_info_through_phase(6);
+    let tasks: Vec<(i64, String, i32, Option<String>)> = vec![
+        (1, "Set up project scaffolding".to_string(), 1, Some("1".to_string())),
+        (2, "Implement wizard phase engine".to_string(), 2, Some("2".to_string())),
+        (3, "Add integration tests".to_string(), 3, Some("3".to_string())),
+    ];
+
+    let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info, &tasks);
+
+    // Verify TEST STRATEGY section is present
+    assert!(
+        prompt.contains("## TEST STRATEGY"),
+        "Phase 7 prompt should contain TEST STRATEGY header"
+    );
+
+    // Verify feature task list is included with 0-based indices
+    assert!(
+        prompt.contains("[0]"),
+        "Prompt should include 0-based task index"
+    );
+    assert!(
+        prompt.contains("Set up project scaffolding"),
+        "Prompt should include feature task descriptions"
+    );
+    assert!(
+        prompt.contains("Implement wizard phase engine"),
+        "Prompt should include all feature tasks"
+    );
+
+    // Verify test strategy instructions
+    assert!(
+        prompt.contains("Complex features"),
+        "Prompt should describe complex feature handling"
+    );
+    assert!(
+        prompt.contains("Simple features"),
+        "Prompt should describe simple feature handling"
+    );
+    assert!(
+        prompt.contains("DEDICATED test task"),
+        "Prompt should mention dedicated test tasks"
+    );
+
+    // Verify concrete example patterns
+    assert!(
+        prompt.contains("POST /users"),
+        "Prompt should include concrete test description examples"
+    );
+    assert!(
+        prompt.contains("returns 201"),
+        "Prompt should show expected status codes in examples"
+    );
+
+    // Verify test framework section
+    assert!(
+        prompt.contains("### Test Framework"),
+        "Prompt should have Test Framework section"
+    );
+    assert!(
+        prompt.contains("cargo test"),
+        "Prompt should mention cargo test for Rust"
+    );
+    assert!(
+        prompt.contains("pytest"),
+        "Prompt should mention pytest for Python"
+    );
+    assert!(
+        prompt.contains("jest"),
+        "Prompt should mention jest for JavaScript"
+    );
+
+    // Verify pipeline step fields in JSON format
+    assert!(
+        prompt.contains("sort_order"),
+        "Prompt should request sort_order for pipeline steps"
+    );
+    assert!(
+        prompt.contains("\"required\""),
+        "Prompt should request required flag for pipeline steps"
+    );
+    assert!(
+        prompt.contains("\"timeout\""),
+        "Prompt should request timeout for pipeline steps"
+    );
+
+    // Verify test_tasks in JSON response format
+    assert!(
+        prompt.contains("\"test_tasks\""),
+        "Prompt should request test_tasks in JSON format"
+    );
+    assert!(
+        prompt.contains("depends_on_feature"),
+        "Prompt should request depends_on_feature for test tasks"
+    );
+    assert!(
+        prompt.contains("\"test_framework\""),
+        "Prompt should request test_framework in JSON format"
+    );
+
+    // Verify original build/test config fields are still present
+    assert!(
+        prompt.contains("\"build_cmd\""),
+        "Prompt should still include build_cmd"
+    );
+    assert!(
+        prompt.contains("\"test_cmd\""),
+        "Prompt should still include test_cmd"
+    );
+    assert!(
+        prompt.contains("\"pipeline_steps\""),
+        "Prompt should still include pipeline_steps"
+    );
+}
+
+// ===========================================================================
+// Test: Phase 7 prompt with empty task list
+// ===========================================================================
+
+#[test]
+fn test_phase_7_prompt_with_empty_tasks() {
+    let gathered_info = gathered_info_through_phase(3);
+    let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info, &[]);
+
+    assert!(
+        prompt.contains("No feature tasks available"),
+        "Prompt should indicate no tasks when list is empty"
+    );
+    assert!(
+        prompt.contains("## TEST STRATEGY"),
+        "TEST STRATEGY section should still be present"
+    );
+}
+
+// ===========================================================================
+// Test: parse_test_strategy_response extracts test tasks
+// ===========================================================================
+
+#[test]
+fn test_parse_test_strategy_response() {
+    let data = json!({
+        "build_cmd": "cargo build",
+        "test_cmd": "cargo test",
+        "test_framework": "cargo test",
+        "test_tasks": [
+            {
+                "description": "Write integration tests for POST /users: valid input 201, duplicate email 409, missing fields 422",
+                "depends_on_feature": 0,
+                "rationale": "User registration has multiple error paths"
+            },
+            {
+                "description": "Write unit tests for password hashing: bcrypt cost factor 12, verify round-trip, reject empty passwords",
+                "depends_on_feature": 2,
+                "rationale": "Security-critical code needs dedicated tests"
+            }
+        ],
+        "pipeline_steps": []
+    });
+
+    let test_tasks = prd::wizard::parse_test_strategy_response(&data);
+
+    assert_eq!(test_tasks.len(), 2);
+
+    assert_eq!(test_tasks[0].description, "Write integration tests for POST /users: valid input 201, duplicate email 409, missing fields 422");
+    assert_eq!(test_tasks[0].depends_on_feature, 0);
+    assert!(test_tasks[0].rationale.contains("error paths"));
+
+    assert_eq!(test_tasks[1].depends_on_feature, 2);
+    assert!(test_tasks[1].description.contains("password hashing"));
+}
+
+// ===========================================================================
+// Test: parse_test_strategy_response handles missing fields gracefully
+// ===========================================================================
+
+#[test]
+fn test_parse_test_strategy_response_missing_fields() {
+    // Old-style Phase 7 response without test_tasks
+    let data = json!({
+        "build_cmd": "cargo build",
+        "test_cmd": "cargo test",
+        "pipeline_steps": []
+    });
+
+    let test_tasks = prd::wizard::parse_test_strategy_response(&data);
+    assert!(test_tasks.is_empty(), "Should return empty vec for old-style response");
+}
+
+// ===========================================================================
+// Test: parse_test_strategy_response handles malformed entries
+// ===========================================================================
+
+#[test]
+fn test_parse_test_strategy_response_malformed_entries() {
+    let data = json!({
+        "test_tasks": [
+            {"description": "Valid test task", "depends_on_feature": 0, "rationale": "needed"},
+            {"depends_on_feature": 1, "rationale": "missing description"},
+            {"description": "Missing depends_on", "rationale": "no dependency index"},
+            {"description": "No rationale field", "depends_on_feature": 3}
+        ]
+    });
+
+    let test_tasks = prd::wizard::parse_test_strategy_response(&data);
+
+    // Only entries with required "description" field pass the filter_map
+    assert_eq!(test_tasks.len(), 3, "Should parse entries with description, skip one without");
+    assert_eq!(test_tasks[0].description, "Valid test task");
+    assert_eq!(test_tasks[0].depends_on_feature, 0);
+
+    // Missing depends_on_feature defaults to 0
+    assert_eq!(test_tasks[1].description, "Missing depends_on");
+    assert_eq!(test_tasks[1].depends_on_feature, 0);
+
+    // Missing rationale defaults to empty string
+    assert_eq!(test_tasks[2].description, "No rationale field");
+    assert_eq!(test_tasks[2].rationale, "");
+}
+
+// ===========================================================================
+// Test: Integration — Phase 7 creates test tasks with feature dependencies
+// ===========================================================================
+
+#[tokio::test]
+async fn test_phase_7_feature_test_task_pairing() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+    save_state_through_phase(&prd_conn, 6);
+    setup_db_through_phase(&prd_conn, 6);
+
+    // Verify feature tasks exist before Phase 7
+    let phase_conn = dial_core::get_db(None).unwrap();
+    let pre_task_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pre_task_count, 3, "Should have 3 feature tasks from Phase 6");
+
+    // Phase 7 response with 2 test tasks targeting different feature tasks
+    let response_with_tests = serde_json::to_string(&json!({
+        "build_cmd": "cargo build --release",
+        "test_cmd": "cargo test --all",
+        "test_framework": "cargo test",
+        "pipeline_steps": [
+            {"name": "lint", "command": "cargo clippy", "sort_order": 1, "required": false, "timeout": 60},
+            {"name": "build", "command": "cargo build", "sort_order": 2, "required": true, "timeout": 300},
+            {"name": "test", "command": "cargo test", "sort_order": 3, "required": true, "timeout": 120}
+        ],
+        "test_tasks": [
+            {
+                "description": "Write unit tests for project scaffolding: verify directory structure, config file generation, .gitignore contents",
+                "depends_on_feature": 0,
+                "rationale": "Scaffolding creates multiple files that need validation"
+            },
+            {
+                "description": "Write integration tests for wizard phase engine: phase transitions work correctly, state persists across phases, resume picks up at correct phase",
+                "depends_on_feature": 1,
+                "rationale": "Core engine logic is complex with multiple code paths"
+            }
+        ],
+        "build_timeout": 300,
+        "test_timeout": 120,
+        "rationale": "Standard Rust pipeline"
+    }))
+    .unwrap();
+
+    // Load state and run phase 7
+    let mut state = prd::wizard::load_wizard_state(&prd_conn)
+        .unwrap()
+        .unwrap();
+    let provider = SequentialMockProvider::new(vec![response_with_tests]);
+
+    let (build_cmd, test_cmd, steps_count, test_tasks_count) =
+        prd::wizard::run_wizard_phase_7(&provider, &prd_conn, &mut state)
+            .await
+            .unwrap();
+
+    assert_eq!(build_cmd, "cargo build --release");
+    assert_eq!(test_cmd, "cargo test --all");
+    assert_eq!(steps_count, 3);
+    assert_eq!(test_tasks_count, 2, "Should create 2 test tasks");
+
+    // Verify total task count increased by 2 (3 feature + 2 test = 5)
+    let phase_conn = dial_core::get_db(None).unwrap();
+    let post_task_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(post_task_count, 5, "Should have 5 tasks total (3 feature + 2 test)");
+
+    // Verify test tasks have correct descriptions
+    let test_task_1: String = phase_conn
+        .query_row(
+            "SELECT description FROM tasks WHERE description LIKE 'Write unit tests for project scaffolding%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(test_task_1.contains("directory structure"));
+
+    let test_task_2: String = phase_conn
+        .query_row(
+            "SELECT description FROM tasks WHERE description LIKE 'Write integration tests for wizard phase engine%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(test_task_2.contains("phase transitions"));
+
+    // Verify dependency relationships: test tasks depend on their feature tasks
+    let dep_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_dependencies td
+             JOIN tasks t ON td.task_id = t.id
+             WHERE t.description LIKE 'Write unit tests for project scaffolding%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dep_count, 1, "Test task should have 1 dependency");
+
+    // Verify the dependency points to the correct feature task
+    let depends_on_desc: String = phase_conn
+        .query_row(
+            "SELECT ft.description FROM task_dependencies td
+             JOIN tasks t ON td.task_id = t.id
+             JOIN tasks ft ON td.depends_on_id = ft.id
+             WHERE t.description LIKE 'Write unit tests for project scaffolding%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        depends_on_desc, "Set up project scaffolding",
+        "Test task should depend on the correct feature task"
+    );
+
+    // Verify second test task depends on correct feature
+    let depends_on_desc_2: String = phase_conn
+        .query_row(
+            "SELECT ft.description FROM task_dependencies td
+             JOIN tasks t ON td.task_id = t.id
+             JOIN tasks ft ON td.depends_on_id = ft.id
+             WHERE t.description LIKE 'Write integration tests for wizard phase engine%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        depends_on_desc_2, "Implement wizard phase engine",
+        "Second test task should depend on the second feature task"
+    );
+
+    // Verify test task priorities are feature_priority + 1
+    let test_task_priority: i32 = phase_conn
+        .query_row(
+            "SELECT priority FROM tasks WHERE description LIKE 'Write unit tests for project scaffolding%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(test_task_priority, 2, "Test task priority should be feature priority (1) + 1");
+
+    // Verify wizard state was updated
+    let updated_state = prd::wizard::load_wizard_state(&prd_conn)
+        .unwrap()
+        .unwrap();
+    assert!(updated_state.completed_phases.contains(&7));
+    assert!(updated_state.gathered_info.get("build_&_test_config").is_some());
+    // Verify test_tasks are stored in gathered_info
+    let config_data = &updated_state.gathered_info["build_&_test_config"];
+    assert!(
+        config_data.get("test_tasks").is_some(),
+        "gathered_info should store test_tasks from response"
+    );
+    assert!(
+        config_data.get("test_framework").is_some(),
+        "gathered_info should store test_framework from response"
+    );
 }
