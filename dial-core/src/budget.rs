@@ -3,6 +3,9 @@
 /// Uses a chars/4 heuristic for token estimation, which is a reasonable
 /// approximation for most LLM tokenizers (GPT-family, Claude, etc.).
 
+/// Priority for previous failed attempt diff context (used in retry context assembly).
+pub const FAILED_DIFF_PRIORITY: u32 = 12;
+
 /// Estimate token count for a string using chars/4 heuristic.
 pub fn estimate_tokens(text: &str) -> usize {
     // chars/4 is a widely-used approximation.

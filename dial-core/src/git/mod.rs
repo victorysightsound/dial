@@ -165,3 +165,48 @@ pub fn git_get_last_commit() -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
+
+/// Return the current working tree diff (unstaged changes) as a String.
+pub fn git_diff() -> Result<String> {
+    let result = Command::new("git")
+        .args(["diff"])
+        .output()?;
+
+    Ok(String::from_utf8_lossy(&result.stdout).to_string())
+}
+
+/// Return the current working tree diff stat (unstaged changes summary) as a String.
+pub fn git_diff_stat() -> Result<String> {
+    let result = Command::new("git")
+        .args(["diff", "--stat"])
+        .output()?;
+
+    Ok(String::from_utf8_lossy(&result.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_git_diff_returns_ok() {
+        // In the project repo, git diff should succeed (returns Ok even if empty)
+        let result = git_diff();
+        assert!(result.is_ok(), "git_diff() should return Ok in a git repo");
+    }
+
+    #[test]
+    fn test_git_diff_stat_returns_ok() {
+        // In the project repo, git diff --stat should succeed
+        let result = git_diff_stat();
+        assert!(result.is_ok(), "git_diff_stat() should return Ok in a git repo");
+    }
+
+    #[test]
+    fn test_git_diff_returns_string() {
+        // Verify return type is String (may be empty if no unstaged changes)
+        let diff = git_diff().unwrap();
+        // diff is a valid String; it may be empty or non-empty depending on working tree state
+        let _ = diff.len();
+    }
+}

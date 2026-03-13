@@ -8,7 +8,7 @@ use crate::errors::{DialError, Result};
 use crate::failure::record_failure;
 use crate::git::{
     checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled,
-    git_commit, git_has_changes, git_is_repo, git_revert_to,
+    git_commit, git_diff, git_diff_stat, git_has_changes, git_is_repo, git_revert_to,
 };
 use crate::output::{bold, dim, green, print_success, red, yellow};
 use crate::task::models::Task;
@@ -281,6 +281,16 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
 
         Ok(ValidateResult { success: true, step_results, task_id: Some(task_id), suggested_solutions: Vec::new() })
     } else {
+        // Capture diff before restoring checkpoint (so we can include in retry context)
+        let (failed_diff, failed_diff_stat) = if git_is_repo() {
+            (
+                git_diff().unwrap_or_default(),
+                git_diff_stat().unwrap_or_default(),
+            )
+        } else {
+            (String::new(), String::new())
+        };
+
         // Restore checkpoint on failure (rolls back working tree to pre-task state)
         if git_is_repo() && checkpoints_enabled() {
             match checkpoint_restore() {
@@ -302,15 +312,29 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             }
         }
 
-        // Complete iteration as failed + update task status atomically
-        let notes = if error_output.len() > 500 {
+        // Build notes with diff info for retry context
+        let error_preview = if error_output.len() > 500 {
             &error_output[..500]
         } else {
             &error_output
         };
 
+        let notes_string = if !failed_diff.is_empty() || !failed_diff_stat.is_empty() {
+            let truncated_diff = if failed_diff.len() > 2000 {
+                &failed_diff[..2000]
+            } else {
+                &failed_diff
+            };
+            format!(
+                "{}\nFAILED_DIFF_STAT:\n{}\nFAILED_DIFF:\n{}",
+                error_preview, failed_diff_stat, truncated_diff
+            )
+        } else {
+            error_preview.to_string()
+        };
+
         with_transaction(&conn, |conn| {
-            complete_iteration(conn, iteration_id, "failed", None, Some(notes))?;
+            complete_iteration(conn, iteration_id, "failed", None, Some(&notes_string))?;
 
             let fail_count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM iterations WHERE task_id = ?1 AND status = 'failed'",

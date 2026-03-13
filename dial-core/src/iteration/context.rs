@@ -7,6 +7,22 @@ use crate::task::models::Task;
 use crate::TRUST_THRESHOLD;
 use rusqlite::Connection;
 
+/// Extract error, diff_stat, and diff from structured iteration notes.
+/// Returns `Some((error, diff_stat, diff))` if the notes contain FAILED_DIFF markers.
+pub fn extract_failed_diff_parts(notes: &str) -> Option<(String, String, String)> {
+    let stat_marker = "\nFAILED_DIFF_STAT:\n";
+    let diff_marker = "\nFAILED_DIFF:\n";
+
+    let stat_pos = notes.find(stat_marker)?;
+    let diff_pos = notes.find(diff_marker)?;
+
+    let error = notes[..stat_pos].to_string();
+    let stat = notes[stat_pos + stat_marker.len()..diff_pos].to_string();
+    let diff = notes[diff_pos + diff_marker.len()..].to_string();
+
+    Some((error, stat, diff))
+}
+
 /// Behavioral guardrails ("signs") that prevent context rot
 /// by reminding the agent of critical rules at the start of each task.
 const SIGNS: &[&str] = &[
@@ -36,6 +52,29 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
             context.push(format!("- **{}**", sign));
         }
         context.push(String::new());
+    }
+
+    // For retry attempts: include previous failed attempt's diff
+    {
+        let prev_failed_notes: Option<String> = conn
+            .query_row(
+                "SELECT notes FROM iterations WHERE task_id = ?1 AND status = 'failed' ORDER BY id DESC LIMIT 1",
+                [task.id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+
+        if let Some(notes) = prev_failed_notes {
+            if let Some((error, diff_stat, diff)) = extract_failed_diff_parts(&notes) {
+                context.push(format!(
+                    "## Previous Failed Attempt\n\nPREVIOUS ATTEMPT (failed):\nError: {}\nChanges attempted:\n{}\n{}\nDO NOT repeat this approach.",
+                    error.trim(),
+                    diff_stat.trim(),
+                    diff.trim()
+                ));
+            }
+        }
     }
 
     // Get relevant spec sections — prefer prd.db, fall back to spec_sections
@@ -283,6 +322,34 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
         .collect::<Vec<_>>()
         .join("\n");
     items.push(ContextItem::new("Signs (Critical Rules)", &signs_content, PRIORITY_SIGNS));
+
+    // For retry attempts: include previous failed attempt's diff
+    {
+        let prev_failed_notes: Option<String> = conn
+            .query_row(
+                "SELECT notes FROM iterations WHERE task_id = ?1 AND status = 'failed' ORDER BY id DESC LIMIT 1",
+                [task.id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+
+        if let Some(notes) = prev_failed_notes {
+            if let Some((error, diff_stat, diff)) = extract_failed_diff_parts(&notes) {
+                let content = format!(
+                    "PREVIOUS ATTEMPT (failed):\nError: {}\nChanges attempted:\n{}\n{}\nDO NOT repeat this approach.",
+                    error.trim(),
+                    diff_stat.trim(),
+                    diff.trim()
+                );
+                items.push(ContextItem::new(
+                    "Previous Failed Attempt",
+                    &content,
+                    budget::FAILED_DIFF_PRIORITY,
+                ));
+            }
+        }
+    }
 
     // Task-linked and FTS spec sections — prefer prd.db, fall back to spec_sections
     let prd_conn = if prd::prd_db_exists() { prd::get_prd_db().ok() } else { None };
@@ -827,6 +894,170 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(after_refs, 0, "Pure mode should not increment references");
+    }
+
+    #[test]
+    fn test_extract_failed_diff_parts_valid() {
+        let notes = "build error: something failed\nFAILED_DIFF_STAT:\n 2 files changed, 10 insertions(+), 3 deletions(-)\nFAILED_DIFF:\n--- a/src/main.rs\n+++ b/src/main.rs\n+new broken line";
+        let result = extract_failed_diff_parts(notes);
+        assert!(result.is_some());
+        let (error, stat, diff) = result.unwrap();
+        assert_eq!(error, "build error: something failed");
+        assert!(stat.contains("2 files changed"));
+        assert!(diff.contains("+new broken line"));
+    }
+
+    #[test]
+    fn test_extract_failed_diff_parts_no_markers() {
+        let notes = "just an error without diff markers";
+        let result = extract_failed_diff_parts(notes);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_failed_diff_parts_empty_diff() {
+        let notes = "error msg\nFAILED_DIFF_STAT:\n\nFAILED_DIFF:\n";
+        let result = extract_failed_diff_parts(notes);
+        assert!(result.is_some());
+        let (error, stat, diff) = result.unwrap();
+        assert_eq!(error, "error msg");
+        assert_eq!(stat, "");
+        assert_eq!(diff, "");
+    }
+
+    #[test]
+    fn test_diff_truncation_preserved_in_extraction() {
+        // Verify extraction works with a large diff (truncation happens at storage time)
+        let long_diff = "x".repeat(3000);
+        let notes = format!("error\nFAILED_DIFF_STAT:\nstat line\nFAILED_DIFF:\n{}", long_diff);
+        let result = extract_failed_diff_parts(&notes);
+        assert!(result.is_some());
+        let (_, _, diff) = result.unwrap();
+        assert_eq!(diff.len(), 3000);
+    }
+
+    #[test]
+    fn test_retry_context_includes_previous_failed_diff() {
+        let conn = setup_context_test_db();
+
+        // Create task
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('retry task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Create a failed iteration with diff in notes
+        let notes = "build error\nFAILED_DIFF_STAT:\n 1 file changed, 5 insertions(+)\nFAILED_DIFF:\n--- a/src/lib.rs\n+++ b/src/lib.rs\n+broken code here";
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, status, notes) VALUES (?1, 1, 'failed', ?2)",
+            rusqlite::params![task_id, notes],
+        )
+        .unwrap();
+
+        let task = make_test_task(task_id);
+        let context = gather_context(&conn, &task).unwrap();
+
+        assert!(
+            context.contains("PREVIOUS ATTEMPT (failed):"),
+            "Context should contain previous failed attempt section. Got:\n{}",
+            context
+        );
+        assert!(
+            context.contains("DO NOT repeat this approach"),
+            "Context should contain warning not to repeat. Got:\n{}",
+            context
+        );
+        assert!(
+            context.contains("broken code here"),
+            "Context should contain the diff content. Got:\n{}",
+            context
+        );
+    }
+
+    #[test]
+    fn test_retry_context_items_includes_previous_diff_at_priority_12() {
+        let conn = setup_context_test_db();
+
+        // Create task
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('retry items task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Create a failed iteration with diff in notes
+        let notes = "test failure\nFAILED_DIFF_STAT:\n 2 files changed\nFAILED_DIFF:\n+added bad code";
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, status, notes) VALUES (?1, 1, 'failed', ?2)",
+            rusqlite::params![task_id, notes],
+        )
+        .unwrap();
+
+        let task = make_test_task(task_id);
+        let items = gather_context_items(&conn, &task).unwrap();
+
+        let diff_item = items.iter().find(|i| i.label == "Previous Failed Attempt");
+        assert!(
+            diff_item.is_some(),
+            "Should have a Previous Failed Attempt context item"
+        );
+        let item = diff_item.unwrap();
+        assert_eq!(item.priority, crate::budget::FAILED_DIFF_PRIORITY);
+        assert!(item.content.contains("PREVIOUS ATTEMPT (failed):"));
+        assert!(item.content.contains("DO NOT repeat this approach"));
+        assert!(item.content.contains("+added bad code"));
+    }
+
+    #[test]
+    fn test_no_retry_context_when_no_failed_iterations() {
+        let conn = setup_context_test_db();
+
+        // Create task with no failed iterations
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('fresh task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        let task = make_test_task(task_id);
+        let context = gather_context(&conn, &task).unwrap();
+
+        assert!(
+            !context.contains("PREVIOUS ATTEMPT"),
+            "Should not have previous attempt section without failed iterations"
+        );
+    }
+
+    #[test]
+    fn test_no_retry_context_when_failed_without_diff() {
+        let conn = setup_context_test_db();
+
+        // Create task
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('no diff task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        // Create a failed iteration WITHOUT diff markers in notes
+        conn.execute(
+            "INSERT INTO iterations (task_id, attempt_number, status, notes) VALUES (?1, 1, 'failed', 'plain error')",
+            rusqlite::params![task_id],
+        )
+        .unwrap();
+
+        let task = make_test_task(task_id);
+        let context = gather_context(&conn, &task).unwrap();
+
+        assert!(
+            !context.contains("PREVIOUS ATTEMPT"),
+            "Should not have previous attempt section when notes lack diff markers"
+        );
     }
 
     #[test]
