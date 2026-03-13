@@ -70,7 +70,7 @@ git init
 dial init --phase mvp
 ```
 
-**Important:** Set up your `.gitignore` before running the loop. DIAL uses `git add -A` when committing successful tasks, which stages everything not excluded by `.gitignore`. Make sure temp files, build artifacts, secrets, and editor configs are covered:
+**Important:** Set up your `.gitignore` before running the loop. DIAL uses `git add -A` when committing successful tasks, which stages everything not excluded by `.gitignore`. DIAL automatically detects and unstages common secret files (`.env`, `.pem`, `.key`, etc.) before committing, but you should still make sure temp files, build artifacts, and editor configs are covered:
 
 ```bash
 echo -e ".dial/\nnode_modules/\ntarget/\n.env\n*.tmp" >> .gitignore

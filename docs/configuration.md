@@ -345,9 +345,13 @@ For auto-run mode, the same format is used. DIAL checks `git status --porcelain`
 
 DIAL does not push to remote repositories. That's always your decision.
 
+### Secret Detection
+
+Before committing, DIAL scans staged files against 13 dangerous patterns (`.env`, `.pem`, `.key`, `id_rsa`, `credentials.json`, `service-account.json`, `.p12`, `.pfx`, `.secret`, `.secrets`, `.env.local`, `.env.production`, `id_ed25519`). Any matching files are automatically unstaged with a warning printed to stderr. This is a safety net, not a replacement for a proper `.gitignore`.
+
 ## `.gitignore` Recommendations
 
-**Important:** DIAL uses `git add -A` when auto-committing successful tasks. This stages all unignored files in the working tree. Set up a thorough `.gitignore` before running the loop to prevent temp files, debug artifacts, secrets, or editor configs from being committed silently.
+**Important:** DIAL uses `git add -A` when auto-committing successful tasks. This stages all unignored files in the working tree. While DIAL's secret detection will catch common dangerous files, you should still set up a thorough `.gitignore` before running the loop to prevent temp files, build artifacts, and editor configs from being committed.
 
 At minimum, add:
 

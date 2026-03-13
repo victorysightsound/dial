@@ -2,9 +2,9 @@
 
 ## Version Timeline
 
-### v4.1.0 (March 2026) — Loop Accuracy
+### v4.1.0 (March 2026) — Loop Accuracy & Hardening
 
-4 enhancements targeting first-attempt success rate and spec quality:
+7 enhancements targeting first-attempt success rate, spec quality, and reliability:
 
 **Failed Attempt Diff Capture:**
 - Captures `git diff` and `git diff --stat` before checkpoint restore on validation failure
@@ -27,7 +27,21 @@
 - Test tasks depend on their feature tasks in the dependency graph
 - Suggests test framework and validation pipeline steps based on tech stack
 
-354 tests (up from 308). No schema migrations needed.
+**Checkpoint Conflict Recovery:**
+- `checkpoint_restore()` now recovers from `git stash pop` merge conflicts
+- Falls back to `git reset --hard HEAD` + `git stash drop` to guarantee a clean working tree
+- Prevents error-out when user makes manual commits between iterate and validate
+
+**Secret Detection Before Staging:**
+- Pre-commit safety check scans staged files against 13 dangerous patterns (`.env`, `.pem`, `.key`, `id_rsa`, `credentials.json`, etc.)
+- Automatically unstages flagged files and warns before committing
+- Prevents accidental secret commits from `git add -A`
+
+**Resilient JSON Parsing (Wizard):**
+- 4-attempt extraction strategy: markdown-aware → brute-force brace matching → re-prompt AI → brute-force retry
+- Handles AI responses wrapped in explanatory text, nested objects, escaped quotes
+
+364 tests (up from 308). No schema migrations needed.
 
 ### v4.0.0 (March 2026) — Engine Hardening
 
@@ -118,7 +132,7 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 3.1.0 | + PRD database | Yes | 142 |
 | 3.2.0 | + 9-phase wizard | Yes | 201 |
 | 4.0.0 | + Engine hardening | Yes | 308 |
-| 4.1.0 | + Loop accuracy & spec enforcement | Yes | 354 |
+| 4.1.0 | + Loop accuracy, hardening & spec enforcement | Yes | 364 |
 
 ## Performance
 

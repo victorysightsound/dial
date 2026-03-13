@@ -261,11 +261,11 @@ The orchestrator tries the signal file first, falls back to regex if the file do
 cargo test --workspace
 ```
 
-354 tests covering:
-- Unit tests for all core modules (patterns, signals, health, metrics, budget, diffs)
+364 tests covering:
+- Unit tests for all core modules (patterns, signals, health, metrics, budget, diffs, secret detection, JSON extraction)
 - Integration tests for full lifecycle (init → task → iterate → validate → complete)
 - Wizard tests (9-phase flow with mock provider, pause/resume, specificity/sizing/coverage)
-- Crash recovery, transaction rollback, and failed diff capture tests
+- Crash recovery, transaction rollback, failed diff capture, and checkpoint conflict recovery tests
 
 ## Building
 
