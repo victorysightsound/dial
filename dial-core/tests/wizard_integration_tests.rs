@@ -1249,7 +1249,7 @@ async fn test_phase_6_task_replacement_with_dependencies() {
         .unwrap();
     let provider = SequentialMockProvider::new(vec![phase_6_response()]);
 
-    let (kept, added, removed) =
+    let (kept, added, removed, _sizing) =
         prd::wizard::run_wizard_phase_6(&provider, &prd_conn, &mut state)
             .await
             .unwrap();
@@ -1388,6 +1388,193 @@ async fn test_phase_6_task_replacement_with_dependencies() {
         eligible_count, 1,
         "Exactly 1 task should be eligible when dependencies block the others"
     );
+}
+
+// ===========================================================================
+// Test: Phase 6 — task splitting via sizing analysis
+// ===========================================================================
+
+/// Response fixture where the AI splits a large task into sub-tasks,
+/// rewrites a vague task, and merges two small tasks.
+fn phase_6_response_with_sizing() -> String {
+    serde_json::to_string(&json!({
+        "tasks": [
+            {
+                "description": "Create users table with columns: id, email, password_hash, created_at",
+                "priority": 1,
+                "spec_section": "1",
+                "depends_on": [],
+                "rationale": "Database schema first",
+                "size": "S"
+            },
+            {
+                "description": "Add bcrypt password hashing to User model with cost factor 12",
+                "priority": 2,
+                "spec_section": "1",
+                "depends_on": [0],
+                "rationale": "Auth depends on user table",
+                "size": "M"
+            },
+            {
+                "description": "Add POST /login endpoint returning JWT with 24h expiry",
+                "priority": 3,
+                "spec_section": "1",
+                "depends_on": [0, 1],
+                "rationale": "Login needs both table and hashing",
+                "size": "M"
+            },
+            {
+                "description": "Set up project config files (.gitignore, .env.example, CI pipeline)",
+                "priority": 4,
+                "spec_section": "2",
+                "depends_on": [],
+                "rationale": "Config can happen in parallel",
+                "size": "S"
+            }
+        ],
+        "removed": [
+            {"original": "Implement: Overview", "reason": "Too vague, replaced with specific tasks"}
+        ],
+        "added": [
+            {"description": "Add POST /login endpoint returning JWT with 24h expiry", "reason": "Login was missing"}
+        ],
+        "splits": [
+            {
+                "original": "Implement: Architecture",
+                "into": [
+                    "Create users table with columns: id, email, password_hash, created_at",
+                    "Add bcrypt password hashing to User model with cost factor 12",
+                    "Add POST /login endpoint returning JWT with 24h expiry"
+                ],
+                "reason": "Original task touched >3 files and implemented multiple features"
+            }
+        ],
+        "rewrites": [
+            {
+                "original": "Implement: Implementation",
+                "rewritten": "Set up project config files (.gitignore, .env.example, CI pipeline)",
+                "reason": "Original was vague with no concrete deliverables"
+            }
+        ],
+        "merges": [],
+        "sizing_summary": {
+            "S": 2, "M": 2, "L": 0, "XL": 0,
+            "total_splits": 1, "total_rewrites": 1, "total_merges": 0
+        }
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn test_phase_6_task_splitting_via_sizing() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+    save_state_through_phase(&prd_conn, 5);
+    setup_db_through_phase(&prd_conn, 5);
+
+    // Pre-condition: 3 original tasks from phase 5 exist
+    let phase_conn = dial_core::get_db(None).unwrap();
+    let original_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(original_count, 3, "Should have 3 original tasks from phase 5");
+
+    // Load state and run phase 6 with sizing response
+    let mut state = prd::wizard::load_wizard_state(&prd_conn)
+        .unwrap()
+        .unwrap();
+    let provider = SequentialMockProvider::new(vec![phase_6_response_with_sizing()]);
+
+    let (kept, added, removed, sizing) =
+        prd::wizard::run_wizard_phase_6(&provider, &prd_conn, &mut state)
+            .await
+            .unwrap();
+
+    assert_eq!(kept, 3);
+    assert_eq!(added, 1);
+    assert_eq!(removed, 1);
+
+    // Verify sizing summary
+    assert_eq!(sizing.small, 2);
+    assert_eq!(sizing.medium, 2);
+    assert_eq!(sizing.large, 0);
+    assert_eq!(sizing.xl, 0);
+    assert_eq!(sizing.total_splits, 1);
+    assert_eq!(sizing.total_rewrites, 1);
+    assert_eq!(sizing.total_merges, 0);
+
+    // Verify tasks were replaced
+    let phase_conn = dial_core::get_db(None).unwrap();
+    let new_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_count, 4, "Should have 4 tasks after split");
+
+    // Verify split sub-tasks exist with correct descriptions
+    let users_table: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE description LIKE '%users table%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(users_table, 1, "Split sub-task 'users table' should exist");
+
+    let bcrypt: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE description LIKE '%bcrypt%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bcrypt, 1, "Split sub-task 'bcrypt' should exist");
+
+    let login: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE description LIKE '%login%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(login, 1, "Split sub-task 'login' should exist");
+
+    // Verify dependencies: login task depends on both users_table and bcrypt
+    let dep_count: i64 = phase_conn
+        .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(dep_count, 3, "Should have 3 dependency relationships");
+
+    // Verify rewritten task exists
+    let config_task: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE description LIKE '%config files%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(config_task, 1, "Rewritten task should exist with concrete description");
+
+    // Original vague tasks should be gone
+    let old_remaining: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE description LIKE 'Implement: %'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_remaining, 0, "Original vague tasks should all be replaced");
 }
 
 // ===========================================================================

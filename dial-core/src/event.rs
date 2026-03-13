@@ -100,6 +100,17 @@ pub enum Event {
     TermAdded { canonical: String, category: String },
     /// Task review phase completed with summary of changes.
     TaskReviewCompleted { tasks_kept: usize, tasks_added: usize, tasks_removed: usize },
+    /// A task was split into smaller sub-tasks during sizing analysis.
+    TaskSplit { original: String, into_count: usize },
+    /// Task sizing analysis completed with summary of size distribution.
+    TaskSizingCompleted {
+        small: usize,
+        medium: usize,
+        large: usize,
+        splits: usize,
+        rewrites: usize,
+        merges: usize,
+    },
     /// Build and test commands were configured.
     BuildTestConfigured { build_cmd: String, test_cmd: String, pipeline_steps: usize },
     /// Iteration mode was selected.

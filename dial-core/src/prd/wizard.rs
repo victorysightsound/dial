@@ -104,12 +104,49 @@ pub struct WizardResult {
     pub tasks_kept: usize,
     pub tasks_added: usize,
     pub tasks_removed: usize,
+    pub sizing_summary: SizingSummary,
     pub build_cmd: String,
     pub test_cmd: String,
     pub pipeline_steps: usize,
     pub iteration_mode: String,
     pub project_name: String,
     pub task_count: usize,
+}
+
+/// Summary of task sizing analysis performed during Phase 6.
+#[derive(Debug, Clone, Default)]
+pub struct SizingSummary {
+    pub small: usize,
+    pub medium: usize,
+    pub large: usize,
+    pub xl: usize,
+    pub total_splits: usize,
+    pub total_rewrites: usize,
+    pub total_merges: usize,
+}
+
+/// A task that was split into smaller sub-tasks.
+#[derive(Debug, Clone)]
+pub struct TaskSplitRecord {
+    pub original: String,
+    pub into: Vec<String>,
+    pub reason: String,
+}
+
+/// A task description that was rewritten to be more concrete.
+#[derive(Debug, Clone)]
+pub struct TaskRewriteRecord {
+    pub original: String,
+    pub rewritten: String,
+    pub reason: String,
+}
+
+/// Tasks that were merged into a single task.
+#[derive(Debug, Clone)]
+pub struct TaskMergeRecord {
+    pub merged: Vec<String>,
+    pub into: String,
+    pub reason: String,
 }
 
 /// Save wizard state to the database (upsert).
@@ -722,13 +759,14 @@ pub async fn run_wizard(
                 save_wizard_state(prd_conn, &state)?;
             }
 
-            // Phase 6: task review
+            // Phase 6: task review with sizing analysis
             WizardPhase::TaskReview => {
-                let (kept, added, removed) =
+                let (kept, added, removed, sizing) =
                     run_wizard_phase_6(provider, prd_conn, &mut state).await?;
                 result.tasks_kept = kept;
                 result.tasks_added = added;
                 result.tasks_removed = removed;
+                result.sizing_summary = sizing;
             }
 
             // Phase 7: build & test config
@@ -806,7 +844,32 @@ pub fn build_task_review_prompt(
 ## Current Task List (generated from PRD)
 {task_list}
 {prd_context}
-Review the tasks above and refine them:
+
+## TASK SIZING ANALYSIS
+
+Before producing the final task list, evaluate EVERY task on three dimensions:
+
+1. **SCOPE**: Each task should touch 1-3 files and do ONE thing. If a task requires changes to more than 3 files or implements multiple distinct features, it must be SPLIT.
+
+2. **SPECIFICITY**: Each task description must be concrete enough for an AI agent to implement without guessing.
+   - BAD: "Build auth system" (vague, multi-step)
+   - BAD: "Set up database" (unclear what tables/schema)
+   - GOOD: "Add bcrypt password hashing to User model with cost factor 12"
+   - GOOD: "Create users table with columns: id, email, password_hash, created_at"
+
+3. **TESTABILITY**: Success must be verifiable by running build + tests. If a task cannot be validated by automated checks, rewrite it so it can be.
+
+### Actions Required
+
+- **SPLIT** any task that requires more than 3 files OR implements multiple features. Create sub-tasks with explicit dependency relationships between them (the sub-tasks should appear in order in the tasks array, with later ones depending on earlier ones).
+- **REWRITE** any vague task description to be concrete with specific inputs, outputs, and acceptance criteria.
+- **MERGE** tasks that are too small for a separate iteration (e.g., single-line config changes) into a related neighboring task.
+- **SIZE** every task as one of: [S]mall (1 file, <15 min), [M]edium (1-2 files, ~30 min), [L]arge (2-3 files, ~45 min), [XL]needs-review (>3 files or >1 hour — should be split further).
+
+Any task sized [XL] MUST be split. Do not leave XL tasks in the final list.
+
+## Review Steps
+
 1. Reorder by logical implementation sequence (foundation first, then features, then polish)
 2. Add any missing tasks needed for a complete implementation
 3. Remove redundant or overly-granular tasks
@@ -820,14 +883,27 @@ For example, if the task at index 2 depends on the task at index 0, set `"depend
 Respond in JSON format:
 {{
   "tasks": [
-    {{"description": "task description", "priority": 1, "spec_section": "1.2", "depends_on": [], "rationale": "why this order"}}
+    {{"description": "concrete task description", "priority": 1, "spec_section": "1.2", "depends_on": [], "rationale": "why this order", "size": "S"}}
   ],
   "removed": [
     {{"original": "task that was removed", "reason": "why"}}
   ],
   "added": [
     {{"description": "new task", "reason": "why it was missing"}}
-  ]
+  ],
+  "splits": [
+    {{"original": "original task that was too large", "into": ["sub-task 1 description", "sub-task 2 description"], "reason": "why it needed splitting"}}
+  ],
+  "rewrites": [
+    {{"original": "vague task description", "rewritten": "concrete task description", "reason": "what was vague"}}
+  ],
+  "merges": [
+    {{"merged": ["small task 1", "small task 2"], "into": "combined task description", "reason": "why they were merged"}}
+  ],
+  "sizing_summary": {{
+    "S": 0, "M": 0, "L": 0, "XL": 0,
+    "total_splits": 0, "total_rewrites": 0, "total_merges": 0
+  }}
 }}
 
 Respond ONLY with valid JSON."#
@@ -857,20 +933,21 @@ fn read_task_list(conn: &Connection) -> Result<Vec<(i64, String, i32, Option<Str
     Ok(rows)
 }
 
-/// Run wizard phase 6: Task Review.
+/// Run wizard phase 6: Task Review with Sizing Analysis.
 ///
 /// Reads tasks generated by phase 5 from the DIAL database, sends them
-/// to the AI provider for review and refinement, then replaces the original
-/// tasks with the reviewed versions including dependency relationships.
+/// to the AI provider for review, sizing analysis, and refinement, then
+/// replaces the original tasks with the reviewed versions including
+/// dependency relationships and sizing annotations.
 ///
-/// Returns (tasks_kept, tasks_added, tasks_removed).
+/// Returns (tasks_kept, tasks_added, tasks_removed, sizing_summary).
 pub async fn run_wizard_phase_6(
     provider: &dyn Provider,
     prd_conn: &Connection,
     state: &mut WizardState,
-) -> Result<(usize, usize, usize)> {
+) -> Result<(usize, usize, usize, SizingSummary)> {
     if state.completed_phases.contains(&(WizardPhase::TaskReview as i32)) {
-        return Ok((0, 0, 0));
+        return Ok((0, 0, 0, SizingSummary::default()));
     }
 
     state.current_phase = WizardPhase::TaskReview;
@@ -880,22 +957,25 @@ pub async fn run_wizard_phase_6(
     let phase_conn = crate::db::get_db(None)?;
     let tasks = read_task_list(&phase_conn)?;
 
-    // 2. Build the prompt with task list and PRD context
+    // 2. Build the prompt with task list, PRD context, and sizing instructions
     let prompt = build_task_review_prompt(&tasks, &state.gathered_info);
 
     // 3. Send to provider and parse JSON response
     let response = execute_wizard_prompt(provider, &prompt).await?;
     let data = parse_json_response(&response, provider, &prompt).await?;
 
-    // 4. Replace tasks in the database with reviewed versions
+    // 4. Parse sizing analysis data (splits, rewrites, merges, summary)
+    let (_splits, _rewrites, _merges, sizing) = parse_sizing_response(&data);
+
+    // 5. Replace tasks in the database with reviewed versions
     let (kept, added, removed) = apply_task_review(&phase_conn, &data)?;
 
-    // 5. Store the review data in wizard state
+    // 6. Store the review data in wizard state
     state.set_phase_data(WizardPhase::TaskReview, data);
     state.mark_phase_complete(WizardPhase::TaskReview);
     save_wizard_state(prd_conn, state)?;
 
-    Ok((kept, added, removed))
+    Ok((kept, added, removed, sizing))
 }
 
 /// Apply the AI-reviewed task list to the database.
@@ -1557,6 +1637,149 @@ pub fn apply_specificity_rewrites(conn: &Connection, rewrites: &[RewrittenSectio
     Ok(updated)
 }
 
+/// Parse task sizing analysis data from a Phase 6 task review response.
+///
+/// Extracts `splits`, `rewrites`, `merges`, and `sizing_summary` from the JSON response.
+/// Returns defaults if any fields are missing (backward compatible with older Phase 6 responses).
+pub fn parse_sizing_response(
+    data: &JsonValue,
+) -> (Vec<TaskSplitRecord>, Vec<TaskRewriteRecord>, Vec<TaskMergeRecord>, SizingSummary) {
+    let splits: Vec<TaskSplitRecord> = data
+        .get("splits")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let original = item.get("original")?.as_str()?.to_string();
+                    let into = item
+                        .get("into")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|i| i.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let reason = item
+                        .get("reason")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(TaskSplitRecord {
+                        original,
+                        into,
+                        reason,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let rewrites: Vec<TaskRewriteRecord> = data
+        .get("rewrites")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let original = item.get("original")?.as_str()?.to_string();
+                    let rewritten = item.get("rewritten")?.as_str()?.to_string();
+                    let reason = item
+                        .get("reason")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(TaskRewriteRecord {
+                        original,
+                        rewritten,
+                        reason,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let merges: Vec<TaskMergeRecord> = data
+        .get("merges")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let merged = item
+                        .get("merged")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|i| i.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let into = item.get("into")?.as_str()?.to_string();
+                    let reason = item
+                        .get("reason")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(TaskMergeRecord {
+                        merged,
+                        into,
+                        reason,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse sizing_summary, counting from individual task sizes as fallback
+    let summary = if let Some(ss) = data.get("sizing_summary") {
+        SizingSummary {
+            small: ss.get("S").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+            medium: ss.get("M").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+            large: ss.get("L").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+            xl: ss.get("XL").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+            total_splits: ss
+                .get("total_splits")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(splits.len() as u64) as usize,
+            total_rewrites: ss
+                .get("total_rewrites")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(rewrites.len() as u64) as usize,
+            total_merges: ss
+                .get("total_merges")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(merges.len() as u64) as usize,
+        }
+    } else {
+        // Fallback: count sizes from task entries
+        let mut small = 0usize;
+        let mut medium = 0usize;
+        let mut large = 0usize;
+        let mut xl = 0usize;
+        if let Some(tasks) = data.get("tasks").and_then(|t| t.as_array()) {
+            for task in tasks {
+                match task.get("size").and_then(|s| s.as_str()).unwrap_or("M") {
+                    "S" => small += 1,
+                    "M" => medium += 1,
+                    "L" => large += 1,
+                    "XL" => xl += 1,
+                    _ => medium += 1,
+                }
+            }
+        }
+        SizingSummary {
+            small,
+            medium,
+            large,
+            xl,
+            total_splits: splits.len(),
+            total_rewrites: rewrites.len(),
+            total_merges: merges.len(),
+        }
+    };
+
+    (splits, rewrites, merges, summary)
+}
+
 /// Extract JSON from a response that might be wrapped in markdown code blocks.
 fn extract_json(text: &str) -> String {
     let trimmed = text.trim();
@@ -1600,4 +1823,311 @@ fn format_template_context(template: &Template) -> String {
         template.description,
         sections.join("\n")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // --- Prompt Content Tests ---
+
+    #[test]
+    fn test_task_review_prompt_contains_sizing_section() {
+        let tasks = vec![
+            (1, "Build auth system".to_string(), 1, Some("1.1".to_string())),
+            (2, "Set up database".to_string(), 2, None),
+        ];
+        let gathered = json!({});
+        let prompt = build_task_review_prompt(&tasks, &gathered);
+
+        assert!(prompt.contains("TASK SIZING ANALYSIS"));
+        assert!(prompt.contains("SCOPE"));
+        assert!(prompt.contains("SPECIFICITY"));
+        assert!(prompt.contains("TESTABILITY"));
+    }
+
+    #[test]
+    fn test_task_review_prompt_contains_split_instructions() {
+        let tasks = vec![(1, "Task".to_string(), 1, None)];
+        let prompt = build_task_review_prompt(&tasks, &json!({}));
+
+        assert!(prompt.contains("SPLIT"));
+        assert!(prompt.contains("more than 3 files"));
+        assert!(prompt.contains("dependency relationships"));
+    }
+
+    #[test]
+    fn test_task_review_prompt_contains_rewrite_instructions() {
+        let tasks = vec![(1, "Task".to_string(), 1, None)];
+        let prompt = build_task_review_prompt(&tasks, &json!({}));
+
+        assert!(prompt.contains("REWRITE"));
+        assert!(prompt.contains("BAD: \"Build auth system\""));
+        assert!(prompt.contains("GOOD: \"Add bcrypt password hashing"));
+    }
+
+    #[test]
+    fn test_task_review_prompt_contains_merge_instructions() {
+        let tasks = vec![(1, "Task".to_string(), 1, None)];
+        let prompt = build_task_review_prompt(&tasks, &json!({}));
+
+        assert!(prompt.contains("MERGE"));
+        assert!(prompt.contains("too small for a separate iteration"));
+    }
+
+    #[test]
+    fn test_task_review_prompt_contains_size_labels() {
+        let tasks = vec![(1, "Task".to_string(), 1, None)];
+        let prompt = build_task_review_prompt(&tasks, &json!({}));
+
+        assert!(prompt.contains("[S]mall"));
+        assert!(prompt.contains("[M]edium"));
+        assert!(prompt.contains("[L]arge"));
+        assert!(prompt.contains("[XL]needs-review"));
+    }
+
+    #[test]
+    fn test_task_review_prompt_json_format_includes_sizing_fields() {
+        let tasks = vec![(1, "Task".to_string(), 1, None)];
+        let prompt = build_task_review_prompt(&tasks, &json!({}));
+
+        assert!(prompt.contains("\"size\": \"S\""));
+        assert!(prompt.contains("\"splits\""));
+        assert!(prompt.contains("\"rewrites\""));
+        assert!(prompt.contains("\"merges\""));
+        assert!(prompt.contains("\"sizing_summary\""));
+    }
+
+    #[test]
+    fn test_task_review_prompt_xl_must_be_split() {
+        let tasks = vec![(1, "Task".to_string(), 1, None)];
+        let prompt = build_task_review_prompt(&tasks, &json!({}));
+
+        assert!(prompt.contains("Any task sized [XL] MUST be split"));
+    }
+
+    // --- Sizing Response Parsing Tests ---
+
+    #[test]
+    fn test_parse_sizing_response_full() {
+        let data = json!({
+            "tasks": [
+                {"description": "task1", "size": "S"},
+                {"description": "task2", "size": "M"},
+                {"description": "task3", "size": "L"},
+            ],
+            "splits": [
+                {
+                    "original": "Build entire auth system",
+                    "into": ["Add password hashing", "Add session tokens", "Add login endpoint"],
+                    "reason": "Touches too many files"
+                }
+            ],
+            "rewrites": [
+                {
+                    "original": "Set up database",
+                    "rewritten": "Create users table with id, email, password_hash columns",
+                    "reason": "Original was vague"
+                }
+            ],
+            "merges": [
+                {
+                    "merged": ["Update .gitignore", "Add .env.example"],
+                    "into": "Set up project config files (.gitignore, .env.example)",
+                    "reason": "Both are trivial config changes"
+                }
+            ],
+            "sizing_summary": {
+                "S": 5, "M": 3, "L": 1, "XL": 0,
+                "total_splits": 1, "total_rewrites": 1, "total_merges": 1
+            }
+        });
+
+        let (splits, rewrites, merges, summary) = parse_sizing_response(&data);
+
+        assert_eq!(splits.len(), 1);
+        assert_eq!(splits[0].original, "Build entire auth system");
+        assert_eq!(splits[0].into.len(), 3);
+        assert_eq!(splits[0].into[0], "Add password hashing");
+        assert_eq!(splits[0].reason, "Touches too many files");
+
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!(rewrites[0].original, "Set up database");
+        assert_eq!(
+            rewrites[0].rewritten,
+            "Create users table with id, email, password_hash columns"
+        );
+
+        assert_eq!(merges.len(), 1);
+        assert_eq!(merges[0].merged.len(), 2);
+        assert_eq!(
+            merges[0].into,
+            "Set up project config files (.gitignore, .env.example)"
+        );
+
+        assert_eq!(summary.small, 5);
+        assert_eq!(summary.medium, 3);
+        assert_eq!(summary.large, 1);
+        assert_eq!(summary.xl, 0);
+        assert_eq!(summary.total_splits, 1);
+        assert_eq!(summary.total_rewrites, 1);
+        assert_eq!(summary.total_merges, 1);
+    }
+
+    #[test]
+    fn test_parse_sizing_response_empty() {
+        let data = json!({
+            "tasks": [],
+            "removed": [],
+            "added": []
+        });
+
+        let (splits, rewrites, merges, summary) = parse_sizing_response(&data);
+
+        assert!(splits.is_empty());
+        assert!(rewrites.is_empty());
+        assert!(merges.is_empty());
+        assert_eq!(summary.small, 0);
+        assert_eq!(summary.medium, 0);
+        assert_eq!(summary.large, 0);
+        assert_eq!(summary.xl, 0);
+        assert_eq!(summary.total_splits, 0);
+        assert_eq!(summary.total_rewrites, 0);
+        assert_eq!(summary.total_merges, 0);
+    }
+
+    #[test]
+    fn test_parse_sizing_response_fallback_counts_from_tasks() {
+        let data = json!({
+            "tasks": [
+                {"description": "t1", "size": "S"},
+                {"description": "t2", "size": "S"},
+                {"description": "t3", "size": "M"},
+                {"description": "t4", "size": "L"},
+                {"description": "t5", "size": "XL"},
+            ],
+            "splits": [
+                {"original": "big task", "into": ["a", "b"], "reason": "too big"}
+            ]
+        });
+
+        let (splits, _rewrites, _merges, summary) = parse_sizing_response(&data);
+
+        // Fallback: counts from individual task size fields
+        assert_eq!(summary.small, 2);
+        assert_eq!(summary.medium, 1);
+        assert_eq!(summary.large, 1);
+        assert_eq!(summary.xl, 1);
+        assert_eq!(summary.total_splits, 1);
+        assert_eq!(splits.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_sizing_response_unknown_size_defaults_to_medium() {
+        let data = json!({
+            "tasks": [
+                {"description": "t1", "size": "unknown"},
+                {"description": "t2"},
+            ]
+        });
+
+        let (_splits, _rewrites, _merges, summary) = parse_sizing_response(&data);
+
+        // Both should count as medium (fallback)
+        assert_eq!(summary.medium, 2);
+    }
+
+    #[test]
+    fn test_parse_sizing_response_multiple_splits() {
+        let data = json!({
+            "tasks": [],
+            "splits": [
+                {"original": "auth", "into": ["hash", "token", "login"], "reason": "too big"},
+                {"original": "api", "into": ["routes", "handlers"], "reason": "multi-concern"}
+            ]
+        });
+
+        let (splits, _, _, summary) = parse_sizing_response(&data);
+
+        assert_eq!(splits.len(), 2);
+        assert_eq!(splits[0].into.len(), 3);
+        assert_eq!(splits[1].into.len(), 2);
+        assert_eq!(summary.total_splits, 2);
+    }
+
+    #[test]
+    fn test_parse_sizing_response_split_missing_reason() {
+        let data = json!({
+            "tasks": [],
+            "splits": [
+                {"original": "big task", "into": ["a", "b"]}
+            ]
+        });
+
+        let (splits, _, _, _) = parse_sizing_response(&data);
+        assert_eq!(splits.len(), 1);
+        assert_eq!(splits[0].reason, "");
+    }
+
+    // --- apply_task_review Tests (with sizing fields) ---
+
+    #[test]
+    fn test_apply_task_review_with_size_field() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY,
+                description TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                priority INTEGER DEFAULT 5,
+                blocked_by TEXT,
+                spec_section_id INTEGER,
+                prd_section_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT,
+                total_attempts INTEGER DEFAULT 0,
+                total_failures INTEGER DEFAULT 0,
+                last_failure_at TEXT
+            );
+            CREATE TABLE task_dependencies (
+                task_id INTEGER NOT NULL,
+                depends_on_id INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (task_id, depends_on_id)
+            );
+            INSERT INTO tasks (description, status, priority) VALUES ('old task', 'pending', 1);",
+        ).unwrap();
+
+        let review_data = json!({
+            "tasks": [
+                {"description": "Create users table with id, email, hash columns", "priority": 1, "spec_section": "1.1", "depends_on": [], "size": "S"},
+                {"description": "Add bcrypt hashing to User model", "priority": 2, "spec_section": "1.2", "depends_on": [0], "size": "M"},
+            ],
+            "removed": [{"original": "old task", "reason": "too vague"}],
+            "added": [{"description": "Add bcrypt hashing to User model", "reason": "security"}],
+            "splits": [],
+            "rewrites": [],
+            "merges": []
+        });
+
+        let (kept, added, removed) = apply_task_review(&conn, &review_data).unwrap();
+
+        assert_eq!(removed, 1);
+        assert_eq!(added, 1);
+        assert_eq!(kept, 1);
+
+        // Verify tasks were inserted
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Verify dependency was created
+        let dep_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(dep_count, 1);
+    }
 }

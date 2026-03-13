@@ -185,6 +185,19 @@ impl EventHandler for CliEventHandler {
                     tasks_kept, tasks_added, tasks_removed
                 ));
             }
+            Event::TaskSplit { original, into_count } => {
+                output::print_success(&format!(
+                    "Split task into {} sub-tasks: {}",
+                    into_count,
+                    if original.len() > 60 { &original[..60] } else { original }
+                ));
+            }
+            Event::TaskSizingCompleted { small, medium, large, splits, rewrites, merges } => {
+                output::print_success(&format!(
+                    "Sizing: {}S {}M {}L | {} splits, {} rewrites, {} merges",
+                    small, medium, large, splits, rewrites, merges
+                ));
+            }
             Event::BuildTestConfigured { build_cmd, test_cmd, pipeline_steps } => {
                 output::print_success(&format!(
                     "Build/test configured: build='{}', test='{}', {} pipeline steps",

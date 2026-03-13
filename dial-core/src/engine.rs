@@ -1119,6 +1119,21 @@ impl Engine {
             tasks_generated: result.tasks_generated,
         });
 
+        // Emit sizing summary if Phase 6 ran
+        let s = &result.sizing_summary;
+        if s.small + s.medium + s.large + s.xl > 0
+            || s.total_splits + s.total_rewrites + s.total_merges > 0
+        {
+            self.emit(Event::TaskSizingCompleted {
+                small: s.small,
+                medium: s.medium,
+                large: s.large,
+                splits: s.total_splits,
+                rewrites: s.total_rewrites,
+                merges: s.total_merges,
+            });
+        }
+
         Ok(())
     }
 
