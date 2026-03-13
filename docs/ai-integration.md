@@ -14,7 +14,29 @@ DIAL interacts with AI tools in three ways:
 
 ## DIAL Signals
 
-When DIAL generates prompts for AI tools (via `dial orchestrate` or `dial auto-run`), it instructs the AI to output signals when done:
+When DIAL generates prompts for AI tools (via `dial orchestrate` or `dial auto-run`), it instructs the AI to signal completion via a JSON file.
+
+### Preferred: Structured Signal File
+
+The AI writes `.dial/signal.json` before exiting:
+
+```json
+{
+  "signals": [
+    {"type": "complete", "summary": "Implemented user login with bcrypt hashing"},
+    {"type": "learning", "category": "build", "description": "bcrypt requires Node 18+"}
+  ],
+  "timestamp": "2026-03-12T15:30:00Z"
+}
+```
+
+Signal types: `complete` (with summary), `blocked` (with reason), `learning` (with category and description).
+
+DIAL reads the file after the subprocess exits, then deletes it to prevent stale signals.
+
+### Fallback: Regex Parsing
+
+If `.dial/signal.json` doesn't exist, DIAL falls back to parsing stdout for signal lines:
 
 ```
 DIAL_COMPLETE: <summary of what was done>
@@ -22,7 +44,7 @@ DIAL_BLOCKED: <reason the task can't be completed>
 DIAL_LEARNING: <category>: <what was learned>
 ```
 
-DIAL parses these from the AI's output to determine next steps. The parser handles variations in formatting (markdown bold, backticks, spaces vs underscores, case differences).
+The parser handles formatting variations (markdown bold, backticks, spaces vs underscores, case differences) and filters out template placeholders and instruction lines.
 
 ## Claude Code
 
@@ -139,6 +161,25 @@ curl -s https://api.example.com/v1/completions \
 dial validate
 ```
 
+## Iteration Modes
+
+Control how `auto-run` pauses for review:
+
+```bash
+# Run everything without stopping (default)
+dial config set iteration_mode autonomous
+
+# Pause for review after every 5 completed tasks
+dial config set iteration_mode review_every:5
+
+# Pause after every single task
+dial config set iteration_mode review_each
+```
+
+When paused, the iteration enters `awaiting_approval` status. Resume with `dial approve` or stop with `dial reject "reason"`.
+
+The `dial new` wizard (phase 8) helps you choose the right mode based on project complexity.
+
 ## Auto-Run Best Practices
 
 ### Task Sizing
@@ -173,9 +214,9 @@ dial config set subagent_timeout 900    # 15 min
 dial config set subagent_timeout 3600   # 1 hour
 ```
 
-### What Happens Without DIAL_COMPLETE
+### What Happens Without a Completion Signal
 
-When the AI subprocess finishes without outputting `DIAL_COMPLETE:`:
+When the AI subprocess finishes without writing `.dial/signal.json` or outputting `DIAL_COMPLETE:`:
 
 1. DIAL treats it as a failed attempt
 2. The task resets to pending
@@ -240,7 +281,7 @@ Each section should describe one feature or component. DIAL's FTS search works b
 
 ### "No completion signal received"
 
-The AI finished but didn't output `DIAL_COMPLETE:`. Possible causes:
+The AI finished but didn't write `.dial/signal.json` or output `DIAL_COMPLETE:`. Possible causes:
 - The task is too large — break it into smaller pieces
 - The AI hit a tool permission prompt (Claude Code) that blocked non-interactive mode
 - The AI completed but forgot to output the signal

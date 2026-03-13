@@ -63,18 +63,44 @@ The core library (`dial-core`) is embeddable — you can build custom tools, das
 
 ### Install
 
-```bash
-# Via Cargo
-cargo install dial-cli
+**Pre-built binaries** (no Rust required):
 
-# From source
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/victorysightsound/dial/releases/latest/download/dial-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv dial /usr/local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/victorysightsound/dial/releases/latest/download/dial-x86_64-apple-darwin.tar.gz | tar xz
+sudo mv dial /usr/local/bin/
+
+# Linux (x86_64)
+curl -L https://github.com/victorysightsound/dial/releases/latest/download/dial-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv dial /usr/local/bin/
+
+# Linux (ARM64)
+curl -L https://github.com/victorysightsound/dial/releases/latest/download/dial-aarch64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv dial /usr/local/bin/
+```
+
+**Windows:** Download `dial-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/victorysightsound/dial/releases/latest), extract, and add to your PATH.
+
+**Via Cargo** (requires Rust 1.70+):
+
+```bash
+cargo install dial-cli
+```
+
+**From source:**
+
+```bash
 git clone https://github.com/victorysightsound/dial.git
 cd dial
 cargo build --release
-cp target/release/dial /usr/local/bin/
+sudo cp target/release/dial /usr/local/bin/
 ```
 
-**Requirements:** Rust 1.70+. No runtime dependencies. The binary is fully self-contained.
+The binary is fully self-contained with no runtime dependencies.
 
 ## Project Wizard
 

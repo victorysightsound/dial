@@ -1,237 +1,102 @@
-# DIAL Rust Implementation
+# DIAL Implementation History
 
-## Status: COMPLETE (Feb 2026)
+## Version Timeline
 
-**Current Version:** 2.2.0
+### v4.0.0 (March 2026) — Engine Hardening
 
-## Overview
+10 architectural improvements across three tiers:
 
-DIAL (Deterministic Iterative Agent Loop) rewritten from Python to Rust for:
-- Faster startup (~14ms vs ~190ms Python - 13x improvement)
-- Single binary distribution (4.0MB, no runtime dependencies)
-- Alignment with preferred tech stack (Rust core)
+**Tier 1 — Reliability:**
+- Transaction safety with `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` wrappers on all multi-step DB operations
+- Checkpoint/rollback system using `git stash` for atomic iterations
+- Structured subagent signals via `.dial/signal.json` (with regex fallback for backward compat)
+- Solution auto-suggestion: trusted solutions actively surfaced when matching failure patterns recur
 
-## Version History
+**Tier 2 — Intelligence:**
+- Cross-iteration failure tracking with cumulative attempt/failure counters and chronic failure auto-blocking
+- Similar completed task context via FTS search for proven approaches
+- Per-pattern metrics aggregating cost, time, and resolution rates by failure pattern
+- Learning-to-pattern linking so learnings auto-surface when their associated pattern recurs
 
-### v2.2.0 (Feb 2026) - Automated Orchestration
-- Added `dial auto-run` for fully automated orchestration with fresh AI subprocesses
-- Supports Claude Code, Codex CLI, and Gemini CLI
-- Parses DIAL signals: `DIAL_COMPLETE`, `DIAL_BLOCKED`, `DIAL_LEARNING`
-- Total commands: 25
+**Tier 3 — Usability:**
+- Dry run / preview mode (`dial iterate --dry-run`) showing task selection, context assembly, and prompt without execution
+- Project health score (`dial health`) with 6 weighted factors and trend detection
 
-### v2.1.0 (Feb 2026) - Behavioral Guardrails and Context Regeneration
-- Added behavioral "signs" (guardrails) to context output
-- Added `dial context` for fresh context regeneration
-- Added `dial orchestrate` for sub-agent prompt generation
-- Added learning capture prompts after successful validation
-- Total commands: 24
+308 tests. Migration 11 adds columns to tasks and learnings tables.
 
-### v2.0.0 (Feb 2026) - Initial Rust Rewrite
-- Complete rewrite from Python to Rust
-- 22 commands with identical behavior to Python
+### v3.2.0 (March 2026) — Unified Project Wizard
 
-## Implementation Results
+Rewrites the 5-phase PRD wizard into a 9-phase guided flow (`dial new`) covering init through autonomous iteration:
 
-| Metric | Python | Rust |
-|--------|--------|------|
-| Lines of code | 2,271 | ~4,800 |
-| Startup time | ~190ms | ~14ms |
-| Binary size | N/A | 4.0MB |
-| Dependencies | Python 3.x | None (static) |
+- Phases 1-5: Vision, Functionality, Technical, Gap Analysis, Generate (existing)
+- Phase 6: Task Review — AI reorders, deduplicates, adds dependency relationships
+- Phase 7: Build & Test Config — AI suggests build/test commands and pipeline steps
+- Phase 8: Iteration Mode — configures autonomous, review_every:N, or review_each
+- Phase 9: Launch Summary — prints project summary, ready for `dial auto-run`
 
-## File Locations
+201 tests. Fix for nested Claude Code sessions (`CLAUDECODE` env var removal).
 
-- **Rust source:** `./dial/`
-- **Guide DB:** `./dial_guide.db`
+### v3.1.0 (March 2026) — PRD Wizard & Structured Spec Database
 
-## CLI Commands (25 total)
+Adds standalone `prd.db` with hierarchical sections, terminology, and AI-assisted wizard:
 
-All commands implemented with identical behavior to Python, plus v2.1/v2.2 additions:
+- Separate PRD database alongside phase database
+- Hierarchical sections with dotted notation (1, 1.1, 1.2.1)
+- FTS5 full-text search with porter tokenizer
+- Terminology tracking with canonical terms and variants
+- 5-phase AI wizard: Vision, Functionality, Technical, Gap Analysis, Generate
+- 4 templates: spec, architecture, api, mvp
+- Pause/resume with state persisted to prd.db
 
-| Command | Subcommands |
-|---------|-------------|
-| init | (--phase, --import-solutions, --no-agents) |
-| index | (--dir) |
-| config | set, show |
-| task | add, list, next, done, block, cancel, search |
-| spec | search, show, list |
-| iterate | |
-| validate | |
-| run | (--max) |
-| stop | |
-| status | |
-| history | (-n) |
-| failures | (-a) |
-| solutions | (-t) |
-| learn | (-c) |
-| learnings | list, search, delete |
-| stats | |
-| revert | |
-| reset | |
-| context | Fresh context regeneration (v2.1) |
-| orchestrate | Sub-agent prompt generation (v2.1) |
-| auto-run | Automated orchestration (--max, --cli) (v2.2) |
+142 tests.
 
-## Technical Design
+### v3.0.0 (March 2025) — Rust Workspace Rewrite
 
-### Crate Structure
+Complete ground-up rewrite as a Rust workspace with embeddable library:
 
-```
-dial/
-├── Cargo.toml
-├── src/
-│   ├── main.rs           # CLI entry, clap routing
-│   ├── lib.rs            # Public API exports
-│   ├── config.rs         # Config key-value management
-│   ├── errors.rs         # DialError enum
-│   ├── output.rs         # Colored terminal output
-│   ├── db/
-│   │   ├── mod.rs        # Connection, get_db(), WAL+busy_timeout
-│   │   └── schema.rs     # SCHEMA constant, migrations
-│   ├── task/
-│   │   ├── mod.rs        # Task CRUD, status transitions
-│   │   └── models.rs     # Task, TaskStatus
-│   ├── spec/
-│   │   ├── mod.rs        # Index, search
-│   │   └── parser.rs     # Markdown section parsing
-│   ├── failure/
-│   │   ├── mod.rs        # Failure CRUD
-│   │   ├── patterns.rs   # 21 regex patterns
-│   │   └── solutions.rs  # Trust scoring
-│   ├── iteration/
-│   │   ├── mod.rs        # iterate_once(), run loop
-│   │   ├── context.rs    # gather_context(), signs, subagent prompts
-│   │   ├── orchestrator.rs # auto_run(), subprocess spawning
-│   │   └── validation.rs # run_build(), run_test()
-│   ├── learning/
-│   │   └── mod.rs        # Learning CRUD
-│   └── git/
-│       └── mod.rs        # Git operations
-└── tests/
-    └── integration/
-```
+- **Workspace structure:** `dial-core` (library), `dial-cli` (binary), `dial-providers` (AI backends)
+- **Engine struct:** Central async API wrapping all operations via tokio
+- **10 sequential SQLite migrations** auto-applied on database open
+- Task dependencies with topological sort and cycle detection
+- Event system with `EventHandler` trait for lifecycle notifications
+- Provider abstraction with `Provider` trait for pluggable AI backends
+- Configurable validation pipeline with per-step timeouts
+- Token budget management with priority-ranked context assembly
+- DB-driven failure patterns (21 seeded, plus clustering for new pattern discovery)
+- Solution provenance with confidence decay and history tracking
+- Approval gates (auto, review, manual modes)
+- Metrics with daily trend aggregation and JSON/CSV export
+- Crash recovery (`dial recover`)
 
-### Dependencies
+115 tests.
 
-```toml
-[dependencies]
-clap = { version = "4", features = ["derive", "env"] }
-rusqlite = { version = "0.31", features = ["bundled", "functions"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-chrono = { version = "0.4", features = ["serde"] }
-thiserror = "1"
-anyhow = "1"
-regex = "1"
-lazy_static = "1.4"
-dirs = "5"
-walkdir = "2"
-```
+### v2.2.0 (February 2026) — Automated Orchestration
 
-No async/tokio - DIAL is synchronous.
+Added `dial auto-run` for fully automated orchestration with fresh AI subprocesses per task. Supports Claude Code, Codex CLI, and Gemini CLI. 25 CLI commands.
 
-### Constants
+### v2.1.0 (February 2026) — Behavioral Guardrails
 
-```rust
-pub const VERSION: &str = "2.2.0";
-pub const MAX_FIX_ATTEMPTS: u32 = 3;
-pub const TRUST_THRESHOLD: f64 = 0.6;
-pub const TRUST_INCREMENT: f64 = 0.15;
-pub const TRUST_DECREMENT: f64 = 0.20;
-pub const INITIAL_CONFIDENCE: f64 = 0.3;
-pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
-pub const DEFAULT_PHASE: &str = "default";
-```
+Added behavioral "signs" (6 guardrails included in every context), `dial context` for regeneration, `dial orchestrate` for sub-agent prompts. 24 commands.
 
-## Database Compatibility
+### v2.0.0 (February 2026) — Initial Rust Rewrite
 
-The SQLite schema is identical between Python and Rust versions. Existing `.dial/*.db` files work with both versions without migration.
+Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to ~14ms Rust). Single 4MB static binary. 22 commands with identical behavior to Python.
 
-## Failure Pattern Detection
+## Architecture Evolution
 
-21 patterns implemented across 5 categories:
+| Version | Structure | Async | Tests |
+|---------|-----------|-------|-------|
+| 2.0-2.2 | Single crate (`dial/`) | No (sync) | 15 |
+| 3.0.0 | Workspace (core + cli + providers) | Yes (tokio) | 115 |
+| 3.1.0 | + PRD database | Yes | 142 |
+| 3.2.0 | + 9-phase wizard | Yes | 201 |
+| 4.0.0 | + Engine hardening | Yes | 308 |
 
-- **import:** ImportError, ModuleNotFoundError
-- **syntax:** SyntaxError, IndentationError
-- **runtime:** NameError, TypeError, ValueError, AttributeError, KeyError, IndexError, FileNotFoundError, PermissionError, ConnectionError, TimeoutError
-- **test:** TestFailure (FAILED.*test_), AssertionError
-- **build:** RustCompileError, CargoBuildError, NpmError, TypeScriptError
+## Performance
 
-## Building
-
-```bash
-cd dial
-cargo build --release
-```
-
-## Testing
-
-```bash
-cd dial
-cargo test
-```
-
-## Tested AI CLI Commands
-
-All three supported CLIs have been tested with `dial auto-run`:
-
-| CLI | Command | Notes |
-|-----|---------|-------|
-| Claude Code | `claude -p "prompt"` | Works directly |
-| Codex CLI | `codex exec --skip-git-repo-check` | Pipe stdin |
-| Gemini CLI | `gemini -p -` | Pipe stdin |
-
-## DIAL Signals
-
-Subagents should output these signals for orchestrator parsing:
-
-```
-DIAL_COMPLETE: <summary of what was done>
-DIAL_BLOCKED: <reason for blockage>
-DIAL_LEARNING: <category>: <what was learned>
-```
-
-Signal parsing is regex-based, case-insensitive, and ignores template placeholders.
-
-## Unit Tests
-
-15 tests covering:
-- Failure pattern detection (4 tests)
-- Signal parsing with various formats (11 tests)
-  - Standard signals
-  - Case variations
-  - Markdown formatting
-  - Template placeholder filtering
-
-## Key Learnings
-
-1. Use `COALESCE` in SQL SUM queries to handle NULL when aggregating empty tables
-2. rusqlite's `query_map` borrows the statement - extract results to a variable before if-else block ends
-3. Template placeholders in prompts can false-match signal parsing - filter lines containing `<placeholder>`
-4. Context rot is a real problem - behavioral "signs" help remind agents of critical rules
-
-## Future Roadmap
-
-Features not yet implemented (planned for future versions):
-
-### v2.3 - Task Dependencies
-- Add `--depends-on` flag to `dial task add`
-- Block tasks until dependencies complete
-- Topological sort for task ordering
-
-### v2.4 - Parallel Execution
-- Run independent tasks in parallel
-- Configure max concurrent subagents
-- Aggregate results from parallel runs
-
-### v2.5 - Enhanced Reliability
-- Dry-run mode (`dial auto-run --dry-run`)
-- Rate limit detection and automatic backoff
-- Cost tracking and budget limits
-- Progress webhooks for monitoring
-
-### v2.6 - Advanced Features
-- Web UI dashboard for monitoring runs
-- MCP server integration
-- Custom signal definitions
-- Plugin system for custom validators
+| Metric | v2.0 | v4.0 |
+|--------|------|------|
+| Startup | ~14ms | ~14ms |
+| Binary size | 4.0MB | ~5MB |
+| Dependencies | None (static) | None (static) |
+| Database | SQLite + FTS5 | SQLite + FTS5 (WAL) |

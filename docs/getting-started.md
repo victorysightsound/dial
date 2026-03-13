@@ -34,11 +34,11 @@ The crate is published as `dial-cli` but the binary is `dial`. To upgrade: `carg
 
 ```bash
 git clone https://github.com/victorysightsound/dial.git
-cd dial/dial
+cd dial
 cargo build --release
 ```
 
-The binary is at `dial/target/release/dial`. Add it to your PATH:
+The binary is at `target/release/dial`. Add it to your PATH:
 
 ```bash
 # Option 1: Copy to a standard location

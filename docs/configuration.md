@@ -8,12 +8,14 @@ After `dial init`, your project has this structure:
 your-project/
 ├── .dial/                       # DIAL data directory
 │   ├── <phase>.db               # SQLite database for the active phase
+│   ├── prd.db                   # PRD database (sections, terminology, wizard state)
 │   ├── current_phase            # Text file with the active phase name
 │   ├── current_context.md       # Auto-generated context (latest)
 │   ├── subagent_prompt.md       # Auto-generated prompt (latest)
+│   ├── signal.json              # Subagent signal file (transient, auto-deleted)
 │   └── stop                     # Created by `dial stop` (temporary)
 ├── specs/                       # Specification files (you create these)
-│   └── *.md                     # Markdown specs, indexed by `dial index`
+│   └── *.md                     # Markdown specs, indexed by `dial spec import`
 └── AGENTS.md                    # AI agent instructions (optional)
 ```
 
@@ -31,6 +33,10 @@ Configuration is stored in the SQLite database as key-value pairs. Manage with `
 | `test_timeout` | `600` | Test command timeout in seconds |
 | `ai_cli` | `claude` | AI CLI for auto-run: `claude`, `codex`, or `gemini` |
 | `subagent_timeout` | `1800` | Per-task timeout for auto-run in seconds |
+| `approval_mode` | `auto` | Approval gate: `auto`, `review`, or `manual` |
+| `iteration_mode` | `autonomous` | Auto-run behavior: `autonomous`, `review_every:N`, or `review_each` |
+| `enable_checkpoints` | `true` | Create git stash checkpoints before each iteration |
+| `max_total_failures` | `10` | Auto-block tasks exceeding this many cumulative failures |
 
 ### Setting Configuration
 
@@ -92,6 +98,10 @@ Task queue with status tracking.
 | `priority` | INTEGER | 1 (highest) to 10 (lowest), default 5 |
 | `blocked_by` | TEXT | Blockage reason (nullable) |
 | `spec_section_id` | INTEGER | FK to spec_sections (nullable) |
+| `prd_section_id` | TEXT | Dotted PRD section ID (nullable) |
+| `total_attempts` | INTEGER | Cumulative attempts across all iterations (default 0) |
+| `total_failures` | INTEGER | Cumulative failures across all iterations (default 0) |
+| `last_failure_at` | TEXT | Timestamp of most recent failure (nullable) |
 | `created_at` | TEXT | ISO 8601 timestamp |
 | `started_at` | TEXT | When work began (nullable) |
 | `completed_at` | TEXT | When finished (nullable) |
@@ -106,7 +116,7 @@ Each attempt to complete a task.
 |--------|------|-------------|
 | `id` | INTEGER (PK) | Auto-increment |
 | `task_id` | INTEGER | FK to tasks |
-| `status` | TEXT | `in_progress`, `completed`, `failed`, `reverted` |
+| `status` | TEXT | `in_progress`, `completed`, `failed`, `reverted`, `awaiting_approval`, `rejected` |
 | `attempt_number` | INTEGER | Which attempt (1, 2, or 3) |
 | `started_at` | TEXT | ISO 8601 timestamp |
 | `ended_at` | TEXT | ISO 8601 timestamp (nullable) |
@@ -149,10 +159,13 @@ Categorized error types detected across iterations.
 |--------|------|-------------|
 | `id` | INTEGER (PK) | Auto-increment |
 | `pattern_key` | TEXT (UNIQUE) | Pattern name (e.g., "RustCompileError") |
+| `description` | TEXT | Human-readable pattern description |
 | `category` | TEXT | Category: `import`, `syntax`, `runtime`, `test`, `build`, `unknown` |
 | `occurrence_count` | INTEGER | How many times detected |
 | `first_seen_at` | TEXT | ISO 8601 timestamp |
 | `last_seen_at` | TEXT | ISO 8601 timestamp |
+| `regex_pattern` | TEXT | Custom regex for DB-driven matching (nullable) |
+| `status` | TEXT | `suggested`, `confirmed`, or `trusted` |
 
 #### `failures`
 
@@ -187,6 +200,9 @@ Trusted fixes linked to failure patterns.
 | `failure_count` | INTEGER | Times applied unsuccessfully |
 | `created_at` | TEXT | ISO 8601 timestamp |
 | `last_used_at` | TEXT | ISO 8601 timestamp (nullable) |
+| `source` | TEXT | How the solution was discovered: `auto-learned` or `manual` |
+| `last_validated_at` | TEXT | When the solution was last confirmed to work (nullable) |
+| `version` | TEXT | Codebase version when solution was recorded (nullable) |
 
 FTS5 virtual table: `solutions_fts` (indexed on `description`, `code_example`).
 
@@ -214,6 +230,8 @@ Project knowledge captured during development.
 | `description` | TEXT | What was learned |
 | `discovered_at` | TEXT | ISO 8601 timestamp |
 | `times_referenced` | INTEGER | Auto-incremented when included in context |
+| `pattern_id` | INTEGER | FK to failure_patterns — auto-linked when learned during failure (nullable) |
+| `iteration_id` | INTEGER | FK to iterations — which iteration this was learned in (nullable) |
 
 FTS5 virtual table: `learnings_fts` (indexed on `category`, `description`).
 

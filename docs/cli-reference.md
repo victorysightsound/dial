@@ -10,7 +10,7 @@ dial --version
 dial --help
 ```
 
-## Initialization
+## Project Setup
 
 ### `dial init`
 
@@ -40,38 +40,85 @@ dial init --no-agents
 - `.dial/current_phase` file containing the phase name
 - Appends DIAL instructions to `AGENTS.md` (unless `--no-agents`)
 
+### `dial new`
+
+Full 9-phase guided project setup. One command from zero to autonomous iteration.
+
+```bash
+dial new [--template NAME] [--from PATH] [--resume] [--phase NUMBER]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--template` | `mvp` | PRD template: `spec`, `architecture`, `api`, or `mvp` |
+| `--from` | (none) | Existing document to refine through the wizard |
+| `--resume` | false | Resume from where the wizard left off |
+| `--phase` | (none) | Start at a specific phase number (1-9) |
+
+**Phases:**
+
+| # | Name | What Happens |
+|---|------|-------------|
+| 1 | Vision | AI identifies the problem, target users, success criteria |
+| 2 | Functionality | AI defines MVP features, deferred features, user workflows |
+| 3 | Technical | AI covers architecture, data model, integrations, constraints |
+| 4 | Gap Analysis | AI reviews everything for gaps, contradictions, missing details |
+| 5 | Generate | AI produces structured PRD sections, terminology, and initial tasks |
+| 6 | Task Review | AI reorders tasks, adds dependencies, removes redundancy |
+| 7 | Build & Test | AI suggests build/test commands and validation pipeline |
+| 8 | Iteration Mode | AI recommends autonomous, review_every:N, or review_each |
+| 9 | Launch | Prints summary, ready for `dial auto-run` |
+
+**Examples:**
+
+```bash
+dial new --template mvp
+dial new --template spec --from docs/existing-prd.md
+dial new --resume
+```
+
+State persists in `prd.db` after every phase. Close the terminal at any point and resume later with `--resume`.
+
 ## Specification
 
 ### `dial index`
 
-Index markdown specification files into the database for full-text search.
+Index markdown specification files into the database for full-text search. **Deprecated:** Use `dial spec import` instead.
 
 ```bash
 dial index [--dir PATH]
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--dir` | `specs` | Directory containing markdown spec files |
-
-Recursively finds all `.md` files in the directory, parses markdown headers (# ## ### etc.) into sections, and creates FTS5 search indexes. Re-running `dial index` replaces the existing index.
-
 ### `dial spec`
 
-Query indexed specifications.
+Manage specifications and PRD sections.
 
 ```bash
-dial spec search QUERY     # Full-text search
-dial spec show ID          # Display a specific section
-dial spec list             # List all sections
+dial spec import --dir PATH          # Import markdown into prd.db
+dial spec wizard --template NAME     # Run phases 1-5 only (PRD generation)
+dial spec migrate                    # Migrate legacy spec_sections to prd.db
+
+dial spec list                       # List all PRD sections (hierarchical)
+dial spec prd SECTION_ID             # Show section by dotted ID (e.g., 1.2.1)
+dial spec prd-search QUERY           # Full-text search PRD sections
+dial spec check                      # PRD health summary
+
+dial spec term add TERM DEF [-c CAT] # Add terminology
+dial spec term list [-c CATEGORY]    # List terms
+dial spec term search QUERY          # Search terms
+
+dial spec search QUERY               # Legacy spec search (fallback)
+dial spec show ID                    # Legacy section display
 ```
 
 **Examples:**
 
 ```bash
-dial spec search "authentication"
-dial spec show 3
-dial spec list
+dial spec import --dir specs
+dial spec wizard --template mvp --from docs/existing-prd.md --resume
+dial spec prd 1.2
+dial spec prd-search "authentication"
+dial spec term add "API" "Application Programming Interface" -c technical
 ```
 
 ## Task Management
@@ -89,14 +136,6 @@ dial task add DESCRIPTION [-p PRIORITY] [--spec SECTION_ID]
 | `-p`, `--priority` | `5` | Priority from 1 (highest) to 10 (lowest) |
 | `--spec` | (none) | Link to a spec section ID for automatic context |
 
-**Examples:**
-
-```bash
-dial task add "Implement user login"
-dial task add "Add rate limiting" -p 1
-dial task add "Build dashboard" -p 3 --spec 5
-```
-
 ### `dial task list`
 
 List tasks.
@@ -108,8 +147,6 @@ dial task list [--all]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-a`, `--all` | false | Show all tasks including completed and cancelled |
-
-Without `--all`, shows only pending, in-progress, and blocked tasks. Tasks are sorted by priority (ascending), then by ID.
 
 ### `dial task next`
 
@@ -135,15 +172,9 @@ Block a task with a reason.
 dial task block ID REASON
 ```
 
-**Example:**
-
-```bash
-dial task block 5 "Waiting on API credentials"
-```
-
 ### `dial task cancel`
 
-Cancel a task (removes it from the active queue without completing).
+Cancel a task.
 
 ```bash
 dial task cancel ID
@@ -157,50 +188,82 @@ Full-text search across task descriptions.
 dial task search QUERY
 ```
 
-**Example:**
+### `dial task depend`
+
+Add a dependency relationship between tasks.
 
 ```bash
-dial task search "database migration"
+dial task depend TASK_ID DEPENDS_ON_ID
 ```
+
+Task TASK_ID will not be picked up until DEPENDS_ON_ID is completed. Cycle detection prevents circular dependencies.
+
+### `dial task undepend`
+
+Remove a dependency relationship.
+
+```bash
+dial task undepend TASK_ID DEPENDS_ON_ID
+```
+
+### `dial task deps`
+
+Show dependency information for a task.
+
+```bash
+dial task deps TASK_ID
+```
+
+### `dial task chronic`
+
+Show tasks that fail repeatedly across iterations.
+
+```bash
+dial task chronic [--threshold N]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--threshold` | `5` | Minimum total failures to be considered chronic |
 
 ## The Loop
 
 ### `dial iterate`
 
-Start the next pending task. Gathers context from the database (relevant specs, trusted solutions, unresolved failures, learnings) and writes it to `.dial/current_context.md`.
+Start the next pending task. Gathers context from the database and writes it to `.dial/current_context.md`.
 
 ```bash
-dial iterate
+dial iterate [--dry-run] [--format FORMAT]
 ```
 
-This command:
-1. Picks the highest-priority pending task
-2. Creates an iteration record
-3. Marks the task as in-progress
-4. Gathers context (specs, solutions, failures, learnings)
-5. Includes behavioral guardrails ("signs")
-6. Writes context to `.dial/current_context.md`
-7. Pauses for you to implement the task
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dry-run` | false | Preview what would happen without executing |
+| `--format` | `text` | Output format for dry run: `text` or `json` |
+
+**Normal mode:** Picks the highest-priority unblocked task, creates an iteration record, gathers context (specs, solutions, failures, similar tasks, learnings), and writes context to `.dial/current_context.md`.
+
+**Dry run mode:** Shows the task that would be selected, context items included/excluded with token counts, prompt preview, and suggested solutions — without creating any database records.
 
 ### `dial validate`
 
-Validate the current in-progress task by running build and test commands.
+Validate the current in-progress task by running the validation pipeline.
 
 ```bash
 dial validate
 ```
 
 **On success:**
-- Records passing outcomes
-- Auto-commits all changes (if in a git repo with changes)
+- Drops checkpoint (restores clean git state marker)
+- Auto-commits all changes
 - Marks the iteration and task as completed
-- Prompts for learning capture
+- Auto-unblocks dependent tasks
+- If a solution was suggested, increments its confidence
 
 **On failure:**
-- Captures error output
-- Detects failure pattern (e.g., RustCompileError, TestFailure)
-- Records the failure with pattern
-- Checks for trusted solutions and displays them
+- Restores checkpoint (reverts working tree to pre-iteration state)
+- Detects failure pattern
+- Records failure and checks for trusted solutions
 - Resets the task to pending for retry
 - After 3 failures: blocks the task and reverts to last good commit
 
@@ -212,11 +275,28 @@ Run the iterate/validate loop continuously.
 dial run [--max N]
 ```
 
+### `dial auto-run`
+
+Fully automated orchestration: spawns a fresh AI subprocess per task, parses signals, validates, and loops.
+
+```bash
+dial auto-run [--max N] [--cli NAME] [--dry-run]
+```
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--max` | (none) | Maximum number of iterations before stopping |
+| `--max` | (none) | Maximum number of tasks to process |
+| `--cli` | `claude` | AI CLI: `claude`, `codex`, or `gemini` |
+| `--dry-run` | false | Show task execution order without running |
 
-Stops when: task queue is empty, max iterations reached, or `.dial/stop` file is detected.
+**Signal parsing:** After each subprocess exits, DIAL first checks for `.dial/signal.json` (structured JSON signals). If the file doesn't exist, it falls back to regex parsing of stdout for `DIAL_COMPLETE`, `DIAL_BLOCKED`, and `DIAL_LEARNING` signals.
+
+**Iteration modes** (set via `dial config set iteration_mode`):
+- `autonomous` — run all tasks without pausing (default)
+- `review_every:N` — pause for review after every N completed tasks
+- `review_each` — pause after every task for approval
+
+When paused, resume with `dial approve` or stop with `dial reject`.
 
 ### `dial stop`
 
@@ -226,8 +306,6 @@ Create a stop flag to halt `dial run` or `dial auto-run` after the current itera
 dial stop
 ```
 
-Creates `.dial/stop` file which is checked between iterations.
-
 ### `dial context`
 
 Regenerate fresh context for the current or next task without creating a new iteration.
@@ -235,8 +313,6 @@ Regenerate fresh context for the current or next task without creating a new ite
 ```bash
 dial context
 ```
-
-Useful when you want to see what context DIAL would provide, or to refresh context mid-task. Writes to `.dial/current_context.md`.
 
 ### `dial orchestrate`
 
@@ -246,54 +322,25 @@ Generate a self-contained prompt for spawning a fresh AI sub-agent.
 dial orchestrate
 ```
 
-Outputs the prompt to stdout and saves it to `.dial/subagent_prompt.md`. The prompt includes the task, behavioral guardrails, relevant specs, trusted solutions, and signal instructions.
+## Approval
 
-**Usage with AI tools:**
+### `dial approve`
 
-```bash
-# Claude Code
-claude -p "$(cat .dial/subagent_prompt.md)"
-
-# Codex CLI
-cat .dial/subagent_prompt.md | codex exec
-
-# Gemini CLI
-cat .dial/subagent_prompt.md | gemini -p -
-```
-
-### `dial auto-run`
-
-Fully automated orchestration: spawns a fresh AI subprocess per task, parses signals, validates, and loops.
+Accept a paused iteration (when using review iteration modes).
 
 ```bash
-dial auto-run [--max N] [--cli NAME]
+dial approve
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--max` | (none) | Maximum number of tasks to process |
-| `--cli` | `claude` | AI CLI to use: `claude`, `codex`, or `gemini` |
+### `dial reject`
 
-**How it works:**
-1. Picks next pending task
-2. Generates sub-agent prompt with full context
-3. Spawns AI subprocess (streams output in real-time)
-4. Parses DIAL signals from output:
-   - `DIAL_COMPLETE: <message>` - Task is done
-   - `DIAL_BLOCKED: <reason>` - Task is stuck
-   - `DIAL_LEARNING: <category>: <description>` - Insight captured
-5. On completion: runs validation (build + test)
-6. On validation pass: commits and moves to next task
-7. On validation fail: records failure, resets for retry
-8. Repeats until done, max reached, or `.dial/stop` detected
-
-**Timeout:** Default 1800 seconds (30 minutes) per task. Configure with:
+Reject a paused iteration with a reason. Resets the task to pending.
 
 ```bash
-dial config set subagent_timeout 900  # 15 minutes
+dial reject REASON
 ```
 
-## Status and History
+## Status and Monitoring
 
 ### `dial status`
 
@@ -308,16 +355,29 @@ dial status
 Comprehensive statistics dashboard.
 
 ```bash
-dial stats
+dial stats [--format FORMAT] [--trend DAYS]
 ```
 
-Shows:
-- Iteration counts and success rate
-- Task counts by status
-- Total runtime, average/max iteration time
-- Top 5 failure patterns
-- Solution count and hit rate
-- Learning count by category
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `text` | Output format: `text`, `json`, or `csv` |
+| `--trend` | (none) | Show daily trends over N days |
+
+### `dial health`
+
+Project health score with weighted factors and trend detection.
+
+```bash
+dial health [--format FORMAT]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `text` | Output format: `text` or `json` |
+
+Computes a 0-100 score from 6 factors: success rate (30%), success trend (15%), solution confidence (15%), blocked task ratio (15%), learning utilization (10%), pattern resolution rate (15%).
+
+Color-coded output: green (70+), yellow (40-69), red (below 40).
 
 ### `dial history`
 
@@ -327,11 +387,7 @@ Show iteration history with timing and commit hashes.
 dial history [-n LIMIT]
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-n`, `--limit` | `20` | Number of entries to show |
-
-## Failures and Solutions
+## Failures, Patterns, and Solutions
 
 ### `dial failures`
 
@@ -345,17 +401,33 @@ dial failures [-a]
 |------|---------|-------------|
 | `-a`, `--all` | false | Show all failures (default: unresolved only) |
 
+### `dial patterns`
+
+Manage failure patterns.
+
+```bash
+dial patterns list                                              # Show all patterns
+dial patterns add KEY DESC CATEGORY REGEX STATUS                # Add custom pattern
+dial patterns promote ID                                        # suggested → confirmed → trusted
+dial patterns suggest                                           # Cluster unknown errors into suggestions
+dial patterns metrics [--format FORMAT] [--sort FIELD]          # Per-pattern cost/time analytics
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `text` | Output format: `text` or `json` |
+| `--sort` | `occurrences` | Sort by: `cost`, `time`, or `occurrences` |
+
 ### `dial solutions`
 
 Show recorded solutions with their confidence scores.
 
 ```bash
 dial solutions [-t]
+dial solutions refresh ID        # Reset decay timer
+dial solutions history ID        # View confidence changes
+dial solutions decay             # Apply confidence decay
 ```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-t`, `--trusted` | false | Show only trusted solutions (confidence >= 0.6) |
 
 ## Learnings
 
@@ -371,41 +443,59 @@ dial learn DESCRIPTION [-c CATEGORY]
 |------|---------|-------------|
 | `-c`, `--category` | (none) | Category: `build`, `test`, `setup`, `gotcha`, `pattern`, `tool`, `other` |
 
-**Examples:**
-
-```bash
-dial learn "Always set WAL mode before concurrent writes" -c build
-dial learn "Config parser ignores unknown keys silently" -c gotcha
-```
-
 ### `dial learnings`
 
 Query recorded learnings.
 
 ```bash
-dial learnings list [-c CATEGORY]    # Browse learnings
-dial learnings search QUERY          # Full-text search
-dial learnings delete ID             # Remove a learning
+dial learnings list [-c CATEGORY] [--pattern KEY]    # Browse learnings
+dial learnings search QUERY                          # Full-text search
+dial learnings delete ID                             # Remove a learning
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-c`, `--category` | (none) | Filter by category |
+| `--pattern` | (none) | Filter by linked failure pattern key |
+
+## Validation Pipeline
+
+### `dial pipeline`
+
+Manage the configurable validation pipeline.
+
+```bash
+dial pipeline show                                                    # List all steps
+dial pipeline add NAME CMD --sort N --required|--optional [--timeout S]  # Add step
+dial pipeline remove ID                                               # Remove step
+```
+
+Steps run in sort order. Required steps abort on failure. Optional steps log and continue.
 
 ## Recovery
 
 ### `dial revert`
 
-Revert to the last successfully committed iteration. Runs `git reset --hard` to that commit.
+Revert to the last successfully committed iteration.
 
 ```bash
 dial revert
 ```
 
-Only works in git repositories with at least one successful DIAL commit.
-
 ### `dial reset`
 
-Reset the current in-progress iteration without committing. Marks the iteration as reverted and returns the task to pending.
+Reset the current in-progress iteration without committing.
 
 ```bash
 dial reset
+```
+
+### `dial recover`
+
+Reset dangling in-progress iterations (crash recovery).
+
+```bash
+dial recover
 ```
 
 ## Configuration
