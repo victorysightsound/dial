@@ -12,7 +12,7 @@ Build entire projects iteratively without losing context or repeating mistakes.
 
 ## The Problem
 
-When you use AI coding assistants (Claude Code, Codex, Gemini) to build software iteratively, they hit predictable failure modes:
+When you use AI coding assistants (Claude Code, Codex, Gemini, GitHub Copilot, Cursor) to build software iteratively, they hit predictable failure modes:
 
 - **Context window exhaustion** - conversation history grows until the AI loses track of what it already built
 - **Reasoning loss between loops** - decisions made 10 iterations ago are forgotten

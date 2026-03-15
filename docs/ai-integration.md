@@ -122,6 +122,121 @@ dial auto-run --cli gemini --max 10
 
 DIAL uses `cat .dial/subagent_prompt.md | gemini -p -` to run tasks.
 
+## GitHub Copilot (VS Code)
+
+Copilot doesn't have a standalone CLI, so auto-run mode isn't available. Instead, use DIAL in manual or orchestrated mode alongside Copilot Chat in VS Code. This works on all platforms including Windows.
+
+### Setup
+
+1. Install DIAL ([installation instructions](../README.md#install))
+2. Open your project in VS Code with the [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) extension installed
+3. Open an integrated terminal in VS Code (`` Ctrl+` `` or **Terminal > New Terminal**)
+
+All `dial` commands run in the integrated terminal. Copilot Chat handles the implementation.
+
+### Workflow: Manual Mode
+
+The core loop — you use Copilot Chat to implement each task, then validate with DIAL in the terminal:
+
+```
+# 1. Start the next task
+dial iterate
+```
+
+This prints the task description and relevant context (linked specs, trusted solutions, learnings from previous tasks). It also writes the full context to `.dial/current_context.md`.
+
+```
+# 2. Open the context file so Copilot can reference it
+# In VS Code, open .dial/current_context.md (or just read the terminal output)
+```
+
+Now work with Copilot Chat to implement the task. You can:
+- Paste the task description into Copilot Chat and ask it to implement
+- Use `@workspace` to give Copilot project-wide context
+- Reference `.dial/current_context.md` directly: "Read .dial/current_context.md and implement the task described there"
+
+```
+# 3. When implementation is done, validate
+dial validate
+```
+
+If build and tests pass, DIAL auto-commits and moves to the next task. If they fail, DIAL records the failure pattern and resets the task for retry — the next `dial iterate` will include the failure context so you can adjust your approach.
+
+### Workflow: Orchestrated Mode
+
+For a richer prompt that includes all context, solutions, and behavioral guardrails:
+
+```
+# Generate a self-contained prompt
+dial orchestrate
+```
+
+This writes a detailed prompt to `.dial/subagent_prompt.md`. Open that file and paste its contents into Copilot Chat. The prompt includes everything Copilot needs: the task, relevant specs, known solutions, and instructions.
+
+After Copilot implements the changes:
+
+```
+dial validate
+```
+
+### Workflow: Copilot Edits (Agent Mode)
+
+If you're using Copilot Edits (multi-file editing), the orchestrated prompt works well:
+
+1. Run `dial orchestrate` in the terminal
+2. Open `.dial/subagent_prompt.md`
+3. Select all content and paste it into the Copilot Edits panel
+4. Copilot applies changes across multiple files
+5. Review the changes, then run `dial validate` in the terminal
+
+### Windows-Specific Notes
+
+DIAL runs natively on Windows — the binary is a self-contained `.exe` with no dependencies.
+
+**PowerShell:**
+```powershell
+# All commands work the same in PowerShell
+dial init --phase mvp
+dial config set build_cmd "cargo build"
+dial config set test_cmd "cargo test"
+dial task add "Set up project structure" -p 1
+dial iterate
+dial validate
+```
+
+**Command Prompt (cmd.exe):**
+```cmd
+dial iterate
+dial validate
+```
+
+**Windows Terminal:** Works with PowerShell, cmd.exe, or WSL. If your build tools are in WSL but you want to use VS Code on Windows, run DIAL inside WSL and open the folder in VS Code with the Remote - WSL extension.
+
+**Path setup:** After downloading the binary from the [releases page](https://github.com/victorysightsound/dial/releases/latest), add the directory containing `dial.exe` to your system PATH, or place it in a directory already in your PATH (e.g., `C:\Users\<you>\.local\bin\`).
+
+### Tips for Copilot
+
+- **Give Copilot the context file.** The most effective approach is to reference `.dial/current_context.md` directly in your Copilot Chat prompt. It contains the task, specs, and learnings that DIAL assembled.
+- **One task at a time.** Don't ask Copilot to implement multiple DIAL tasks in one conversation. Complete one, validate, then move to the next.
+- **Record what you learn.** After completing a tricky task, capture the insight so future tasks benefit:
+  ```
+  dial learn "Windows paths need forward slashes in the config file" -c gotcha
+  ```
+- **Use `dial context` to refresh.** If you've been working on a task for a while and want updated context (e.g., after recording a learning or fixing a related issue), regenerate it:
+  ```
+  dial context
+  ```
+  Then re-read `.dial/current_context.md` in Copilot Chat.
+
+## Cursor / Windsurf / Other AI Editors
+
+AI-powered editors like Cursor and Windsurf work the same way as the Copilot workflow above. Use DIAL in the integrated terminal, and paste the orchestrated prompt into the editor's AI chat:
+
+1. Run `dial orchestrate` in the terminal
+2. Paste `.dial/subagent_prompt.md` contents into the AI chat panel
+3. Let the editor implement the changes
+4. Run `dial validate` in the terminal
+
 ## Other AI Tools
 
 DIAL works with any AI tool that can accept a text prompt. The workflow:

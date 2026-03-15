@@ -6,9 +6,11 @@ This guide walks through installing DIAL, setting up your first project, and run
 
 - **Git** (DIAL auto-commits on successful validation)
 - An AI coding tool (optional but recommended):
-  - [Claude Code](https://claude.ai/download) (`claude` CLI)
-  - [Codex CLI](https://github.com/openai/codex) (`codex`)
-  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
+  - [Claude Code](https://claude.ai/download) (`claude` CLI) — supports auto-run
+  - [Codex CLI](https://github.com/openai/codex) (`codex`) — supports auto-run
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) — supports auto-run
+  - [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) in VS Code — manual/orchestrated mode
+  - [Cursor](https://cursor.sh), [Windsurf](https://codeium.com/windsurf), or any AI editor — manual/orchestrated mode
 
 ## Installation
 
