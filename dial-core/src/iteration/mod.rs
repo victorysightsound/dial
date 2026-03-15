@@ -234,7 +234,7 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
     if success {
         // Commit changes (git operations happen outside the DB transaction)
         let commit_hash = if git_is_repo() && git_has_changes() {
-            let message = format!("DIAL: {}", task_description);
+            let message = task_description.to_string();
             if let Some(hash) = git_commit(&message)? {
                 println!("{}", green(&format!("Committed: {}", &hash[..8])));
                 Some(hash)

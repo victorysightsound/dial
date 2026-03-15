@@ -335,13 +335,13 @@ Unrecognized errors are recorded as `UnknownError` in the `unknown` category.
 
 ## Git Integration
 
-DIAL auto-commits when validation passes. Commit messages follow the format:
+DIAL auto-commits when validation passes. Commit messages use the task description directly:
 
 ```
-DIAL: <task description>
+<task description>
 ```
 
-For auto-run mode, the same format is used. DIAL checks `git status --porcelain` before committing and only commits if there are changes.
+DIAL checks `git status --porcelain` before committing and only commits if there are changes.
 
 DIAL does not push to remote repositories. That's always your decision.
 

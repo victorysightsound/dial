@@ -6,9 +6,9 @@
 
 ```bash
 git clone https://github.com/victorysightsound/dial.git
-cd dial/dial
-cargo build
-cargo test
+cd dial
+cargo build --workspace
+cargo test --workspace
 ```
 
 ## Development
@@ -52,12 +52,12 @@ Key locations:
 
 | What | Where |
 |------|-------|
-| CLI entry point | `dial/src/main.rs` |
-| Public API | `dial/src/lib.rs` |
-| Database schema | `dial/src/db/schema.rs` |
-| Failure patterns | `dial/src/failure/patterns.rs` |
-| Signal parsing | `dial/src/iteration/orchestrator.rs` |
-| Context assembly | `dial/src/iteration/context.rs` |
+| CLI entry point | `dial-cli/src/main.rs` |
+| Public API | `dial-core/src/lib.rs` |
+| Database schema | `dial-core/src/db/schema.rs` |
+| Failure patterns | `dial-core/src/failure/patterns.rs` |
+| Signal parsing | `dial-core/src/iteration/orchestrator.rs` |
+| Context assembly | `dial-core/src/iteration/context.rs` |
 
 ## Guidelines
 

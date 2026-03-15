@@ -422,7 +422,7 @@ async fn test_integration_iterate_fail_restore_retry_cycle() {
     // Now commit (simulating successful validation path)
     Command::new("git").args(["add", "-A"]).output().unwrap();
     Command::new("git")
-        .args(["commit", "-m", "DIAL: Implement feature X"])
+        .args(["commit", "-m", "Implement feature X"])
         .output()
         .unwrap();
 
@@ -441,7 +441,7 @@ async fn test_integration_iterate_fail_restore_retry_cycle() {
         .output()
         .unwrap();
     let log_str = String::from_utf8_lossy(&log.stdout);
-    assert!(log_str.contains("DIAL: Implement feature X"));
+    assert!(log_str.contains("Implement feature X"));
 
     env::set_current_dir(original_dir).unwrap();
 }

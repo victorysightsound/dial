@@ -504,7 +504,7 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
             if success {
                 // Commit changes
                 let commit_hash = if git_is_repo() && git_has_changes() {
-                    let commit_msg = format!("DIAL: {}", task.description);
+                    let commit_msg = task.description.clone();
                     if let Some(hash) = git_commit(&commit_msg)? {
                         println!("{}", green(&format!("Committed: {}", &hash[..8])));
                         Some(hash)
