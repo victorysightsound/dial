@@ -93,3 +93,11 @@ Spawns a fresh AI subprocess for each task, parses DIAL signals, runs validation
 dial config set build_cmd "your build command"
 dial config set test_cmd "your test command"
 ```
+
+---
+
+## External-Facing Writing
+
+- Keep README files, changelogs, commit messages, PR text, and code comments in normal developer voice.
+- Do not describe implementation work in terms of model names, agent runs, or internal workflow prompts.
+- DIAL may be documented freely as a product, methodology, or runtime feature because it is the actual subject of this repository.
