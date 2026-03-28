@@ -82,6 +82,7 @@ dial new --resume
 
 State persists in `prd.db` after every phase. Close the terminal at any point and resume later with `--resume`.
 If multiple wizard backends are installed and DIAL cannot detect an active session backend, pass `--wizard-backend` explicitly.
+When backend selection is ambiguous, `dial new` stops before creating project files instead of guessing.
 
 ## Specification
 

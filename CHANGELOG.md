@@ -1,5 +1,29 @@
 # Changelog
 
+## 4.2.1 — 2026-03-28
+
+Wizard stability and Windows validation patch release.
+
+### Native Windows Backend Hardening
+- hardens native Windows CLI backend execution for `codex` and `copilot`
+- routes structured Codex wizard prompts through stdin and schema files so long prompts do not hit Windows command-line length limits
+- runs wizard subprocesses from a neutral temporary working directory instead of the project root to avoid Windows CLI shim edge cases
+- keeps Copilot and Codex structured-output flows reliable in native Windows runs
+
+### Wizard Quality & Test Hardening
+- tightens Copilot-facing wizard prompts and quality checks so generated PRD sections and task lists stay concrete instead of drifting into placeholder content
+- allows legitimate explanatory mentions of tokens like `TODO` and `TBD` inside generated PRD prose while still rejecting actual placeholder responses
+- fixes the parallel test current-working-directory race so the workspace suite is reliable under normal parallel execution again
+
+### Verification
+- fresh native Windows runs completed for `dial new --template mvp --wizard-backend codex`
+- fresh native Windows runs completed for `dial new --template mvp --wizard-backend copilot`
+- workspace test suite passed with 416 tests
+
+No schema migrations needed.
+
+---
+
 ## 4.2.0 — 2026-03-28
 
 Wizard backend and Mac hardening release.

@@ -118,6 +118,8 @@ The wizard can run through `codex`, `claude`, `copilot`, `gemini`, or an OpenAI-
 dial new --template mvp --wizard-backend copilot
 ```
 
+Current release verification covers fresh macOS wizard runs with Codex and Copilot plus native Windows wizard runs with Copilot.
+
 | Phase | Name | What Happens |
 |-------|------|-------------|
 | 1 | **Vision** | AI identifies the problem, target users, success criteria |

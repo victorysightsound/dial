@@ -2,6 +2,18 @@
 
 ## Version Timeline
 
+### v4.2.1 (March 2026) - Windows Hardening & Wizard Quality
+
+Patch release focused on proving the wizard in native Windows CLI runs and tightening the remaining quality edges:
+
+- Hardens native Windows CLI backend execution for `codex` and `copilot`
+- Routes long structured Codex prompts through stdin/schema files so Windows command-line length limits do not break later wizard phases
+- Runs wizard subprocesses from a neutral temporary working directory to avoid Windows CLI shim and npm launcher edge cases
+- Tightens Copilot-facing wizard prompts and placeholder detection so generated PRD sections and task lists stay concrete
+- Fixes the parallel test current-working-directory race so the full workspace suite is reliable under normal parallel execution again
+
+416 tests. No schema migrations needed.
+
 ### v4.2.0 (March 2026) - Wizard Backend & Mac Hardening
 
 Feature release focused on making the project wizard backend-agnostic, observable, and resilient in real CLI-backed runs:
@@ -181,10 +193,11 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 4.1.2 | + Release alignment & publishability | Yes | 364+ |
 | 4.1.3 | + Documentation alignment | Yes | 364+ |
 | 4.2.0 | + Wizard backends, visibility & Mac hardening | Yes | 399 |
+| 4.2.1 | + Windows CLI hardening & wizard quality fixes | Yes | 416 |
 
 ## Performance
 
-| Metric | v2.0 | v4.2 |
+| Metric | v2.0 | v4.2.1 |
 |--------|------|------|
 | Startup | ~14ms | ~14ms |
 | Binary size | 4.0MB | ~5MB |

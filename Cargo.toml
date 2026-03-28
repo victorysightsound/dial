@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "4.2.0"
+version = "4.2.1"
 edition = "2021"
 rust-version = "1.70"
 authors = ["John Deaton <john@victorysightsound.com>"]
@@ -30,8 +30,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 futures = "0.3"
 
 # Internal crates
-dial-core = { path = "dial-core", version = "4.2.0" }
-dial-providers = { path = "dial-providers", version = "4.2.0" }
+dial-core = { path = "dial-core", version = "4.2.1" }
+dial-providers = { path = "dial-providers", version = "4.2.1" }
 
 [profile.release]
 lto = true

@@ -69,6 +69,8 @@ If you have multiple supported AI CLIs installed, pass `--wizard-backend` on you
 dial new --template mvp --wizard-backend copilot
 ```
 
+Current verification covers fresh wizard runs on macOS and native Windows CLI environments, including native Windows Copilot.
+
 ### 1. Initialize
 
 Create or navigate to your project directory and initialize DIAL:

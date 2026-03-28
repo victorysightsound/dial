@@ -152,7 +152,7 @@ dial auto-run --cli copilot --max 10
 dial new --template mvp --wizard-backend copilot
 ```
 
-DIAL runs Copilot in noninteractive silent mode for both auto-run and wizard phases.
+DIAL runs Copilot in noninteractive silent mode for both auto-run and wizard phases. The current Windows path has been validated in native CLI runs, not just through WSL.
 
 ## GitHub Copilot in VS Code
 
