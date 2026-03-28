@@ -142,29 +142,51 @@ impl Provider for SequentialMockProvider {
 fn phase_1_response() -> String {
     serde_json::to_string(&json!({
         "project_name": "WizardTestProject",
-        "problem": "Need automated testing for the wizard flow",
-        "target_users": "Developers building with DIAL",
-        "success_criteria": ["All 9 phases complete", "Resume works", "Backward compat"]
+        "elevator_pitch": "WizardTestProject helps developers verify the full PRD wizard flow without manual setup.",
+        "problem_statement": "Developers need a reliable way to validate phase execution, resume behavior, and project setup without repeatedly hand-building sample projects.",
+        "target_users": ["developers building with DIAL", "maintainers validating wizard changes"],
+        "success_criteria": ["All 9 phases complete on a fresh project", "Resume picks up from the saved phase without data loss", "Generated tasks and config are ready for auto-run"],
+        "scope_exclusions": ["multi-user collaboration features", "GUI-based project editing"]
     }))
     .unwrap()
 }
 
 fn phase_2_response() -> String {
     serde_json::to_string(&json!({
-        "mvp_features": ["phase execution", "state persistence", "resume support"],
-        "nice_to_have": ["progress reporting", "undo phase"],
-        "out_of_scope": ["multi-user support"]
+        "mvp_features": [
+            {"name": "Wizard phase execution", "description": "Run the PRD wizard phases in order and persist each phase result.", "priority": 1},
+            {"name": "Wizard state persistence", "description": "Save the active wizard phase and gathered information after each successful phase.", "priority": 2},
+            {"name": "Wizard resume support", "description": "Resume an interrupted wizard run from the last completed phase without losing prior outputs.", "priority": 3}
+        ],
+        "deferred_features": [
+            {"name": "Wizard undo phase", "description": "Allow reverting the most recent completed wizard phase.", "rationale": "Helpful later, but not required for current validation."}
+        ],
+        "user_workflows": [
+            {"name": "Create a new wizard project", "steps": ["Run `dial new --template mvp` in an empty directory", "Wait for all wizard phases to complete", "Review launch summary and generated tasks"]},
+            {"name": "Resume an interrupted wizard run", "steps": ["Reopen the existing project directory", "Run `dial new --resume` or `dial spec wizard --resume`", "Verify the wizard continues from the saved phase"]}
+        ]
     }))
     .unwrap()
 }
 
 fn phase_3_response() -> String {
     serde_json::to_string(&json!({
-        "languages": ["Rust"],
-        "frameworks": ["tokio", "rusqlite"],
-        "platform": "cross-platform CLI",
-        "integrations": ["SQLite", "AI providers"],
-        "constraints": ["must work offline", "single binary"]
+        "data_model": [
+            {"entity": "wizard_state", "fields": ["id: integer", "current_phase: integer", "completed_phases: json", "gathered_info: json", "template: text"], "relationships": ["references generated sections and task configuration"]},
+            {"entity": "wizard_task", "fields": ["id: integer", "description: text", "priority: integer", "prd_section_id: text"], "relationships": ["depends on generated PRD sections and prior wizard tasks"]}
+        ],
+        "integrations": [
+            {"service": "SQLite", "purpose": "Persist wizard state, PRD sections, and generated tasks locally.", "api_type": "embedded"},
+            {"service": "AI provider backend", "purpose": "Generate structured JSON for each wizard phase.", "api_type": "CLI/API"}
+        ],
+        "platform": {
+            "languages": ["Rust"],
+            "frameworks": ["tokio", "rusqlite"],
+            "database": "SQLite",
+            "hosting": "cross-platform CLI"
+        },
+        "constraints": ["must work offline once dependencies are installed", "single project directory layout must remain stable"],
+        "performance_requirements": ["Each wizard phase should complete within a reasonable CLI timeout", "Resume should not repeat completed phases"]
     }))
     .unwrap()
 }
@@ -172,10 +194,14 @@ fn phase_3_response() -> String {
 fn phase_4_response() -> String {
     serde_json::to_string(&json!({
         "gaps": [
-            {"area": "testing", "description": "Integration tests missing for wizard flow"},
-            {"area": "error handling", "description": "Need retry on provider timeout"}
+            {"area": "testing", "issue": "Integration tests for full wizard resume paths are incomplete.", "suggestion": "Add end-to-end tests that resume from phases 3, 5, and 7."},
+            {"area": "error handling", "issue": "Provider retries are not clearly surfaced to the operator.", "suggestion": "Emit phase warnings when JSON repair or quality retries happen."}
         ],
-        "recommendations": ["Add integration test suite", "Implement timeout retry logic"],
+        "contradictions": [],
+        "recommendations": [
+            {"topic": "coverage", "recommendation": "Keep the wizard fixtures aligned with the structured JSON contract used in production."},
+            {"topic": "observability", "recommendation": "Show phase progress and retry signals in CLI output."}
+        ],
         "section_ratings": [
             {"section": "vision", "rating": "SPECIFIC", "issues": []},
             {"section": "functionality", "rating": "NEEDS_DETAIL", "issues": ["mvp_features lacks acceptance criteria"]},
@@ -205,25 +231,28 @@ fn phase_6_response() -> String {
     serde_json::to_string(&json!({
         "tasks": [
             {
-                "description": "Set up project scaffolding",
+                "description": "Set up wizard integration test scaffolding and sample project fixtures",
                 "priority": 1,
                 "spec_section": "1",
                 "depends_on": [],
-                "rationale": "Foundation first"
+                "rationale": "Foundation first",
+                "size": "M"
             },
             {
-                "description": "Implement wizard phase engine",
+                "description": "Implement the wizard phase execution engine with persisted phase transitions",
                 "priority": 2,
                 "spec_section": "2",
                 "depends_on": [0],
-                "rationale": "Core logic depends on scaffolding"
+                "rationale": "Core logic depends on scaffolding",
+                "size": "L"
             },
             {
-                "description": "Add integration tests",
+                "description": "Add integration tests for resume, launch summary, and generated task flow",
                 "priority": 3,
                 "spec_section": "3",
                 "depends_on": [1],
-                "rationale": "Tests after implementation"
+                "rationale": "Tests after implementation",
+                "size": "M"
             }
         ],
         "removed": [
@@ -231,7 +260,14 @@ fn phase_6_response() -> String {
         ],
         "added": [
             {"description": "Add integration tests", "reason": "Testing coverage needed"}
-        ]
+        ],
+        "splits": [],
+        "rewrites": [],
+        "merges": [],
+        "sizing_summary": {
+            "S": 0, "M": 2, "L": 1, "XL": 0,
+            "total_splits": 0, "total_rewrites": 0, "total_merges": 0
+        }
     }))
     .unwrap()
 }
@@ -291,34 +327,60 @@ fn gathered_info_through_phase(n: i32) -> JsonValue {
     if n >= 1 {
         info["vision"] = json!({
             "project_name": "WizardTestProject",
-            "problem": "Need automated testing for the wizard flow",
-            "target_users": "Developers building with DIAL",
-            "success_criteria": ["All 9 phases complete", "Resume works", "Backward compat"]
+            "elevator_pitch": "WizardTestProject helps developers verify the full PRD wizard flow without manual setup.",
+            "problem_statement": "Developers need a reliable way to validate phase execution, resume behavior, and project setup without repeatedly hand-building sample projects.",
+            "target_users": ["developers building with DIAL", "maintainers validating wizard changes"],
+            "success_criteria": ["All 9 phases complete on a fresh project", "Resume picks up from the saved phase without data loss", "Generated tasks and config are ready for auto-run"],
+            "scope_exclusions": ["multi-user collaboration features", "GUI-based project editing"]
         });
     }
     if n >= 2 {
         info["functionality"] = json!({
-            "mvp_features": ["phase execution", "state persistence", "resume support"],
-            "nice_to_have": ["progress reporting", "undo phase"],
-            "out_of_scope": ["multi-user support"]
+            "mvp_features": [
+                {"name": "Wizard phase execution", "description": "Run the PRD wizard phases in order and persist each phase result.", "priority": 1},
+                {"name": "Wizard state persistence", "description": "Save the active wizard phase and gathered information after each successful phase.", "priority": 2},
+                {"name": "Wizard resume support", "description": "Resume an interrupted wizard run from the last completed phase without losing prior outputs.", "priority": 3}
+            ],
+            "deferred_features": [
+                {"name": "Wizard undo phase", "description": "Allow reverting the most recent completed wizard phase.", "rationale": "Helpful later, but not required for current validation."}
+            ],
+            "user_workflows": [
+                {"name": "Create a new wizard project", "steps": ["Run `dial new --template mvp` in an empty directory", "Wait for all wizard phases to complete", "Review launch summary and generated tasks"]},
+                {"name": "Resume an interrupted wizard run", "steps": ["Reopen the existing project directory", "Run `dial new --resume` or `dial spec wizard --resume`", "Verify the wizard continues from the saved phase"]}
+            ]
         });
     }
     if n >= 3 {
         info["technical"] = json!({
-            "languages": ["Rust"],
-            "frameworks": ["tokio", "rusqlite"],
-            "platform": "cross-platform CLI",
-            "integrations": ["SQLite", "AI providers"],
-            "constraints": ["must work offline", "single binary"]
+            "data_model": [
+                {"entity": "wizard_state", "fields": ["id: integer", "current_phase: integer", "completed_phases: json", "gathered_info: json", "template: text"], "relationships": ["references generated sections and task configuration"]},
+                {"entity": "wizard_task", "fields": ["id: integer", "description: text", "priority: integer", "prd_section_id: text"], "relationships": ["depends on generated PRD sections and prior wizard tasks"]}
+            ],
+            "integrations": [
+                {"service": "SQLite", "purpose": "Persist wizard state, PRD sections, and generated tasks locally.", "api_type": "embedded"},
+                {"service": "AI provider backend", "purpose": "Generate structured JSON for each wizard phase.", "api_type": "CLI/API"}
+            ],
+            "platform": {
+                "languages": ["Rust"],
+                "frameworks": ["tokio", "rusqlite"],
+                "database": "SQLite",
+                "hosting": "cross-platform CLI"
+            },
+            "constraints": ["must work offline once dependencies are installed", "single project directory layout must remain stable"],
+            "performance_requirements": ["Each wizard phase should complete within a reasonable CLI timeout", "Resume should not repeat completed phases"]
         });
     }
     if n >= 4 {
         info["gap_analysis"] = json!({
             "gaps": [
-                {"area": "testing", "description": "Integration tests missing for wizard flow"},
-                {"area": "error handling", "description": "Need retry on provider timeout"}
+                {"area": "testing", "issue": "Integration tests for full wizard resume paths are incomplete.", "suggestion": "Add end-to-end tests that resume from phases 3, 5, and 7."},
+                {"area": "error handling", "issue": "Provider retries are not clearly surfaced to the operator.", "suggestion": "Emit phase warnings when JSON repair or quality retries happen."}
             ],
-            "recommendations": ["Add integration test suite", "Implement timeout retry logic"],
+            "contradictions": [],
+            "recommendations": [
+                {"topic": "coverage", "recommendation": "Keep the wizard fixtures aligned with the structured JSON contract used in production."},
+                {"topic": "observability", "recommendation": "Show phase progress and retry signals in CLI output."}
+            ],
             "section_ratings": [
                 {"section": "vision", "rating": "SPECIFIC", "issues": []},
                 {"section": "functionality", "rating": "NEEDS_DETAIL", "issues": ["mvp_features lacks acceptance criteria"]},
@@ -343,12 +405,19 @@ fn gathered_info_through_phase(n: i32) -> JsonValue {
     if n >= 6 {
         info["task_review"] = json!({
             "tasks": [
-                {"description": "Set up project scaffolding", "priority": 1, "spec_section": "1", "depends_on": [], "rationale": "Foundation first"},
-                {"description": "Implement wizard phase engine", "priority": 2, "spec_section": "2", "depends_on": [0], "rationale": "Core logic depends on scaffolding"},
-                {"description": "Add integration tests", "priority": 3, "spec_section": "3", "depends_on": [1], "rationale": "Tests after implementation"}
+                {"description": "Set up wizard integration test scaffolding and sample project fixtures", "priority": 1, "spec_section": "1", "depends_on": [], "rationale": "Foundation first", "size": "M"},
+                {"description": "Implement the wizard phase execution engine with persisted phase transitions", "priority": 2, "spec_section": "2", "depends_on": [0], "rationale": "Core logic depends on scaffolding", "size": "L"},
+                {"description": "Add integration tests for resume, launch summary, and generated task flow", "priority": 3, "spec_section": "3", "depends_on": [1], "rationale": "Tests after implementation", "size": "M"}
             ],
             "removed": [{"original": "Implement: Overview", "reason": "Too vague"}],
-            "added": [{"description": "Add integration tests", "reason": "Testing coverage needed"}]
+            "added": [{"description": "Add integration tests", "reason": "Testing coverage needed"}],
+            "splits": [],
+            "rewrites": [],
+            "merges": [],
+            "sizing_summary": {
+                "S": 0, "M": 2, "L": 1, "XL": 0,
+                "total_splits": 0, "total_rewrites": 0, "total_merges": 0
+            }
         });
     }
     if n >= 7 {
@@ -1424,15 +1493,24 @@ async fn test_phase_6_task_replacement_with_dependencies() {
     assert_eq!(tasks.len(), 3, "Should have 3 reviewed tasks");
 
     // Verify descriptions, priorities, and prd_section_ids
-    assert_eq!(tasks[0].1, "Set up project scaffolding");
+    assert_eq!(
+        tasks[0].1,
+        "Set up wizard integration test scaffolding and sample project fixtures"
+    );
     assert_eq!(tasks[0].2, 1);
     assert_eq!(tasks[0].3, Some("1".to_string()));
 
-    assert_eq!(tasks[1].1, "Implement wizard phase engine");
+    assert_eq!(
+        tasks[1].1,
+        "Implement the wizard phase execution engine with persisted phase transitions"
+    );
     assert_eq!(tasks[1].2, 2);
     assert_eq!(tasks[1].3, Some("2".to_string()));
 
-    assert_eq!(tasks[2].1, "Add integration tests");
+    assert_eq!(
+        tasks[2].1,
+        "Add integration tests for resume, launch summary, and generated task flow"
+    );
     assert_eq!(tasks[2].2, 3);
     assert_eq!(tasks[2].3, Some("3".to_string()));
 

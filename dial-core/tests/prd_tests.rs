@@ -12,9 +12,13 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn safe_current_dir() -> std::path::PathBuf {
+    env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
+}
+
 /// Helper: create an Engine in a temp directory.
 async fn setup_engine() -> (Engine, TempDir, std::path::PathBuf) {
-    let original_dir = env::current_dir().unwrap();
+    let original_dir = safe_current_dir();
     let tmp = TempDir::new().unwrap();
     env::set_current_dir(tmp.path()).unwrap();
 
@@ -880,7 +884,7 @@ async fn test_run_wizard_phase_9_defaults_when_no_vision() {
 
     let summary = prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
 
-    assert_eq!(summary.project_name, "Unknown");
+    assert_eq!(summary.project_name, "Current Project");
     assert_eq!(summary.task_count, 0);
 
     // Verify defaults show "(not set)" for unconfigured values
@@ -897,7 +901,7 @@ async fn test_run_wizard_phase_9_defaults_when_no_vision() {
 #[tokio::test]
 async fn test_load_existing_doc() {
     let _lock = lock();
-    let original_dir = env::current_dir().unwrap();
+    let original_dir = safe_current_dir();
     let tmp = TempDir::new().unwrap();
     env::set_current_dir(tmp.path()).unwrap();
 
@@ -1200,7 +1204,7 @@ fn test_build_iteration_mode_prompt_minimal() {
 
     let prompt = prd::wizard::build_iteration_mode_prompt(&gathered_info, 0);
 
-    assert!(prompt.contains("unknown")); // no vision.project_name
+    assert!(prompt.contains("current project")); // no vision.project_name
     assert!(prompt.contains("Pending tasks: 0"));
     // No complexity indicators section when no data
     assert!(!prompt.contains("Complexity Indicators"));

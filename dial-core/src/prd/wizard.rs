@@ -168,12 +168,420 @@ fn truncate_for_prompt(text: &str, max_chars: usize) -> String {
     format!("{}...", truncated.trim_end())
 }
 
+const EXACT_PLACEHOLDER_PHRASES: &[&str] = &[
+    "feature name",
+    "workflow name",
+    "service name",
+    "entity name",
+    "field1",
+    "field 1",
+    "field2",
+    "field 2",
+    "placeholder",
+    "todo",
+    "tbd",
+];
+
+const SUBSTRING_PLACEHOLDER_PHRASES: &[&str] = &[
+    "as defined in task",
+    "as finalized in task",
+    "as described in task",
+    "first entity",
+    "second entity",
+    "third entity",
+    "constraint 1",
+    "constraint 2",
+    "requirement 1",
+    "requirement 2",
+    "replace with",
+    "insert here",
+];
+
+fn normalize_quality_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn has_placeholder_language(text: &str) -> bool {
+    if text.contains('<') && text.contains('>') {
+        return true;
+    }
+
+    let normalized = normalize_quality_text(text);
+    !normalized.is_empty()
+        && (EXACT_PLACEHOLDER_PHRASES
+            .iter()
+            .any(|phrase| normalized == *phrase)
+            || SUBSTRING_PLACEHOLDER_PHRASES
+                .iter()
+                .any(|phrase| normalized.contains(phrase)))
+}
+
+fn is_generic_project_name(name: &str) -> bool {
+    let normalized = normalize_quality_text(name);
+    if normalized.is_empty() {
+        return true;
+    }
+
+    if matches!(
+        normalized.as_str(),
+        "unknown"
+            | "project"
+            | "app"
+            | "application"
+            | "sample project"
+            | "sample app"
+            | "new project"
+            | "my project"
+            | "untitled project"
+            | "test project"
+            | "mvp project"
+    ) {
+        return true;
+    }
+
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    !tokens.is_empty()
+        && tokens.len() <= 3
+        && tokens.iter().all(|token| {
+            matches!(
+                *token,
+                "unknown"
+                    | "project"
+                    | "app"
+                    | "application"
+                    | "sample"
+                    | "new"
+                    | "my"
+                    | "untitled"
+                    | "test"
+                    | "mvp"
+                    | "demo"
+                    | "prototype"
+                    | "tool"
+            )
+        })
+}
+
+fn push_quality_issue_for_text(
+    issues: &mut Vec<String>,
+    label: &str,
+    text: &str,
+    min_words: usize,
+) {
+    if text.trim().is_empty() {
+        issues.push(format!("`{label}` is empty."));
+        return;
+    }
+    if has_placeholder_language(text) {
+        issues.push(format!(
+            "`{label}` still contains placeholder language: {}",
+            truncate_for_prompt(text, 120)
+        ));
+        return;
+    }
+    if text.split_whitespace().count() < min_words {
+        issues.push(format!(
+            "`{label}` is too short to guide implementation. Make it more concrete."
+        ));
+    }
+}
+
+fn collect_phase_quality_issues(phase: WizardPhase, value: &JsonValue) -> Vec<String> {
+    let mut issues = Vec::new();
+
+    match phase {
+        WizardPhase::Vision => {
+            let project_name = value
+                .get("project_name")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
+            if is_generic_project_name(project_name) {
+                issues.push(
+                    "`project_name` is generic. Use a concrete product name tied to the domain."
+                        .to_string(),
+                );
+            }
+
+            push_quality_issue_for_text(
+                &mut issues,
+                "elevator_pitch",
+                value
+                    .get("elevator_pitch")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or(""),
+                5,
+            );
+            push_quality_issue_for_text(
+                &mut issues,
+                "problem_statement",
+                value
+                    .get("problem_statement")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or(""),
+                8,
+            );
+
+            for field in ["target_users", "success_criteria", "scope_exclusions"] {
+                if let Some(items) = value.get(field).and_then(|item| item.as_array()) {
+                    if items.is_empty() {
+                        issues.push(format!(
+                            "`{field}` must contain at least one concrete item."
+                        ));
+                    }
+                    for entry in items.iter().take(4) {
+                        if let Some(text) = entry.as_str() {
+                            if has_placeholder_language(text) {
+                                issues.push(format!(
+                                    "`{field}` contains placeholder language: {}",
+                                    truncate_for_prompt(text, 120)
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    issues.push(format!("`{field}` must be an array of concrete items."));
+                }
+            }
+        }
+        WizardPhase::Functionality => {
+            for (field, label) in [
+                ("mvp_features", "mvp_features"),
+                ("deferred_features", "deferred_features"),
+            ] {
+                if let Some(items) = value.get(field).and_then(|item| item.as_array()) {
+                    for (index, entry) in items.iter().enumerate().take(4) {
+                        push_quality_issue_for_text(
+                            &mut issues,
+                            &format!("{label}[{index}].name"),
+                            entry
+                                .get("name")
+                                .and_then(|item| item.as_str())
+                                .unwrap_or(""),
+                            2,
+                        );
+                        push_quality_issue_for_text(
+                            &mut issues,
+                            &format!("{label}[{index}].description"),
+                            entry
+                                .get("description")
+                                .and_then(|item| item.as_str())
+                                .unwrap_or(""),
+                            5,
+                        );
+                    }
+                }
+            }
+
+            if let Some(workflows) = value.get("user_workflows").and_then(|item| item.as_array()) {
+                for (index, workflow) in workflows.iter().enumerate().take(4) {
+                    push_quality_issue_for_text(
+                        &mut issues,
+                        &format!("user_workflows[{index}].name"),
+                        workflow
+                            .get("name")
+                            .and_then(|item| item.as_str())
+                            .unwrap_or(""),
+                        2,
+                    );
+                    if let Some(steps) = workflow.get("steps").and_then(|item| item.as_array()) {
+                        if steps.len() < 2 {
+                            issues.push(format!(
+                                "`user_workflows[{index}].steps` should describe at least two concrete steps."
+                            ));
+                        }
+                        for step in steps.iter().take(4) {
+                            if let Some(text) = step.as_str() {
+                                if has_placeholder_language(text) {
+                                    issues.push(format!(
+                                        "`user_workflows[{index}].steps` contains placeholder language: {}",
+                                        truncate_for_prompt(text, 120)
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        WizardPhase::Technical => {
+            if let Some(entities) = value.get("data_model").and_then(|item| item.as_array()) {
+                for (index, entity) in entities.iter().enumerate().take(4) {
+                    push_quality_issue_for_text(
+                        &mut issues,
+                        &format!("data_model[{index}].entity"),
+                        entity
+                            .get("entity")
+                            .and_then(|item| item.as_str())
+                            .unwrap_or(""),
+                        1,
+                    );
+                    if let Some(fields) = entity.get("fields").and_then(|item| item.as_array()) {
+                        for field in fields.iter().take(4) {
+                            if let Some(text) = field.as_str() {
+                                if has_placeholder_language(text) {
+                                    issues.push(format!(
+                                        "`data_model[{index}].fields` contains placeholder language: {}",
+                                        truncate_for_prompt(text, 120)
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(relationships) =
+                        entity.get("relationships").and_then(|item| item.as_array())
+                    {
+                        for relationship in relationships.iter().take(4) {
+                            if let Some(text) = relationship.as_str() {
+                                if has_placeholder_language(text) {
+                                    issues.push(format!(
+                                        "`data_model[{index}].relationships` contains placeholder language: {}",
+                                        truncate_for_prompt(text, 120)
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(integrations) = value.get("integrations").and_then(|item| item.as_array()) {
+                for (index, integration) in integrations.iter().enumerate().take(4) {
+                    push_quality_issue_for_text(
+                        &mut issues,
+                        &format!("integrations[{index}].service"),
+                        integration
+                            .get("service")
+                            .and_then(|item| item.as_str())
+                            .unwrap_or(""),
+                        1,
+                    );
+                    push_quality_issue_for_text(
+                        &mut issues,
+                        &format!("integrations[{index}].purpose"),
+                        integration
+                            .get("purpose")
+                            .and_then(|item| item.as_str())
+                            .unwrap_or(""),
+                        4,
+                    );
+                }
+            }
+
+            for field in ["constraints", "performance_requirements"] {
+                if let Some(items) = value.get(field).and_then(|item| item.as_array()) {
+                    for entry in items.iter().take(4) {
+                        if let Some(text) = entry.as_str() {
+                            if has_placeholder_language(text) {
+                                issues.push(format!(
+                                    "`{field}` contains placeholder language: {}",
+                                    truncate_for_prompt(text, 120)
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        WizardPhase::Generate => {
+            if let Some(sections) = value.get("sections").and_then(|item| item.as_array()) {
+                if sections.is_empty() {
+                    issues.push("`sections` must contain generated PRD content.".to_string());
+                }
+                for (index, section) in sections.iter().enumerate().take(4) {
+                    push_quality_issue_for_text(
+                        &mut issues,
+                        &format!("sections[{index}].content"),
+                        section
+                            .get("content")
+                            .and_then(|item| item.as_str())
+                            .unwrap_or(""),
+                        4,
+                    );
+                }
+            } else {
+                issues.push("`sections` must be an array of generated PRD sections.".to_string());
+            }
+        }
+        WizardPhase::TaskReview => {
+            if let Some(tasks) = value.get("tasks").and_then(|item| item.as_array()) {
+                if tasks.is_empty() {
+                    issues.push("`tasks` must contain a concrete reviewed task list.".to_string());
+                }
+                for (index, task) in tasks.iter().enumerate().take(6) {
+                    let description = task
+                        .get("description")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("");
+                    if has_placeholder_language(description) {
+                        issues.push(format!(
+                            "`tasks[{index}].description` still contains placeholder language: {}",
+                            truncate_for_prompt(description, 120)
+                        ));
+                    }
+                    let rationale = task
+                        .get("rationale")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("");
+                    if has_placeholder_language(rationale) {
+                        issues.push(format!(
+                            "`tasks[{index}].rationale` still contains placeholder language: {}",
+                            truncate_for_prompt(rationale, 120)
+                        ));
+                    }
+                }
+            }
+        }
+        WizardPhase::BuildTestConfig => {
+            if let Some(test_tasks) = value.get("test_tasks").and_then(|item| item.as_array()) {
+                for (index, task) in test_tasks.iter().enumerate().take(6) {
+                    let description = task
+                        .get("description")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("");
+                    if has_placeholder_language(description) {
+                        issues.push(format!(
+                            "`test_tasks[{index}].description` still contains placeholder language: {}",
+                            truncate_for_prompt(description, 120)
+                        ));
+                    }
+                }
+            }
+        }
+        WizardPhase::GapAnalysis | WizardPhase::IterationMode | WizardPhase::Launch => {}
+    }
+
+    issues.truncate(8);
+    issues
+}
+
+fn should_enforce_phase_quality(provider_name: &str) -> bool {
+    provider_name == "copilot"
+}
+
 fn build_project_summary_context(gathered_info: &JsonValue) -> String {
     let mut lines = Vec::new();
 
     if let Some(vision) = gathered_info.get("vision") {
         if let Some(name) = vision.get("project_name").and_then(|v| v.as_str()) {
-            lines.push(format!("- Project: {}", name));
+            if !is_generic_project_name(name) {
+                lines.push(format!("- Project: {}", name));
+            }
         }
         if let Some(problem) = vision.get("problem_statement").and_then(|v| v.as_str()) {
             lines.push(format!("- Problem: {}", truncate_for_prompt(problem, 220)));
@@ -845,6 +1253,13 @@ Phase 1: Vision & Problem
 
 {template_context}{prior_context}{doc_context}
 
+Rules:
+- `project_name` must be a concrete product name tied to the domain. If no name exists yet, invent one.
+- Do not use generic names like `unknown`, `project`, `app`, `sample project`, or `my project`.
+- Every array entry must be concrete and specific to this project domain. No placeholders or filler text.
+- `success_criteria` should be measurable outcomes, not generic aspirations.
+- `scope_exclusions` should name real things the MVP will not do.
+
 Answer these questions in JSON format:
 {{
   "project_name": "short name for the project",
@@ -863,6 +1278,10 @@ Respond ONLY with valid JSON."#
 {template_context}{prior_context}{doc_context}
 
 Based on the vision, define the features in JSON format:
+- Reuse the concrete domain nouns from phase 1.
+- Do not use placeholders like `feature name`, `workflow name`, `some user`, or `TBD`.
+- Every MVP feature should describe a real user-visible capability for this specific product.
+- Every workflow should describe concrete user or system actions for this product.
 {{
   "mvp_features": [
     {{"name": "feature name", "description": "what it does", "priority": 1}}
@@ -883,6 +1302,9 @@ Respond ONLY with valid JSON."#
 {template_context}{prior_context}{doc_context}
 
 Define the technical architecture in JSON format:
+- Use concrete domain entities, field names, relationships, and integrations from the prior phases.
+- Do not use placeholders like `field1: type`, `second entity`, `service name`, `constraint 1`, or `requirement 1`.
+- If there are no external integrations, return an empty `integrations` array instead of placeholder entries.
 {{
   "data_model": [
     {{"entity": "name", "fields": ["field1: type", "field2: type"], "relationships": ["relates to X"]}}
@@ -960,6 +1382,7 @@ Keep the section content plain and parse-safe:
 - Use normal markdown paragraphs and bullet lists only
 - Do not include JSON snippets or code fences inside section content
 - Avoid double-quoted literal examples inside section content; use backticks for enum values, field names, and literal strings
+- Use the same concrete project name and domain terms established in earlier phases. Do not reintroduce placeholders.
 
 Respond in JSON format:
 {{
@@ -1118,12 +1541,24 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                     "scope_exclusions"
                 ],
                 "properties": {
-                    "project_name": { "type": "string" },
-                    "elevator_pitch": { "type": "string" },
-                    "problem_statement": { "type": "string" },
-                    "target_users": { "type": "array", "items": { "type": "string" } },
-                    "success_criteria": { "type": "array", "items": { "type": "string" } },
-                    "scope_exclusions": { "type": "array", "items": { "type": "string" } }
+                    "project_name": { "type": "string", "minLength": 3 },
+                    "elevator_pitch": { "type": "string", "minLength": 20 },
+                    "problem_statement": { "type": "string", "minLength": 30 },
+                    "target_users": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": { "type": "string", "minLength": 3 }
+                    },
+                    "success_criteria": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": { "type": "string", "minLength": 8 }
+                    },
+                    "scope_exclusions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": { "type": "string", "minLength": 5 }
+                    }
                 }
             }),
             WizardPhase::Functionality => serde_json::json!({
@@ -1133,13 +1568,14 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                 "properties": {
                     "mvp_features": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
                             "required": ["name", "description", "priority"],
                             "properties": {
-                                "name": { "type": "string" },
-                                "description": { "type": "string" },
+                                "name": { "type": "string", "minLength": 3 },
+                                "description": { "type": "string", "minLength": 12 },
                                 "priority": { "type": "integer" }
                             }
                         }
@@ -1151,21 +1587,26 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                             "additionalProperties": false,
                             "required": ["name", "description", "rationale"],
                             "properties": {
-                                "name": { "type": "string" },
-                                "description": { "type": "string" },
-                                "rationale": { "type": "string" }
+                                "name": { "type": "string", "minLength": 3 },
+                                "description": { "type": "string", "minLength": 12 },
+                                "rationale": { "type": "string", "minLength": 8 }
                             }
                         }
                     },
                     "user_workflows": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
                             "required": ["name", "steps"],
                             "properties": {
-                                "name": { "type": "string" },
-                                "steps": { "type": "array", "items": { "type": "string" } }
+                                "name": { "type": "string", "minLength": 3 },
+                                "steps": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "items": { "type": "string", "minLength": 4 }
+                                }
                             }
                         }
                     }
@@ -1184,14 +1625,22 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                 "properties": {
                     "data_model": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
                             "required": ["entity", "fields", "relationships"],
                             "properties": {
-                                "entity": { "type": "string" },
-                                "fields": { "type": "array", "items": { "type": "string" } },
-                                "relationships": { "type": "array", "items": { "type": "string" } }
+                                "entity": { "type": "string", "minLength": 2 },
+                                "fields": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": { "type": "string", "minLength": 4 }
+                                },
+                                "relationships": {
+                                    "type": "array",
+                                    "items": { "type": "string", "minLength": 4 }
+                                }
                             }
                         }
                     },
@@ -1202,9 +1651,9 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                             "additionalProperties": false,
                             "required": ["service", "purpose", "api_type"],
                             "properties": {
-                                "service": { "type": "string" },
-                                "purpose": { "type": "string" },
-                                "api_type": { "type": "string" }
+                                "service": { "type": "string", "minLength": 2 },
+                                "purpose": { "type": "string", "minLength": 8 },
+                                "api_type": { "type": "string", "minLength": 2 }
                             }
                         }
                     },
@@ -1213,14 +1662,27 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                         "additionalProperties": false,
                         "required": ["languages", "frameworks", "database", "hosting"],
                         "properties": {
-                            "languages": { "type": "array", "items": { "type": "string" } },
-                            "frameworks": { "type": "array", "items": { "type": "string" } },
-                            "database": { "type": "string" },
+                            "languages": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": { "type": "string", "minLength": 2 }
+                            },
+                            "frameworks": {
+                                "type": "array",
+                                "items": { "type": "string", "minLength": 2 }
+                            },
+                            "database": { "type": "string", "minLength": 2 },
                             "hosting": { "type": "string" }
                         }
                     },
-                    "constraints": { "type": "array", "items": { "type": "string" } },
-                    "performance_requirements": { "type": "array", "items": { "type": "string" } }
+                    "constraints": {
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 4 }
+                    },
+                    "performance_requirements": {
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 4 }
+                    }
                 }
             }),
             WizardPhase::GapAnalysis => serde_json::json!({
@@ -1337,16 +1799,17 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                 "properties": {
                     "tasks": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
                             "required": ["description", "priority", "spec_section", "depends_on", "rationale", "size"],
                             "properties": {
-                                "description": { "type": "string" },
+                                "description": { "type": "string", "minLength": 6 },
                                 "priority": { "type": "integer" },
                                 "spec_section": { "type": ["string", "null"] },
                                 "depends_on": { "type": "array", "items": { "type": "integer" } },
-                                "rationale": { "type": "string" },
+                                "rationale": { "type": "string", "minLength": 6 },
                                 "size": { "type": "string", "enum": ["S", "M", "L", "XL"] }
                             }
                         }
@@ -1444,9 +1907,9 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                     "rationale"
                 ],
                 "properties": {
-                    "build_cmd": { "type": "string" },
-                    "test_cmd": { "type": "string" },
-                    "test_framework": { "type": "string" },
+                    "build_cmd": { "type": "string", "minLength": 1 },
+                    "test_cmd": { "type": "string", "minLength": 1 },
+                    "test_framework": { "type": "string", "minLength": 2 },
                     "pipeline_steps": {
                         "type": "array",
                         "items": {
@@ -1454,8 +1917,8 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                             "additionalProperties": false,
                             "required": ["name", "command", "sort_order", "required", "timeout"],
                             "properties": {
-                                "name": { "type": "string" },
-                                "command": { "type": "string" },
+                                "name": { "type": "string", "minLength": 2 },
+                                "command": { "type": "string", "minLength": 1 },
                                 "sort_order": { "type": "integer" },
                                 "required": { "type": "boolean" },
                                 "timeout": { "type": "integer" }
@@ -1469,15 +1932,15 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                             "additionalProperties": false,
                             "required": ["description", "depends_on_feature", "rationale"],
                             "properties": {
-                                "description": { "type": "string" },
+                                "description": { "type": "string", "minLength": 8 },
                                 "depends_on_feature": { "type": "integer" },
-                                "rationale": { "type": "string" }
+                                "rationale": { "type": "string", "minLength": 6 }
                             }
                         }
                     },
                     "build_timeout": { "type": "integer" },
                     "test_timeout": { "type": "integer" },
-                    "rationale": { "type": "string" }
+                    "rationale": { "type": "string", "minLength": 8 }
                 }
             }),
             WizardPhase::IterationMode => serde_json::json!({
@@ -1567,7 +2030,7 @@ fn extract_json_brute(text: &str) -> Option<String> {
     None
 }
 
-async fn parse_json_response(
+async fn parse_json_with_repairs(
     response: &str,
     provider: &dyn Provider,
     phase: WizardPhase,
@@ -1633,6 +2096,78 @@ Malformed response:
     Err(DialError::WizardError(
         "Failed to parse JSON response after multiple attempts. The AI provider returned invalid JSON.".to_string()
     ))
+}
+
+async fn enforce_phase_quality(
+    value: JsonValue,
+    provider: &dyn Provider,
+    phase: WizardPhase,
+    original_prompt: &str,
+    event_sink: Option<&WizardEventSink>,
+) -> Result<JsonValue> {
+    if !should_enforce_phase_quality(provider.name()) {
+        return Ok(value);
+    }
+
+    let issues = collect_phase_quality_issues(phase, &value);
+    if issues.is_empty() {
+        return Ok(value);
+    }
+
+    emit_wizard_event(
+        event_sink,
+        Event::Warning(format!(
+            "Wizard phase {} returned generic JSON. Retrying with semantic quality guidance.",
+            phase as i32
+        )),
+    );
+
+    let retry_prompt = format!(
+        r#"{original_prompt}
+
+Your previous JSON parsed successfully, but it still failed quality checks for this phase:
+{issues}
+
+Correct the JSON now.
+- Keep the same overall structure and required fields
+- Replace generic names and placeholders with concrete domain-specific terms
+- Do not use phrases like `unknown`, `feature name`, `workflow name`, `second entity`, `<entity>`, or `as defined in task 2`
+- Return ONLY valid JSON, with no markdown or explanation"#,
+        issues = issues
+            .iter()
+            .map(|issue| format!("- {}", issue))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    let retry_response = execute_wizard_prompt(provider, phase, &retry_prompt, event_sink).await?;
+    let corrected =
+        parse_json_with_repairs(&retry_response, provider, phase, &retry_prompt, event_sink)
+            .await?;
+    let remaining = collect_phase_quality_issues(phase, &corrected);
+    if remaining.is_empty() {
+        return Ok(corrected);
+    }
+
+    emit_saved_debug_artifact(event_sink, phase, "quality", &retry_response);
+
+    Err(DialError::WizardError(format!(
+        "Wizard phase {} still returned generic placeholder content after a quality retry: {}",
+        phase as i32,
+        remaining.join(" | ")
+    )))
+}
+
+async fn parse_json_response(
+    response: &str,
+    provider: &dyn Provider,
+    phase: WizardPhase,
+    original_prompt: &str,
+    event_sink: Option<&WizardEventSink>,
+) -> Result<JsonValue> {
+    let parsed =
+        parse_json_with_repairs(response, provider, phase, original_prompt, event_sink).await?;
+    enforce_phase_quality(parsed, provider, phase, original_prompt, event_sink).await
 }
 
 fn parse_json_candidate(response: &str) -> Option<JsonValue> {
@@ -2217,6 +2752,7 @@ Before producing the final task list, evaluate EVERY task on three dimensions:
    - GOOD: "Create users table with columns: id, email, password_hash, created_at"
 
 3. **TESTABILITY**: Success must be verifiable by running build + tests. If a task cannot be validated by automated checks, rewrite it so it can be.
+4. **NO PLACEHOLDERS**: Every task must stand on its own using concrete project nouns. Do not use phrases like `second entity`, `<entity>`, `feature name`, or `as defined in task 2`.
 
 ### Actions Required
 
@@ -2238,6 +2774,7 @@ Any task sized [XL] MUST be split. Do not leave XL tasks in the final list.
 Each task should be roughly one commit's worth of work (~30 minutes).
 In the `depends_on` array, use 0-based indices referring to other tasks in YOUR output array.
 For example, if the task at index 2 depends on the task at index 0, set `"depends_on": [0]`.
+Every task description must be self-contained. Do not refer to "the previous task", "task 2", or unnamed entities.
 
 Respond in JSON format:
 {{
@@ -2510,6 +3047,8 @@ For EACH feature task, decide:
 
 2. **Simple features** (config changes, single-function utilities, constants) include tests inline with the feature; no separate test task needed.
 
+Use concrete project terminology from the earlier phases. Do not use placeholders like `module`, `entity`, `<route>`, or `as defined in task 2`.
+
 ### Test Framework
 
 Based on the tech stack, suggest the appropriate test framework (e.g., `cargo test` for Rust, `pytest` for Python, `jest` for JavaScript/TypeScript, `go test` for Go).
@@ -2779,7 +3318,8 @@ pub fn build_iteration_mode_prompt_with_preference(
         .get("vision")
         .and_then(|v| v.get("project_name"))
         .and_then(|n| n.as_str())
-        .unwrap_or("unknown");
+        .filter(|name| !is_generic_project_name(name))
+        .unwrap_or("current project");
 
     let complexity_context = {
         let mut parts: Vec<String> = Vec::new();
@@ -3010,7 +3550,8 @@ pub fn run_wizard_phase_9(prd_conn: &Connection, state: &mut WizardState) -> Res
                     .and_then(|v| v.get("project_name"))
                     .and_then(|v| v.as_str())
             })
-            .unwrap_or("Unknown")
+            .filter(|name| !is_generic_project_name(name))
+            .unwrap_or("Current Project")
             .to_string();
         return Ok(LaunchSummary {
             project_name,
@@ -3050,7 +3591,8 @@ pub fn run_wizard_phase_9(prd_conn: &Connection, state: &mut WizardState) -> Res
         .get("vision")
         .and_then(|v| v.get("project_name"))
         .and_then(|v| v.as_str())
-        .unwrap_or("Unknown")
+        .filter(|name| !is_generic_project_name(name))
+        .unwrap_or("Current Project")
         .to_string();
 
     // 2. Count pending tasks from the DIAL database
@@ -3447,7 +3989,54 @@ fn format_template_context(template: &Template) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use serde_json::json;
+    use std::sync::Mutex;
+
+    struct TestProvider {
+        responses: Mutex<Vec<String>>,
+        name: &'static str,
+    }
+
+    impl TestProvider {
+        fn new(name: &'static str, responses: Vec<String>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                name,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        async fn execute(
+            &self,
+            _request: ProviderRequest,
+        ) -> Result<crate::provider::ProviderResponse> {
+            let output = self
+                .responses
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .remove(0);
+
+            Ok(crate::provider::ProviderResponse {
+                output,
+                success: true,
+                exit_code: Some(0),
+                usage: None,
+                model: Some("test-model".to_string()),
+                duration_secs: Some(0.1),
+            })
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
 
     // --- Prompt Content Tests ---
 
@@ -3466,6 +4055,117 @@ mod tests {
         let required = value["required"].as_array().unwrap();
         assert!(required.iter().any(|item| item == "project_name"));
         assert!(required.iter().any(|item| item == "target_users"));
+        assert_eq!(value["properties"]["project_name"]["minLength"], json!(3));
+        assert_eq!(value["properties"]["target_users"]["minItems"], json!(1));
+    }
+
+    #[test]
+    fn test_vision_prompt_requires_concrete_project_name() {
+        let state = WizardState::new("mvp");
+        let prompt = build_phase_prompt(WizardPhase::Vision, &state, None);
+
+        assert!(prompt.contains("must be a concrete product name"));
+        assert!(prompt.contains("Do not use generic names"));
+    }
+
+    #[test]
+    fn test_task_review_prompt_forbids_placeholder_language() {
+        let tasks = vec![(1, "Task".to_string(), 1, None)];
+        let prompt = build_task_review_prompt(&tasks, &json!({}));
+
+        assert!(prompt.contains("NO PLACEHOLDERS"));
+        assert!(prompt.contains("as defined in task 2"));
+    }
+
+    #[test]
+    fn test_build_project_summary_omits_generic_project_name() {
+        let gathered = json!({
+            "vision": {
+                "project_name": "unknown",
+                "problem_statement": "Coordinate volunteer rehearsals and music planning."
+            }
+        });
+
+        let summary = build_project_summary_context(&gathered);
+        assert!(!summary.contains("- Project: unknown"));
+        assert!(summary.contains("- Problem: Coordinate volunteer rehearsals"));
+    }
+
+    #[test]
+    fn test_collect_phase_quality_issues_flags_placeholder_task_language() {
+        let data = json!({
+            "tasks": [
+                {
+                    "description": "Add support for the second entity as defined in task 2",
+                    "priority": 1,
+                    "spec_section": "1.2",
+                    "depends_on": [],
+                    "rationale": "Implements placeholder feature name",
+                    "size": "M"
+                }
+            ],
+            "removed": [],
+            "added": [],
+            "splits": [],
+            "rewrites": [],
+            "merges": [],
+            "sizing_summary": {
+                "S": 0, "M": 1, "L": 0, "XL": 0,
+                "total_splits": 0, "total_rewrites": 0, "total_merges": 0
+            }
+        });
+
+        let issues = collect_phase_quality_issues(WizardPhase::TaskReview, &data);
+        assert!(!issues.is_empty());
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("tasks[0].description")));
+    }
+
+    #[test]
+    fn test_placeholder_detection_allows_legitimate_feature_name_prose() {
+        assert!(!has_placeholder_language(
+            "User enters feature names and descriptions one at a time"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_parse_json_response_retries_generic_vision_output() {
+        let provider = TestProvider::new(
+            "copilot",
+            vec![serde_json::to_string(&json!({
+                "project_name": "ChoirCue",
+                "elevator_pitch": "ChoirCue helps worship teams schedule rehearsals and share service plans.",
+                "problem_statement": "Volunteer music teams struggle to coordinate rehearsals, song assignments, and service notes without losing changes in scattered group chats.",
+                "target_users": ["worship leaders", "choir members"],
+                "success_criteria": ["Rehearsal plans stay in one shared timeline", "Song assignments update without manual follow-up"],
+                "scope_exclusions": ["full church accounting", "livestream production control"]
+            }))
+            .unwrap()],
+        );
+
+        let initial = serde_json::to_string(&json!({
+            "project_name": "unknown",
+            "elevator_pitch": "A project for users.",
+            "problem_statement": "Solve TBD issues for the app.",
+            "target_users": ["some users"],
+            "success_criteria": ["successful outcome"],
+            "scope_exclusions": ["various extras"]
+        }))
+        .unwrap();
+
+        let parsed = parse_json_response(
+            &initial,
+            &provider,
+            WizardPhase::Vision,
+            "Return valid JSON for phase 1.",
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(parsed["project_name"], json!("ChoirCue"));
+        assert_eq!(parsed["target_users"][0], json!("worship leaders"));
     }
 
     #[test]
