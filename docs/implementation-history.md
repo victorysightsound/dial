@@ -2,6 +2,17 @@
 
 ## Version Timeline
 
+### v4.1.1 (March 2026) - Command Input Hardening
+
+Patch release focused on preventing Unicode dash characters from breaking command execution:
+
+- Normalizes obvious Unicode dash flag input in `build_cmd`, `test_cmd`, and validation pipeline commands
+- Re-checks commands before execution so existing bad config values no longer block `dial validate`
+- Adds prompt guidance telling AI providers to use ASCII hyphen-minus characters in commands, flags, JSON, and code
+- Covers config writes, wizard-generated commands, manual pipeline steps, and execution-time validation with regression tests
+
+No schema migrations needed.
+
 ### v4.1.0 (March 2026) — Loop Accuracy & Hardening
 
 7 enhancements targeting first-attempt success rate, spec quality, and reliability:
@@ -133,6 +144,7 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 3.2.0 | + 9-phase wizard | Yes | 201 |
 | 4.0.0 | + Engine hardening | Yes | 308 |
 | 4.1.0 | + Loop accuracy, hardening & spec enforcement | Yes | 364 |
+| 4.1.1 | + Command input hardening | Yes | 364+ |
 
 ## Performance
 
