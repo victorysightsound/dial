@@ -2,6 +2,16 @@
 
 ## Version Timeline
 
+### v4.1.3 (March 2026) - Documentation Alignment
+
+Patch release to bring the top-level changelog back in sync with shipped releases:
+
+- Adds `4.1.1` and `4.1.2` entries to `CHANGELOG.md`
+- Publishes a canonical release so the repository, GitHub release, crates.io packages, and local installs all reflect the same documentation state
+- No runtime behavior changes
+
+No schema migrations needed.
+
 ### v4.1.2 (March 2026) - Release Alignment & Publishability
 
 Patch release to align all distribution channels on one canonical revision:
@@ -156,6 +166,7 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 4.1.0 | + Loop accuracy, hardening & spec enforcement | Yes | 364 |
 | 4.1.1 | + Command input hardening | Yes | 364+ |
 | 4.1.2 | + Release alignment & publishability | Yes | 364+ |
+| 4.1.3 | + Documentation alignment | Yes | 364+ |
 
 ## Performance
 

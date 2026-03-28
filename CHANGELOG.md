@@ -1,5 +1,37 @@
 # Changelog
 
+## 4.1.3 — 2026-03-28
+
+Documentation alignment release. No runtime behavior changes.
+
+### Changelog Catch-Up
+- adds the missing `4.1.1` and `4.1.2` release notes to this changelog
+- keeps the repository, release tag, crates.io packages, and installed binary aligned on one canonical version after the documentation update
+
+---
+
+## 4.1.2 — 2026-03-28
+
+Release alignment and publishability patch. No runtime behavior changes beyond the Unicode-dash hardening shipped in `4.1.1`.
+
+### Release Alignment & Publishability
+- rolls the crates.io publish metadata fix into an official tagged release
+- keeps GitHub release assets, crates.io packages, `main`, and local installs aligned on the same revision
+
+---
+
+## 4.1.1 — 2026-03-28
+
+Command input hardening release focused on preventing Unicode dash characters from breaking command execution.
+
+### Command Input Hardening
+- normalizes obvious Unicode dash flag input in `build_cmd`, `test_cmd`, and validation pipeline commands
+- re-checks commands before execution so existing bad config values no longer block `dial validate`
+- adds prompt guidance telling AI providers to use ASCII hyphen-minus characters in commands, flags, JSON, and code
+- covers config writes, wizard-generated commands, manual pipeline steps, and execution-time validation with regression tests
+
+---
+
 ## 4.1.0 — 2026-03-13
 
 4 enhancements to the wizard and iteration systems. 354 total tests (up from 308).
