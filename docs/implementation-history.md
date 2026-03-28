@@ -2,6 +2,16 @@
 
 ## Version Timeline
 
+### v4.1.2 (March 2026) - Release Alignment & Publishability
+
+Patch release to align all distribution channels on one canonical revision:
+
+- Rolls the crates.io publish metadata fix into an official tagged release
+- Keeps GitHub release assets, crates.io packages, `main`, and local installs aligned on the same version
+- No runtime behavior changes beyond the Unicode-dash hardening shipped in v4.1.1
+
+No schema migrations needed.
+
 ### v4.1.1 (March 2026) - Command Input Hardening
 
 Patch release focused on preventing Unicode dash characters from breaking command execution:
@@ -145,6 +155,7 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 4.0.0 | + Engine hardening | Yes | 308 |
 | 4.1.0 | + Loop accuracy, hardening & spec enforcement | Yes | 364 |
 | 4.1.1 | + Command input hardening | Yes | 364+ |
+| 4.1.2 | + Release alignment & publishability | Yes | 364+ |
 
 ## Performance
 
