@@ -12,6 +12,16 @@ DIAL interacts with AI tools in three ways:
 | **Orchestrated** | DIAL generates a prompt, you paste it into the AI | Semi-automated |
 | **Auto-run** | DIAL spawns the AI as a subprocess per task | Fully automated |
 
+## Wizard Backends
+
+The project wizard uses its own backend selection path for `dial new` and `dial spec wizard`.
+
+- Supported wizard backends: `codex`, `claude`, `copilot`, `gemini`, `openai-compatible`
+- Pass `--wizard-backend` to choose explicitly
+- Set `wizard_backend` in project config to make the choice sticky
+- If DIAL can detect the active session backend, it uses that automatically
+- If multiple supported CLIs are installed and no clear hint exists, DIAL stops and asks you to choose instead of guessing
+
 ## DIAL Signals
 
 When DIAL generates prompts for AI tools (via `dial orchestrate` or `dial auto-run`), it instructs the AI to signal completion via a JSON file.
@@ -100,6 +110,8 @@ dial auto-run --cli codex --max 10
 
 DIAL uses `cat .dial/subagent_prompt.md | codex exec --skip-git-repo-check` to run tasks.
 
+For wizard usage, DIAL runs Codex in a lower-friction noninteractive mode with reduced reasoning/verbosity and web search disabled so short structured prompts stay responsive.
+
 ### Manual Orchestration
 
 ```bash
@@ -122,9 +134,29 @@ dial auto-run --cli gemini --max 10
 
 DIAL uses `cat .dial/subagent_prompt.md | gemini -p -` to run tasks.
 
-## GitHub Copilot (VS Code)
+## GitHub Copilot CLI
 
-Copilot doesn't have a standalone CLI, so auto-run mode isn't available. Instead, use DIAL in manual or orchestrated mode alongside Copilot Chat in VS Code. This works on all platforms including Windows.
+### Setup
+
+Install GitHub Copilot CLI and ensure the `copilot` command is available.
+
+### Auto-Run Mode
+
+```bash
+dial auto-run --cli copilot --max 10
+```
+
+### Wizard Usage
+
+```bash
+dial new --template mvp --wizard-backend copilot
+```
+
+DIAL runs Copilot in noninteractive silent mode for both auto-run and wizard phases.
+
+## GitHub Copilot in VS Code
+
+If you prefer Copilot inside VS Code instead of the standalone CLI, use DIAL in manual or orchestrated mode alongside Copilot Chat in VS Code. This works on all platforms including Windows.
 
 ### Setup
 

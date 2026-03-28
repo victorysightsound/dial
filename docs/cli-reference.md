@@ -45,7 +45,7 @@ dial init --no-agents
 Full 9-phase guided project setup. One command from zero to autonomous iteration.
 
 ```bash
-dial new [--template NAME] [--from PATH] [--resume] [--phase NUMBER]
+dial new [--template NAME] [--from PATH] [--resume] [--phase NAME] [--wizard-backend NAME] [--wizard-model MODEL]
 ```
 
 | Flag | Default | Description |
@@ -53,7 +53,9 @@ dial new [--template NAME] [--from PATH] [--resume] [--phase NUMBER]
 | `--template` | `spec` | PRD template: `spec`, `architecture`, `api`, or `mvp` |
 | `--from` | (none) | Existing document to refine through the wizard |
 | `--resume` | false | Resume from where the wizard left off |
-| `--phase` | (none) | Start at a specific phase number (1-9) |
+| `--phase` | `default` | Name for the `.dial/<phase>.db` project phase |
+| `--wizard-backend` | auto-resolved | Wizard backend: `codex`, `claude`, `copilot`, `gemini`, or `openai-compatible` |
+| `--wizard-model` | (none) | Optional model override for the selected wizard backend |
 
 **Phases:**
 
@@ -73,11 +75,13 @@ dial new [--template NAME] [--from PATH] [--resume] [--phase NUMBER]
 
 ```bash
 dial new --template mvp
+dial new --template mvp --wizard-backend copilot
 dial new --template spec --from docs/existing-prd.md
 dial new --resume
 ```
 
 State persists in `prd.db` after every phase. Close the terminal at any point and resume later with `--resume`.
+If multiple wizard backends are installed and DIAL cannot detect an active session backend, pass `--wizard-backend` explicitly.
 
 ## Specification
 
@@ -94,8 +98,8 @@ dial index [--dir PATH]
 Manage specifications and PRD sections.
 
 ```bash
-dial spec import --dir PATH          # Import markdown into prd.db
-dial spec wizard --template NAME     # Run phases 1-5 only (PRD generation)
+dial spec import --dir PATH                                       # Import markdown into prd.db
+dial spec wizard --template NAME [--resume] [--wizard-backend B]  # Run phases 1-5 only (PRD generation)
 dial spec migrate                    # Migrate legacy spec_sections to prd.db
 
 dial spec list                       # List all PRD sections (hierarchical)
@@ -115,7 +119,8 @@ dial spec show ID                    # Legacy section display
 
 ```bash
 dial spec import --dir specs
-dial spec wizard --template mvp --from docs/existing-prd.md --resume
+dial spec wizard --template mvp --wizard-backend codex
+dial spec wizard --template mvp --from docs/existing-prd.md --resume --wizard-backend copilot
 dial spec prd 1.2
 dial spec prd-search "authentication"
 dial spec term add "API" "Application Programming Interface" -c technical
@@ -286,7 +291,7 @@ dial auto-run [--max N] [--cli NAME] [--dry-run]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--max` | (none) | Maximum number of tasks to process |
-| `--cli` | `claude` | AI CLI: `claude`, `codex`, or `gemini` |
+| `--cli` | `claude` | AI CLI: `claude`, `codex`, `copilot`, or `gemini` |
 | `--dry-run` | false | Show task execution order without running |
 
 **Signal parsing:** After each subprocess exits, DIAL first checks for `.dial/signal.json` (structured JSON signals). If the file doesn't exist, it falls back to regex parsing of stdout for `DIAL_COMPLETE`, `DIAL_BLOCKED`, and `DIAL_LEARNING` signals.

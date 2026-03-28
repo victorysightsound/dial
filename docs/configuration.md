@@ -31,7 +31,10 @@ Configuration is stored in the SQLite database as key-value pairs. Manage with `
 | `test_cmd` | (empty) | Shell command to run tests |
 | `build_timeout` | `600` | Build command timeout in seconds |
 | `test_timeout` | `600` | Test command timeout in seconds |
-| `ai_cli` | `claude` | AI CLI for auto-run: `claude`, `codex`, or `gemini` |
+| `ai_cli` | `claude` | AI CLI for auto-run: `claude`, `codex`, `copilot`, or `gemini` |
+| `wizard_backend` | auto-resolved | Wizard backend for `dial new` / `dial spec wizard`: `codex`, `claude`, `copilot`, `gemini`, or `openai-compatible` |
+| `wizard_model` | (empty) | Optional model override for the selected wizard backend |
+| `wizard_api_base_url` | (empty) | Base URL for the `openai-compatible` wizard backend |
 | `subagent_timeout` | `1800` | Per-task timeout for auto-run in seconds |
 | `approval_mode` | `auto` | Approval gate: `auto`, `review`, or `manual` |
 | `iteration_mode` | `autonomous` | Auto-run behavior: `autonomous`, `review_every:N`, or `review_each` |
@@ -46,8 +49,19 @@ dial config set test_cmd "cargo test"
 dial config set build_timeout 300
 dial config set test_timeout 300
 dial config set ai_cli claude
+dial config set wizard_backend copilot
+dial config set wizard_model gpt-5.4-mini
 dial config set subagent_timeout 900
 ```
+
+Wizard backend resolution order is:
+1. `--wizard-backend`
+2. `wizard_backend`
+3. `ai_cli`
+4. active session hint (for example Codex)
+5. exactly one installed supported CLI
+
+If multiple supported CLIs are installed and no explicit/configured backend is available, DIAL stops and asks you to choose instead of guessing.
 
 ### Viewing Configuration
 

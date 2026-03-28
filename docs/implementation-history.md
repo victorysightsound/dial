@@ -2,6 +2,19 @@
 
 ## Version Timeline
 
+### v4.2.0 (March 2026) - Wizard Backend & Mac Hardening
+
+Feature release focused on making the project wizard backend-agnostic, observable, and resilient in real CLI-backed runs:
+
+- Shared wizard backend resolution for both `dial new` and `dial spec wizard`
+- Supports `codex`, `claude`, `copilot`, `gemini`, and `openai-compatible`
+- Uses the active session backend when detectable and otherwise requires an explicit backend if multiple CLIs are installed
+- Adds phase progress diagnostics, launch summaries, and backend-specific hardening for Copilot and Codex
+- Fixes `dial new --resume`, persistent wizard state updates, and phase-5 linked task creation
+- Adds JSON repair/regenerate recovery so malformed backend output can self-heal instead of aborting the run
+
+399 tests. No schema migrations needed.
+
 ### v4.1.3 (March 2026) - Documentation Alignment
 
 Patch release to bring the top-level changelog back in sync with shipped releases:
@@ -167,10 +180,11 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 4.1.1 | + Command input hardening | Yes | 364+ |
 | 4.1.2 | + Release alignment & publishability | Yes | 364+ |
 | 4.1.3 | + Documentation alignment | Yes | 364+ |
+| 4.2.0 | + Wizard backends, visibility & Mac hardening | Yes | 399 |
 
 ## Performance
 
-| Metric | v2.0 | v4.1 |
+| Metric | v2.0 | v4.2 |
 |--------|------|------|
 | Startup | ~14ms | ~14ms |
 | Binary size | 4.0MB | ~5MB |

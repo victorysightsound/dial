@@ -8,6 +8,7 @@ This guide walks through installing DIAL, setting up your first project, and run
 - An AI coding tool (optional but recommended):
   - [Claude Code](https://claude.ai/download) (`claude` CLI) — supports auto-run
   - [Codex CLI](https://github.com/openai/codex) (`codex`) — supports auto-run
+  - [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/coding-agent/customizing-the-development-environment-for-copilot-coding-agent) (`copilot`) — supports auto-run
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) — supports auto-run
   - [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) in VS Code — manual/orchestrated mode
   - [Cursor](https://cursor.sh), [Windsurf](https://codeium.com/windsurf), or any AI editor — manual/orchestrated mode
@@ -61,6 +62,12 @@ dial --version
 ## Your First Project
 
 There are two ways to use DIAL: with just tasks (fastest start) or with the full project wizard (`dial new`) which guides you through spec creation, task generation, and build/test configuration. The wizard enforces spec specificity (Phase 4 rewrites vague requirements), right-sizes tasks (Phase 6 splits oversized tasks), and generates test tasks (Phase 7 pairs tests with features). You can always start with just tasks and add a spec later.
+
+If you have multiple supported AI CLIs installed, pass `--wizard-backend` on your first wizard run unless DIAL can clearly detect the active session backend:
+
+```bash
+dial new --template mvp --wizard-backend copilot
+```
 
 ### 1. Initialize
 

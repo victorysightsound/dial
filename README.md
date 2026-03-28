@@ -112,6 +112,12 @@ git init
 dial new --template mvp
 ```
 
+The wizard can run through `codex`, `claude`, `copilot`, `gemini`, or an OpenAI-compatible API. If DIAL can detect the current agent session, it uses that backend automatically. Otherwise, pass one explicitly:
+
+```bash
+dial new --template mvp --wizard-backend copilot
+```
+
 | Phase | Name | What Happens |
 |-------|------|-------------|
 | 1 | **Vision** | AI identifies the problem, target users, success criteria |
@@ -129,6 +135,8 @@ After the wizard completes, start building:
 ```bash
 dial auto-run --cli claude
 ```
+
+Supported auto-run CLIs are `claude`, `codex`, `copilot`, and `gemini`.
 
 ### Pause & Resume
 
@@ -214,7 +222,7 @@ dial config set test_cmd "cargo test"
 
 # 2. Import or create a spec
 dial spec import --dir specs           # From markdown files
-dial spec wizard --template mvp        # AI-guided (phases 1-5 only)
+dial spec wizard --template mvp --wizard-backend codex
 
 # 3. Add tasks
 dial task add "Create user model" -p 1 --spec 1
@@ -225,7 +233,7 @@ dial task depends 2 1
 dial iterate          # One task at a time
 dial validate         # Build, test, commit
 # or
-dial auto-run --cli claude --max 10   # Fully autonomous
+dial auto-run --cli copilot --max 10   # Fully autonomous
 ```
 
 `dial spec wizard` runs phases 1-5 only (PRD generation). Use `dial new` for the full 9-phase flow.
@@ -248,7 +256,7 @@ Add `dial-core` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dial-core = "4.1"
+dial-core = "4.2"
 tokio = { version = "1", features = ["full"] }
 ```
 

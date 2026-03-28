@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.2.0 — 2026-03-28
+
+Wizard backend and Mac hardening release.
+
+### Wizard Backend Selection
+- adds shared backend resolution for both `dial new` and `dial spec wizard`
+- supports `codex`, `claude`, `copilot`, `gemini`, and `openai-compatible` wizard backends
+- uses the active session backend when it can be detected and requires an explicit choice when multiple backends are installed but no clear hint exists
+- adds `--wizard-backend` and `--wizard-model` flags for both wizard entry points
+
+### Wizard Reliability & Visibility
+- emits clearer phase progress, prompt size, timing, and launch summary output during wizard runs
+- fixes resume behavior so paused `dial new --resume` runs reopen the existing project instead of reinitializing it
+- updates wizard state in place, fixes generated task linkage to `prd_section_id`, and keeps later phases resumable
+- adds JSON repair and regenerate recovery paths so malformed backend responses no longer abort the wizard immediately
+
+### CLI Backend Hardening
+- adds GitHub Copilot CLI support across wizard and auto-run paths
+- tunes Codex CLI passthrough for noninteractive wizard calls by disabling web search and lowering reasoning/verbosity
+- prefers the chosen wizard CLI when writing `ai_cli` during phase 8 so launch configuration matches the backend that completed the wizard
+
+### Verification
+- fresh Mac end-to-end runs completed for `dial new --template mvp --wizard-backend copilot`
+- fresh Mac end-to-end runs completed for default `dial new --template mvp` with automatic Codex selection
+- fresh Mac end-to-end runs completed for `dial spec wizard --template mvp --wizard-backend copilot`
+- workspace test suite passed with 399 tests
+
+No schema migrations needed.
+
+---
+
 ## 4.1.3 — 2026-03-28
 
 Documentation alignment release. No runtime behavior changes.
