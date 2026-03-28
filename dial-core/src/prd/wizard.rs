@@ -197,6 +197,36 @@ const SUBSTRING_PLACEHOLDER_PHRASES: &[&str] = &[
     "insert here",
 ];
 
+const GENERATE_EXACT_PLACEHOLDER_PHRASES: &[&str] = &[
+    "feature name",
+    "workflow name",
+    "service name",
+    "entity name",
+    "field1",
+    "field 1",
+    "field2",
+    "field 2",
+];
+
+const ANGLE_PLACEHOLDER_KEYWORDS: &[&str] = &[
+    "project",
+    "feature",
+    "workflow",
+    "service",
+    "entity",
+    "field",
+    "value",
+    "token",
+    "email",
+    "password",
+    "id",
+    "name",
+    "type",
+    "path",
+    "slug",
+    "section",
+];
+
 fn normalize_quality_text(text: &str) -> String {
     text.chars()
         .map(|ch| {
@@ -212,11 +242,7 @@ fn normalize_quality_text(text: &str) -> String {
         .join(" ")
 }
 
-fn has_placeholder_language(text: &str) -> bool {
-    if text.contains('<') && text.contains('>') {
-        return true;
-    }
-
+fn has_literal_placeholder_terms(text: &str) -> bool {
     let normalized = normalize_quality_text(text);
     !normalized.is_empty()
         && (EXACT_PLACEHOLDER_PHRASES
@@ -225,6 +251,72 @@ fn has_placeholder_language(text: &str) -> bool {
             || SUBSTRING_PLACEHOLDER_PHRASES
                 .iter()
                 .any(|phrase| normalized.contains(phrase)))
+}
+
+fn contains_named_angle_placeholder(text: &str) -> bool {
+    let mut search_from = 0;
+    while let Some(open_offset) = text[search_from..].find('<') {
+        let open = search_from + open_offset;
+        let Some(close_offset) = text[open + 1..].find('>') else {
+            break;
+        };
+        let close = open + 1 + close_offset;
+        if is_named_angle_placeholder(&text[open + 1..close]) {
+            return true;
+        }
+        search_from = close + 1;
+    }
+
+    false
+}
+
+fn is_named_angle_placeholder(candidate: &str) -> bool {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() || trimmed.len() > 40 {
+        return false;
+    }
+
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ' '))
+    {
+        return false;
+    }
+
+    let normalized = normalize_quality_text(trimmed);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    trimmed.contains('-')
+        || trimmed.contains('_')
+        || ANGLE_PLACEHOLDER_KEYWORDS
+            .iter()
+            .any(|keyword| normalized == *keyword || normalized.contains(keyword))
+}
+
+fn has_placeholder_language(text: &str) -> bool {
+    if contains_named_angle_placeholder(text) {
+        return true;
+    }
+
+    has_literal_placeholder_terms(text)
+}
+
+fn has_generate_placeholder_language(text: &str) -> bool {
+    let normalized = normalize_quality_text(text);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    GENERATE_EXACT_PLACEHOLDER_PHRASES
+        .iter()
+        .any(|phrase| normalized == *phrase)
+        || SUBSTRING_PLACEHOLDER_PHRASES
+            .iter()
+            .any(|phrase| normalized.contains(phrase))
+        || (normalized.split_whitespace().count() <= 8
+            && matches!(normalized.as_str(), "placeholder" | "todo" | "tbd"))
 }
 
 fn is_generic_project_name(name: &str) -> bool {
@@ -504,15 +596,22 @@ fn collect_phase_quality_issues(phase: WizardPhase, value: &JsonValue) -> Vec<St
                     issues.push("`sections` must contain generated PRD content.".to_string());
                 }
                 for (index, section) in sections.iter().enumerate().take(4) {
-                    push_quality_issue_for_text(
-                        &mut issues,
-                        &format!("sections[{index}].content"),
-                        section
-                            .get("content")
-                            .and_then(|item| item.as_str())
-                            .unwrap_or(""),
-                        4,
-                    );
+                    let content = section
+                        .get("content")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("");
+                    if content.trim().is_empty() {
+                        issues.push(format!("`sections[{index}].content` is empty."));
+                    } else if has_generate_placeholder_language(content) {
+                        issues.push(format!(
+                            "`sections[{index}].content` still contains placeholder language: {}",
+                            truncate_for_prompt(content, 120)
+                        ));
+                    } else if content.split_whitespace().count() < 4 {
+                        issues.push(format!(
+                            "`sections[{index}].content` is too short to guide implementation. Make it more concrete."
+                        ));
+                    }
                 }
             } else {
                 issues.push("`sections` must be an array of generated PRD sections.".to_string());
@@ -4127,6 +4226,74 @@ mod tests {
         assert!(!has_placeholder_language(
             "User enters feature names and descriptions one at a time"
         ));
+    }
+
+    #[test]
+    fn test_placeholder_detection_allows_comparison_operators() {
+        assert!(!has_placeholder_language(
+            "Set is_valid to true when content length is >= 50 characters and false when content length is < 50 characters."
+        ));
+    }
+
+    #[test]
+    fn test_placeholder_detection_still_flags_named_angle_placeholders() {
+        assert!(has_placeholder_language(
+            "Run `launchpad export <project-name>` after validation passes."
+        ));
+        assert!(has_placeholder_language(
+            "Store the selection under <id> before continuing."
+        ));
+    }
+
+    #[test]
+    fn test_generate_quality_allows_angle_bracket_cli_examples() {
+        let data = json!({
+            "sections": [
+                {
+                    "title": "MVP Features",
+                    "content": "Run `launchpad export <project-name>` to write the final Markdown file after validation passes."
+                }
+            ],
+            "terminology": []
+        });
+
+        let issues = collect_phase_quality_issues(WizardPhase::Generate, &data);
+        assert!(issues.is_empty(), "unexpected generate issues: {issues:?}");
+    }
+
+    #[test]
+    fn test_generate_quality_allows_placeholder_terms_in_explanatory_prose() {
+        let data = json!({
+            "sections": [
+                {
+                    "title": "Validation",
+                    "content": "Reject answers that only contain placeholder strings such as TBD, TODO, or lorem ipsum so users cannot save incomplete PRD sections."
+                }
+            ],
+            "terminology": []
+        });
+
+        let issues = collect_phase_quality_issues(WizardPhase::Generate, &data);
+        assert!(issues.is_empty(), "unexpected generate issues: {issues:?}");
+    }
+
+    #[test]
+    fn test_generate_quality_rejects_short_todo_sections() {
+        let data = json!({
+            "sections": [
+                {
+                    "title": "Validation",
+                    "content": "TODO"
+                }
+            ],
+            "terminology": []
+        });
+
+        let issues = collect_phase_quality_issues(WizardPhase::Generate, &data);
+        assert!(
+            issues.iter().any(|issue| issue.contains("placeholder language")),
+            "expected placeholder issue, got {issues:?}"
+        );
     }
 
     #[tokio::test]
