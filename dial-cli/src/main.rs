@@ -1,9 +1,10 @@
 mod cli_handler;
+mod wizard_backend;
 
 use clap::{Parser, Subcommand};
 use dial_core::*;
-use dial_providers::AnthropicProvider;
 use std::sync::Arc;
+use wizard_backend::resolve_wizard_provider;
 
 #[derive(Parser)]
 #[command(name = "dial")]
@@ -49,6 +50,14 @@ enum Commands {
         /// Phase name
         #[arg(long, default_value = DEFAULT_PHASE)]
         phase: String,
+
+        /// Wizard backend (codex, claude, copilot, gemini, openai-compatible)
+        #[arg(long = "wizard-backend", alias = "backend")]
+        wizard_backend: Option<String>,
+
+        /// Optional model override for the selected wizard backend
+        #[arg(long = "wizard-model", alias = "model")]
+        wizard_model: Option<String>,
     },
 
     /// Index spec files (deprecated: use 'dial spec import' instead)
@@ -205,7 +214,7 @@ enum Commands {
         #[arg(long)]
         max: Option<u32>,
 
-        /// AI CLI to use (claude, codex, gemini)
+        /// AI CLI to use (claude, codex, copilot, gemini)
         #[arg(long, default_value = "claude")]
         cli: String,
 
@@ -222,10 +231,7 @@ enum Commands {
 #[derive(Subcommand)]
 enum ConfigCommands {
     /// Set a config value
-    Set {
-        key: String,
-        value: String,
-    },
+    Set { key: String, value: String },
     /// Show all config
     Show,
 }
@@ -313,6 +319,12 @@ enum SpecCommands {
         /// Resume a paused wizard session
         #[arg(long)]
         resume: bool,
+        /// Wizard backend (codex, claude, copilot, gemini, openai-compatible)
+        #[arg(long = "wizard-backend", alias = "backend")]
+        wizard_backend: Option<String>,
+        /// Optional model override for the selected wizard backend
+        #[arg(long = "wizard-model", alias = "model")]
+        wizard_model: Option<String>,
     },
     /// Migrate existing spec_sections into prd.db
     Migrate,
@@ -467,22 +479,39 @@ async fn main() {
 
 async fn run_command(command: Commands) -> Result<()> {
     // Init creates a new engine — handled separately
-    if let Commands::Init { phase, import_solutions, no_agents } = command {
+    if let Commands::Init {
+        phase,
+        import_solutions,
+        no_agents,
+    } = command
+    {
         let mut engine = Engine::init(&phase, import_solutions.as_deref(), !no_agents).await?;
         engine.on_event(Arc::new(cli_handler::CliEventHandler));
         return Ok(());
     }
 
     // New creates a project and runs the full wizard (phases 1-9)
-    if let Commands::New { template, from, resume, phase } = command {
-        let mut engine = Engine::init(&phase, None, true).await?;
+    if let Commands::New {
+        template,
+        from,
+        resume,
+        phase,
+        wizard_backend,
+        wizard_model,
+    } = command
+    {
+        let resolved = resolve_wizard_provider(wizard_backend.as_deref(), wizard_model.as_deref())?;
+        let mut engine = open_or_init_new_engine(&phase, resume).await?;
         engine.on_event(Arc::new(cli_handler::CliEventHandler));
+        println!(
+            "{}",
+            output::dim(&format!("Wizard backend: {}", resolved.backend.as_str()))
+        );
+        engine.set_provider(resolved.provider);
 
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| errors::DialError::ProviderRequired)?;
-        engine.set_provider(Arc::new(AnthropicProvider::new(api_key)));
-
-        engine.new_project(&template, from.as_deref(), resume).await?;
+        engine
+            .new_project(&template, from.as_deref(), resume)
+            .await?;
         return Ok(());
     }
 
@@ -510,7 +539,12 @@ async fn run_command(command: Commands) -> Result<()> {
         },
 
         Commands::Task { command } => match command {
-            Some(TaskCommands::Add { description, priority, spec, after }) => {
+            Some(TaskCommands::Add {
+                description,
+                priority,
+                spec,
+                after,
+            }) => {
                 let task_id = engine.task_add(&description, priority, spec).await?;
                 for dep_id in after {
                     engine.task_depends(task_id, dep_id).await?;
@@ -546,7 +580,13 @@ async fn run_command(command: Commands) -> Result<()> {
             Some(TaskCommands::Chronic { threshold }) => {
                 let results = engine.chronic_failures(threshold).await?;
                 if results.is_empty() {
-                    println!("{}", output::dim(&format!("No tasks with {} or more total failures.", threshold)));
+                    println!(
+                        "{}",
+                        output::dim(&format!(
+                            "No tasks with {} or more total failures.",
+                            threshold
+                        ))
+                    );
                 } else {
                     println!("{}", output::bold("Chronic Failures"));
                     println!("{}", "=".repeat(70));
@@ -565,134 +605,181 @@ async fn run_command(command: Commands) -> Result<()> {
             }
         },
 
-        Commands::Spec { command } => match command {
-            Some(SpecCommands::Search { query }) => {
-                engine.spec_search(&query).await?;
-            }
-            Some(SpecCommands::Show { id }) => {
-                engine.spec_show(id).await?;
-            }
-            Some(SpecCommands::List) => {
-                // If prd.db exists, show PRD sections; otherwise legacy
-                if dial_core::prd::prd_db_exists() {
-                    let sections = engine.prd_list().await?;
-                    if sections.is_empty() {
-                        println!("{}", output::dim("No PRD sections. Run 'dial spec import' or 'dial spec wizard'."));
+        Commands::Spec { command } => {
+            match command {
+                Some(SpecCommands::Search { query }) => {
+                    engine.spec_search(&query).await?;
+                }
+                Some(SpecCommands::Show { id }) => {
+                    engine.spec_show(id).await?;
+                }
+                Some(SpecCommands::List) => {
+                    // If prd.db exists, show PRD sections; otherwise legacy
+                    if dial_core::prd::prd_db_exists() {
+                        let sections = engine.prd_list().await?;
+                        if sections.is_empty() {
+                            println!("{}", output::dim("No PRD sections. Run 'dial spec import' or 'dial spec wizard'."));
+                        } else {
+                            println!("{}", output::bold("PRD Sections"));
+                            println!("{}", "=".repeat(60));
+                            for s in &sections {
+                                let indent = "  ".repeat((s.level - 1) as usize);
+                                println!(
+                                    "{}{} {} ({} words)",
+                                    indent, s.section_id, s.title, s.word_count
+                                );
+                            }
+                        }
                     } else {
-                        println!("{}", output::bold("PRD Sections"));
-                        println!("{}", "=".repeat(60));
-                        for s in &sections {
-                            let indent = "  ".repeat((s.level - 1) as usize);
-                            println!("{}{} {} ({} words)", indent, s.section_id, s.title, s.word_count);
+                        engine.spec_list().await?;
+                    }
+                }
+                Some(SpecCommands::Import { dir }) => {
+                    engine.prd_import(&dir).await?;
+                }
+                Some(SpecCommands::Wizard {
+                    template,
+                    from,
+                    resume,
+                    wizard_backend,
+                    wizard_model,
+                }) => {
+                    let resolved = resolve_wizard_provider(
+                        wizard_backend.as_deref(),
+                        wizard_model.as_deref(),
+                    )?;
+                    println!(
+                        "{}",
+                        output::dim(&format!("Wizard backend: {}", resolved.backend.as_str()))
+                    );
+                    engine.set_provider(resolved.provider);
+                    engine
+                        .prd_wizard(&template, from.as_deref(), resume)
+                        .await?;
+                }
+                Some(SpecCommands::Migrate) => {
+                    let count = engine.prd_migrate().await?;
+                    if count == 0 {
+                        println!("{}", output::dim("No spec_sections found to migrate."));
+                    }
+                }
+                Some(SpecCommands::Term { command }) => match command {
+                    TermCommands::Add {
+                        canonical,
+                        definition,
+                        category,
+                        variants,
+                    } => {
+                        let variants_json = match variants {
+                            Some(v) => {
+                                let list: Vec<&str> = v.split(',').map(|s| s.trim()).collect();
+                                serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
+                            }
+                            None => "[]".to_string(),
+                        };
+                        engine
+                            .prd_term_add(&canonical, &variants_json, &definition, &category, None)
+                            .await?;
+                    }
+                    TermCommands::List { category } => {
+                        let terms = engine.prd_term_list(category.as_deref()).await?;
+                        if terms.is_empty() {
+                            println!("{}", output::dim("No terminology entries."));
+                        } else {
+                            println!("{}", output::bold("Terminology"));
+                            println!("{}", "=".repeat(60));
+                            for t in &terms {
+                                println!("  {} [{}]: {}", t.canonical, t.category, t.definition);
+                            }
                         }
                     }
-                } else {
-                    engine.spec_list().await?;
-                }
-            }
-            Some(SpecCommands::Import { dir }) => {
-                engine.prd_import(&dir).await?;
-            }
-            Some(SpecCommands::Wizard { template, from, resume }) => {
-                engine.prd_wizard(&template, from.as_deref(), resume).await?;
-            }
-            Some(SpecCommands::Migrate) => {
-                let count = engine.prd_migrate().await?;
-                if count == 0 {
-                    println!("{}", output::dim("No spec_sections found to migrate."));
-                }
-            }
-            Some(SpecCommands::Term { command }) => match command {
-                TermCommands::Add { canonical, definition, category, variants } => {
-                    let variants_json = match variants {
-                        Some(v) => {
-                            let list: Vec<&str> = v.split(',').map(|s| s.trim()).collect();
-                            serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
+                    TermCommands::Search { query } => {
+                        let terms = engine.prd_term_search(&query).await?;
+                        if terms.is_empty() {
+                            println!("{}", output::dim("No matching terms."));
+                        } else {
+                            for t in &terms {
+                                println!("  {} [{}]: {}", t.canonical, t.category, t.definition);
+                            }
                         }
-                        None => "[]".to_string(),
-                    };
-                    engine.prd_term_add(&canonical, &variants_json, &definition, &category, None).await?;
-                }
-                TermCommands::List { category } => {
-                    let terms = engine.prd_term_list(category.as_deref()).await?;
-                    if terms.is_empty() {
-                        println!("{}", output::dim("No terminology entries."));
+                    }
+                },
+                Some(SpecCommands::Check) => {
+                    if dial_core::prd::prd_db_exists() {
+                        let sections = engine.prd_list().await?;
+                        let terms = engine.prd_term_list(None).await?;
+                        let total_words: i32 = sections.iter().map(|s| s.word_count).sum();
+                        println!("{}", output::bold("PRD Status"));
+                        println!("{}", "=".repeat(40));
+                        println!("  Sections:    {}", sections.len());
+                        println!("  Word count:  {}", total_words);
+                        println!("  Terms:       {}", terms.len());
+                        output::print_success("prd.db is healthy.");
                     } else {
-                        println!("{}", output::bold("Terminology"));
-                        println!("{}", "=".repeat(60));
-                        for t in &terms {
-                            println!("  {} [{}]: {}", t.canonical, t.category, t.definition);
+                        println!(
+                            "{}",
+                            output::dim(
+                                "No prd.db found. Run 'dial spec import' or 'dial spec wizard'."
+                            )
+                        );
+                    }
+                }
+                Some(SpecCommands::Prd { section_id }) => {
+                    match engine.prd_show(&section_id).await? {
+                        Some(section) => {
+                            println!(
+                                "{}",
+                                output::bold(&format!("{} {}", section.section_id, section.title))
+                            );
+                            println!("{}", "=".repeat(60));
+                            println!("{}", section.content);
+                        }
+                        None => {
+                            println!(
+                                "{}",
+                                output::dim(&format!("Section '{}' not found.", section_id))
+                            );
                         }
                     }
                 }
-                TermCommands::Search { query } => {
-                    let terms = engine.prd_term_search(&query).await?;
-                    if terms.is_empty() {
-                        println!("{}", output::dim("No matching terms."));
+                Some(SpecCommands::PrdSearch { query }) => {
+                    let results = engine.prd_search(&query).await?;
+                    if results.is_empty() {
+                        println!("{}", output::dim("No matching PRD sections."));
                     } else {
-                        for t in &terms {
-                            println!("  {} [{}]: {}", t.canonical, t.category, t.definition);
+                        for s in &results {
+                            let preview = if s.content.len() > 100 {
+                                &s.content[..100]
+                            } else {
+                                &s.content
+                            };
+                            println!("  {} {} - {}", s.section_id, s.title, preview);
                         }
                     }
                 }
-            },
-            Some(SpecCommands::Check) => {
-                if dial_core::prd::prd_db_exists() {
-                    let sections = engine.prd_list().await?;
-                    let terms = engine.prd_term_list(None).await?;
-                    let total_words: i32 = sections.iter().map(|s| s.word_count).sum();
-                    println!("{}", output::bold("PRD Status"));
-                    println!("{}", "=".repeat(40));
-                    println!("  Sections:    {}", sections.len());
-                    println!("  Word count:  {}", total_words);
-                    println!("  Terms:       {}", terms.len());
-                    output::print_success("prd.db is healthy.");
-                } else {
-                    println!("{}", output::dim("No prd.db found. Run 'dial spec import' or 'dial spec wizard'."));
-                }
-            }
-            Some(SpecCommands::Prd { section_id }) => {
-                match engine.prd_show(&section_id).await? {
-                    Some(section) => {
-                        println!("{}", output::bold(&format!("{} {}", section.section_id, section.title)));
-                        println!("{}", "=".repeat(60));
-                        println!("{}", section.content);
-                    }
-                    None => {
-                        println!("{}", output::dim(&format!("Section '{}' not found.", section_id)));
-                    }
-                }
-            }
-            Some(SpecCommands::PrdSearch { query }) => {
-                let results = engine.prd_search(&query).await?;
-                if results.is_empty() {
-                    println!("{}", output::dim("No matching PRD sections."));
-                } else {
-                    for s in &results {
-                        let preview = if s.content.len() > 100 { &s.content[..100] } else { &s.content };
-                        println!("  {} {} - {}", s.section_id, s.title, preview);
-                    }
-                }
-            }
-            None => {
-                // Default: show PRD sections if available, else legacy
-                if dial_core::prd::prd_db_exists() {
-                    let sections = engine.prd_list().await?;
-                    if sections.is_empty() {
-                        println!("{}", output::dim("No PRD sections. Run 'dial spec import' or 'dial spec wizard'."));
+                None => {
+                    // Default: show PRD sections if available, else legacy
+                    if dial_core::prd::prd_db_exists() {
+                        let sections = engine.prd_list().await?;
+                        if sections.is_empty() {
+                            println!("{}", output::dim("No PRD sections. Run 'dial spec import' or 'dial spec wizard'."));
+                        } else {
+                            println!("{}", output::bold("PRD Sections"));
+                            println!("{}", "=".repeat(60));
+                            for s in &sections {
+                                let indent = "  ".repeat((s.level - 1) as usize);
+                                println!(
+                                    "{}{} {} ({} words)",
+                                    indent, s.section_id, s.title, s.word_count
+                                );
+                            }
+                        }
                     } else {
-                        println!("{}", output::bold("PRD Sections"));
-                        println!("{}", "=".repeat(60));
-                        for s in &sections {
-                            let indent = "  ".repeat((s.level - 1) as usize);
-                            println!("{}{} {} ({} words)", indent, s.section_id, s.title, s.word_count);
-                        }
+                        engine.spec_list().await?;
                     }
-                } else {
-                    engine.spec_list().await?;
                 }
             }
-        },
+        }
 
         Commands::Iterate { dry_run, format } => {
             if dry_run {
@@ -753,8 +840,12 @@ async fn run_command(command: Commands) -> Result<()> {
                             (Some(old), Some(new)) => format!(" ({:.2} -> {:.2})", old, new),
                             _ => String::new(),
                         };
-                        let notes_str = event.notes.map(|n| format!(" - {}", n)).unwrap_or_default();
-                        println!("  {} {}{}{}", event.created_at, event.event_type, conf_str, notes_str);
+                        let notes_str =
+                            event.notes.map(|n| format!(" - {}", n)).unwrap_or_default();
+                        println!(
+                            "  {} {}{}{}",
+                            event.created_at, event.event_type, conf_str, notes_str
+                        );
                     }
                 }
             }
@@ -766,7 +857,10 @@ async fn run_command(command: Commands) -> Result<()> {
             }
         },
 
-        Commands::Learn { description, category } => {
+        Commands::Learn {
+            description,
+            category,
+        } => {
             engine.learn(&description, category.as_deref()).await?;
         }
 
@@ -789,100 +883,161 @@ async fn run_command(command: Commands) -> Result<()> {
             }
         },
 
-        Commands::Patterns { command } => match command {
-            Some(PatternCommands::List) | None => {
-                let patterns = engine.patterns_list().await?;
-                if patterns.is_empty() {
-                    println!("{}", output::dim("No patterns configured."));
-                } else {
-                    println!("{}", output::bold("Failure Patterns"));
-                    println!("{}", "=".repeat(80));
-                    for p in patterns {
-                        let regex_str = p.regex_pattern.as_deref().unwrap_or("(no regex)");
-                        let cat = p.category.as_deref().unwrap_or("unknown");
-                        println!(
-                            "  #{:<4} [{}] {:20} {:15} {} ({}x)",
-                            p.id, p.status, p.pattern_key, cat, regex_str, p.occurrence_count
-                        );
-                    }
-                }
-            }
-            Some(PatternCommands::Add { key, description, category, regex }) => {
-                engine.patterns_add(&key, &description, &category, &regex, "suggested").await?;
-            }
-            Some(PatternCommands::Promote { id }) => {
-                let new_status = engine.patterns_promote(id).await?;
-                println!("Pattern #{} promoted to {}", id, new_status);
-            }
-            Some(PatternCommands::Suggest) => {
-                let suggestions = engine.patterns_suggest().await?;
-                if suggestions.is_empty() {
-                    println!("{}", output::dim("No pattern suggestions (need 3+ UnknownError occurrences)."));
-                } else {
-                    println!("{}", output::bold("Suggested Patterns"));
-                    println!("{}", "=".repeat(60));
-                    for s in suggestions {
-                        println!("\n  Common: \"{}\" ({} occurrences)", s.common_substring, s.occurrence_count);
-                        for sample in &s.sample_errors {
-                            println!("    - {}", output::dim(sample));
+        Commands::Patterns { command } => {
+            match command {
+                Some(PatternCommands::List) | None => {
+                    let patterns = engine.patterns_list().await?;
+                    if patterns.is_empty() {
+                        println!("{}", output::dim("No patterns configured."));
+                    } else {
+                        println!("{}", output::bold("Failure Patterns"));
+                        println!("{}", "=".repeat(80));
+                        for p in patterns {
+                            let regex_str = p.regex_pattern.as_deref().unwrap_or("(no regex)");
+                            let cat = p.category.as_deref().unwrap_or("unknown");
+                            println!(
+                                "  #{:<4} [{}] {:20} {:15} {} ({}x)",
+                                p.id, p.status, p.pattern_key, cat, regex_str, p.occurrence_count
+                            );
                         }
                     }
-                    println!("\n{}", output::dim("Use `dial patterns add` to create a pattern from a suggestion."));
                 }
-            }
-            Some(PatternCommands::Metrics { format, sort }) => {
-                let mut metrics = engine.pattern_metrics().await?;
-                if metrics.is_empty() {
-                    println!("{}", output::dim("No pattern metrics (no failures recorded)."));
-                } else {
-                    match sort.as_str() {
-                        "cost" => metrics.sort_by(|a, b| b.total_cost_usd.partial_cmp(&a.total_cost_usd).unwrap_or(std::cmp::Ordering::Equal)),
-                        "time" => metrics.sort_by(|a, b| b.total_resolution_time_secs.partial_cmp(&a.total_resolution_time_secs).unwrap_or(std::cmp::Ordering::Equal)),
-                        _ => metrics.sort_by(|a, b| b.total_occurrences.cmp(&a.total_occurrences)),
-                    }
-
-                    if format == "json" {
-                        let items: Vec<String> = metrics.iter().map(|m| m.to_json()).collect();
-                        println!("[{}]", items.join(","));
-                    } else {
-                        println!("{}", output::bold("Pattern Metrics"));
-                        println!("{}", "=".repeat(100));
+                Some(PatternCommands::Add {
+                    key,
+                    description,
+                    category,
+                    regex,
+                }) => {
+                    engine
+                        .patterns_add(&key, &description, &category, &regex, "suggested")
+                        .await?;
+                }
+                Some(PatternCommands::Promote { id }) => {
+                    let new_status = engine.patterns_promote(id).await?;
+                    println!("Pattern #{} promoted to {}", id, new_status);
+                }
+                Some(PatternCommands::Suggest) => {
+                    let suggestions = engine.patterns_suggest().await?;
+                    if suggestions.is_empty() {
                         println!(
-                            "  {:<25} {:<10} {:>6} {:>10} {:>10} {:>12} {:>6} {:>6} {:>6}",
-                            "Pattern", "Category", "Count", "Avg Time", "Cost", "Tokens", "Auto", "Manual", "Open"
+                            "{}",
+                            output::dim(
+                                "No pattern suggestions (need 3+ UnknownError occurrences)."
+                            )
                         );
-                        println!("  {}", "-".repeat(96));
-                        for m in &metrics {
+                    } else {
+                        println!("{}", output::bold("Suggested Patterns"));
+                        println!("{}", "=".repeat(60));
+                        for s in suggestions {
                             println!(
+                                "\n  Common: \"{}\" ({} occurrences)",
+                                s.common_substring, s.occurrence_count
+                            );
+                            for sample in &s.sample_errors {
+                                println!("    - {}", output::dim(sample));
+                            }
+                        }
+                        println!(
+                            "\n{}",
+                            output::dim(
+                                "Use `dial patterns add` to create a pattern from a suggestion."
+                            )
+                        );
+                    }
+                }
+                Some(PatternCommands::Metrics { format, sort }) => {
+                    let mut metrics = engine.pattern_metrics().await?;
+                    if metrics.is_empty() {
+                        println!(
+                            "{}",
+                            output::dim("No pattern metrics (no failures recorded).")
+                        );
+                    } else {
+                        match sort.as_str() {
+                            "cost" => metrics.sort_by(|a, b| {
+                                b.total_cost_usd
+                                    .partial_cmp(&a.total_cost_usd)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            }),
+                            "time" => metrics.sort_by(|a, b| {
+                                b.total_resolution_time_secs
+                                    .partial_cmp(&a.total_resolution_time_secs)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            }),
+                            _ => metrics
+                                .sort_by(|a, b| b.total_occurrences.cmp(&a.total_occurrences)),
+                        }
+
+                        if format == "json" {
+                            let items: Vec<String> = metrics.iter().map(|m| m.to_json()).collect();
+                            println!("[{}]", items.join(","));
+                        } else {
+                            println!("{}", output::bold("Pattern Metrics"));
+                            println!("{}", "=".repeat(100));
+                            println!(
+                                "  {:<25} {:<10} {:>6} {:>10} {:>10} {:>12} {:>6} {:>6} {:>6}",
+                                "Pattern",
+                                "Category",
+                                "Count",
+                                "Avg Time",
+                                "Cost",
+                                "Tokens",
+                                "Auto",
+                                "Manual",
+                                "Open"
+                            );
+                            println!("  {}", "-".repeat(96));
+                            for m in &metrics {
+                                println!(
                                 "  {:<25} {:<10} {:>6} {:>9.1}s ${:>9.4} {:>12} {:>6} {:>6} {:>6}",
                                 m.pattern_key, m.category, m.total_occurrences,
                                 m.avg_resolution_time_secs, m.total_cost_usd,
                                 m.total_tokens_consumed,
                                 m.auto_resolved_count, m.manual_resolved_count, m.unresolved_count
                             );
+                            }
                         }
                     }
                 }
             }
-        },
+        }
 
         Commands::Pipeline { command } => match command {
             Some(PipelineCommands::Show) | None => {
                 let steps = engine.pipeline_list().await?;
                 if steps.is_empty() {
-                    println!("{}", output::dim("No pipeline steps configured (using build_cmd/test_cmd fallback)."));
+                    println!(
+                        "{}",
+                        output::dim(
+                            "No pipeline steps configured (using build_cmd/test_cmd fallback)."
+                        )
+                    );
                 } else {
                     println!("{}", output::bold("Validation Pipeline"));
                     println!("{}", "=".repeat(60));
                     for s in steps {
                         let required_str = if s.required { "required" } else { "optional" };
-                        let timeout_str = s.timeout_secs.map(|t| format!(" ({}s timeout)", t)).unwrap_or_default();
-                        println!("  #{} [order:{}] {} [{}]{}: {}", s.id, s.sort_order, s.name, required_str, timeout_str, s.command);
+                        let timeout_str = s
+                            .timeout_secs
+                            .map(|t| format!(" ({}s timeout)", t))
+                            .unwrap_or_default();
+                        println!(
+                            "  #{} [order:{}] {} [{}]{}: {}",
+                            s.id, s.sort_order, s.name, required_str, timeout_str, s.command
+                        );
                     }
                 }
             }
-            Some(PipelineCommands::Add { name, command, order, optional, timeout }) => {
-                engine.pipeline_add(&name, &command, order, !optional, timeout).await?;
+            Some(PipelineCommands::Add {
+                name,
+                command,
+                order,
+                optional,
+                timeout,
+            }) => {
+                engine
+                    .pipeline_add(&name, &command, order, !optional, timeout)
+                    .await?;
             }
             Some(PipelineCommands::Remove { id }) => {
                 engine.pipeline_remove(id).await?;
@@ -912,18 +1067,34 @@ async fn run_command(command: Commands) -> Result<()> {
                         "csv" => {
                             println!("date,iterations,successes,failures,success_rate,tokens_in,tokens_out,cost_usd");
                             for t in &trends {
-                                println!("{},{},{},{},{:.4},{},{},{:.4}",
-                                    t.date, t.iterations, t.successes, t.failures,
-                                    t.success_rate, t.tokens_in, t.tokens_out, t.cost_usd);
+                                println!(
+                                    "{},{},{},{},{:.4},{},{},{:.4}",
+                                    t.date,
+                                    t.iterations,
+                                    t.successes,
+                                    t.failures,
+                                    t.success_rate,
+                                    t.tokens_in,
+                                    t.tokens_out,
+                                    t.cost_usd
+                                );
                             }
                         }
                         _ => {
                             println!("{}", output::bold("Daily Trends"));
                             println!("{}", "=".repeat(60));
                             for t in &trends {
-                                println!("{}: {} iters ({} ok, {} fail) {:.0}% | tokens: {}/{} | ${:.4}",
-                                    t.date, t.iterations, t.successes, t.failures,
-                                    t.success_rate * 100.0, t.tokens_in, t.tokens_out, t.cost_usd);
+                                println!(
+                                    "{}: {} iters ({} ok, {} fail) {:.0}% | tokens: {}/{} | ${:.4}",
+                                    t.date,
+                                    t.iterations,
+                                    t.successes,
+                                    t.failures,
+                                    t.success_rate * 100.0,
+                                    t.tokens_in,
+                                    t.tokens_out,
+                                    t.cost_usd
+                                );
                             }
                         }
                     }
@@ -936,15 +1107,25 @@ async fn run_command(command: Commands) -> Result<()> {
                     _ => {
                         println!("{}", output::bold("DIAL Statistics"));
                         println!("{}", "=".repeat(60));
-                        println!("Tasks:      {} total, {} completed, {} pending",
-                            report.total_tasks, report.completed_tasks, report.pending_tasks);
-                        println!("Iterations: {} total, {} completed, {} failed",
-                            report.total_iterations, report.completed_iterations, report.failed_iterations);
+                        println!(
+                            "Tasks:      {} total, {} completed, {} pending",
+                            report.total_tasks, report.completed_tasks, report.pending_tasks
+                        );
+                        println!(
+                            "Iterations: {} total, {} completed, {} failed",
+                            report.total_iterations,
+                            report.completed_iterations,
+                            report.failed_iterations
+                        );
                         println!("Success:    {:.1}%", report.success_rate * 100.0);
-                        println!("Duration:   {:.1}s total, {:.1}s avg/iteration",
-                            report.total_duration_secs, report.avg_iteration_duration_secs);
-                        println!("Tokens:     {} in, {} out",
-                            report.total_tokens_in, report.total_tokens_out);
+                        println!(
+                            "Duration:   {:.1}s total, {:.1}s avg/iteration",
+                            report.total_duration_secs, report.avg_iteration_duration_secs
+                        );
+                        println!(
+                            "Tokens:     {} in, {} out",
+                            report.total_tokens_in, report.total_tokens_out
+                        );
                         println!("Cost:       ${:.4}", report.total_cost_usd);
                         println!("Failures:   {}", report.total_failures);
                         println!("Learnings:  {}", report.total_learnings);
@@ -956,7 +1137,10 @@ async fn run_command(command: Commands) -> Result<()> {
         Commands::Recover => {
             let count = engine.recover().await?;
             if count > 0 {
-                println!("{}", output::green(&format!("Recovered {} dangling iteration(s).", count)));
+                println!(
+                    "{}",
+                    output::green(&format!("Recovered {} dangling iteration(s).", count))
+                );
             } else {
                 println!("No dangling iterations found.");
             }
@@ -990,7 +1174,12 @@ async fn run_command(command: Commands) -> Result<()> {
             engine.orchestrate().await?;
         }
 
-        Commands::AutoRun { max, cli, dry_run, format } => {
+        Commands::AutoRun {
+            max,
+            cli,
+            dry_run,
+            format,
+        } => {
             if dry_run {
                 let result = engine.iterate_dry_run().await?;
                 if format == "json" {
@@ -1016,7 +1205,10 @@ fn show_status() -> Result<()> {
     let phase = get_current_phase()?;
     let project = config::config_get("project_name")?.unwrap_or_else(|| "unknown".to_string());
 
-    println!("{}", output::bold(&format!("DIAL Status: {} (phase: {})", project, phase)));
+    println!(
+        "{}",
+        output::bold(&format!("DIAL Status: {} (phase: {})", project, phase))
+    );
     println!("{}", "=".repeat(60));
 
     let current: Option<(i64, i64, String, i32)> = conn
@@ -1033,7 +1225,10 @@ fn show_status() -> Result<()> {
 
     match current {
         Some((_, task_id, description, attempt)) => {
-            println!("{}", output::yellow(&format!("\nIn Progress: Task #{}", task_id)));
+            println!(
+                "{}",
+                output::yellow(&format!("\nIn Progress: Task #{}", task_id))
+            );
             println!("  {}", description);
             println!("  Attempt {} of {}", attempt, MAX_FIX_ATTEMPTS);
         }
@@ -1050,7 +1245,10 @@ fn show_status() -> Result<()> {
 
     println!("\nTasks:");
     println!("  Pending:   {}", task_counts.get("pending").unwrap_or(&0));
-    println!("  Completed: {}", task_counts.get("completed").unwrap_or(&0));
+    println!(
+        "  Completed: {}",
+        task_counts.get("completed").unwrap_or(&0)
+    );
     println!("  Blocked:   {}", task_counts.get("blocked").unwrap_or(&0));
 
     let mut stmt = conn.prepare(
@@ -1061,7 +1259,9 @@ fn show_status() -> Result<()> {
     )?;
 
     let recent: Vec<(i64, String, Option<f64>, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -1084,7 +1284,10 @@ fn show_status() -> Result<()> {
                 &description
             };
 
-            println!("  #{} {:12} {:8} {}", id, status_color, duration_str, desc_preview);
+            println!(
+                "  #{} {:12} {:8} {}",
+                id, status_color, duration_str, desc_preview
+            );
         }
     }
 
@@ -1103,7 +1306,13 @@ fn show_history(limit: usize) -> Result<()> {
 
     let rows: Vec<(i64, String, Option<f64>, Option<String>, String)> = stmt
         .query_map([limit as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -1139,7 +1348,10 @@ fn show_history(limit: usize) -> Result<()> {
             &description
         };
 
-        println!("#{:4} {:12} {:8} {} {}", id, status_color, duration_str, commit, desc_preview);
+        println!(
+            "#{:4} {:12} {:8} {} {}",
+            id, status_color, duration_str, commit, desc_preview
+        );
     }
 
     Ok(())
@@ -1150,13 +1362,22 @@ fn print_dry_run_result(result: &DryRunResult) {
     println!("{}", "=".repeat(70));
     println!();
 
-    println!("{}", output::bold(&format!("Task #{}: {}", result.task.id, result.task.description)));
+    println!(
+        "{}",
+        output::bold(&format!(
+            "Task #{}: {}",
+            result.task.id, result.task.description
+        ))
+    );
     println!("  Priority:     {}", result.task.priority);
-    println!("  Dependencies: {}", if result.dependencies_satisfied {
-        output::green("satisfied")
-    } else {
-        output::red("NOT satisfied")
-    });
+    println!(
+        "  Dependencies: {}",
+        if result.dependencies_satisfied {
+            output::green("satisfied")
+        } else {
+            output::red("NOT satisfied")
+        }
+    );
     println!();
 
     println!("{}", output::bold("Context Budget"));
@@ -1173,7 +1394,10 @@ fn print_dry_run_result(result: &DryRunResult) {
     }
 
     if !result.context_items_excluded.is_empty() {
-        println!("{}", output::bold("Excluded Context Items (budget exceeded)"));
+        println!(
+            "{}",
+            output::bold("Excluded Context Items (budget exceeded)")
+        );
         for (label, tokens) in &result.context_items_excluded {
             println!("  {} ({} tokens)", output::yellow(label), tokens);
         }
@@ -1195,6 +1419,14 @@ fn print_dry_run_result(result: &DryRunResult) {
         println!("{}", output::dim("..."));
     }
     println!("{}", output::dim(&"-".repeat(70)));
+}
+
+async fn open_or_init_new_engine(phase: &str, resume: bool) -> Result<Engine> {
+    if resume {
+        Engine::open(EngineConfig::default()).await
+    } else {
+        Engine::init(phase, None, true).await
+    }
 }
 
 fn print_health(health: &dial_core::health::HealthScore) {
@@ -1239,3 +1471,30 @@ fn print_health(health: &dial_core::health::HealthScore) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::tempdir;
+
+    fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[tokio::test]
+    async fn test_open_or_init_new_engine_resume_uses_existing_project() {
+        let _guard = cwd_lock().lock().unwrap();
+        let original_dir = env::current_dir().unwrap();
+        let temp = tempdir().unwrap();
+        env::set_current_dir(temp.path()).unwrap();
+
+        let _engine = Engine::init("mvp", None, true).await.unwrap();
+
+        let reopened = open_or_init_new_engine("mvp", true).await;
+        assert!(reopened.is_ok(), "resume should reopen an existing project");
+
+        env::set_current_dir(original_dir).unwrap();
+    }
+}

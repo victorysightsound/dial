@@ -24,6 +24,7 @@ use super::{complete_iteration, create_iteration};
 pub enum AiCli {
     ClaudeCode,
     Codex,
+    Copilot,
     Gemini,
 }
 
@@ -32,6 +33,7 @@ impl AiCli {
         match s.to_lowercase().as_str() {
             "claude" | "claude-code" | "claude_code" => Some(AiCli::ClaudeCode),
             "codex" => Some(AiCli::Codex),
+            "copilot" => Some(AiCli::Copilot),
             "gemini" => Some(AiCli::Gemini),
             _ => None,
         }
@@ -50,6 +52,11 @@ impl AiCli {
                 "cat {} | codex exec --skip-git-repo-check 2>&1",
                 prompt_file
             ),
+            // copilot -p "prompt" (non-interactive mode, silent output)
+            AiCli::Copilot => format!(
+                "copilot -p \"$(cat {})\" -s --allow-all-tools --allow-all-paths --allow-all-urls 2>&1",
+                prompt_file
+            ),
             // gemini -p "prompt" (reads from stdin with -)
             AiCli::Gemini => format!(
                 "cat {} | gemini -p - 2>&1",
@@ -62,6 +69,7 @@ impl AiCli {
         match self {
             AiCli::ClaudeCode => "Claude Code",
             AiCli::Codex => "Codex CLI",
+            AiCli::Copilot => "GitHub Copilot CLI",
             AiCli::Gemini => "Gemini CLI",
         }
     }
@@ -148,7 +156,9 @@ impl SubagentResult {
                     }
                 } else if !rest.is_empty() {
                     // No category specified, use "other"
-                    result.learnings.push(("other".to_string(), rest.to_string()));
+                    result
+                        .learnings
+                        .push(("other".to_string(), rest.to_string()));
                 }
             }
         }
@@ -159,7 +169,10 @@ impl SubagentResult {
 
 /// Run a single task with a fresh AI subprocess
 fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<SubagentResult> {
-    println!("{}", dim(&format!("Spawning {} subprocess...", ai_cli.name())));
+    println!(
+        "{}",
+        dim(&format!("Spawning {} subprocess...", ai_cli.name()))
+    );
 
     let shell_cmd = ai_cli.build_command(prompt_file);
     println!("{}", dim(&format!("Command: {}", shell_cmd)));
@@ -171,7 +184,9 @@ fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<S
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| DialError::CommandFailed(format!("Failed to spawn {}: {}", ai_cli.name(), e)))?;
+        .map_err(|e| {
+            DialError::CommandFailed(format!("Failed to spawn {}: {}", ai_cli.name(), e))
+        })?;
 
     let stdout = child.stdout.take().unwrap();
     let reader = BufReader::new(stdout);
@@ -207,7 +222,10 @@ fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<S
             println!("{}", dim("  └─ Process exited successfully"));
         }
         Ok(s) => {
-            println!("{}", yellow(&format!("  └─ Process exited with code: {}", s)));
+            println!(
+                "{}",
+                yellow(&format!("  └─ Process exited with code: {}", s))
+            );
         }
         Err(e) => {
             println!("{}", red(&format!("  └─ Process error: {}", e)));
@@ -217,17 +235,29 @@ fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<S
     // Prefer structured signal file over regex parsing of stdout
     match read_signal_file() {
         Ok(Some(signal_file)) => {
-            println!("{}", dim("  ├─ Signal file found: using structured signals"));
+            println!(
+                "{}",
+                dim("  ├─ Signal file found: using structured signals")
+            );
             Ok(signal_file_to_result(&signal_file, &output))
         }
         Ok(None) => {
             // No signal file — fall back to regex parsing of stdout
-            println!("{}", dim("  ├─ No signal file: falling back to output parsing"));
+            println!(
+                "{}",
+                dim("  ├─ No signal file: falling back to output parsing")
+            );
             Ok(SubagentResult::parse(&output))
         }
         Err(e) => {
             // Signal file exists but couldn't be parsed — warn and fall back
-            println!("{}", yellow(&format!("  ├─ Signal file error: {}. Falling back to output parsing.", e)));
+            println!(
+                "{}",
+                yellow(&format!(
+                    "  ├─ Signal file error: {}. Falling back to output parsing.",
+                    e
+                ))
+            );
             Ok(SubagentResult::parse(&output))
         }
     }
@@ -274,14 +304,14 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
     let ai_cli = if let Some(name) = ai_cli_name {
         AiCli::from_str(name).ok_or_else(|| {
             DialError::InvalidConfig(format!(
-                "Unknown AI CLI: {}. Use 'claude', 'codex', or 'gemini'",
+                "Unknown AI CLI: {}. Use 'claude', 'codex', 'copilot', or 'gemini'",
                 name
             ))
         })?
     } else if let Some(configured) = config_get("ai_cli")? {
         AiCli::from_str(&configured).ok_or_else(|| {
             DialError::InvalidConfig(format!(
-                "Invalid ai_cli config: {}. Use 'claude', 'codex', or 'gemini'",
+                "Invalid ai_cli config: {}. Use 'claude', 'codex', 'copilot', or 'gemini'",
                 configured
             ))
         })?
@@ -336,7 +366,10 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
         // Check iteration limit
         if let Some(max) = max_iterations {
             if completed_count >= max {
-                println!("{}", yellow(&format!("\nReached max iterations ({}). Stopping.", max)));
+                println!(
+                    "{}",
+                    yellow(&format!("\nReached max iterations ({}). Stopping.", max))
+                );
                 break;
             }
         }
@@ -369,7 +402,10 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
         };
 
         println!("{}", bold(&"=".repeat(70)));
-        println!("{}", bold(&format!("Task #{}: {}", task.id, task.description)));
+        println!(
+            "{}",
+            bold(&format!("Task #{}: {}", task.id, task.description))
+        );
         println!("{}", bold(&"=".repeat(70)));
 
         // Check cross-iteration chronic failure threshold
@@ -453,7 +489,10 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
         // Generate sub-agent prompt
         let prompt = generate_subagent_prompt(&conn, &task)?;
         fs::write(&prompt_file, &prompt)?;
-        println!("{}", dim(&format!("Prompt written to: {}", prompt_file.display())));
+        println!(
+            "{}",
+            dim(&format!("Prompt written to: {}", prompt_file.display()))
+        );
 
         // Spawn the sub-agent
         println!();
@@ -465,7 +504,13 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
             let pattern_str = auto_pattern_id
                 .map(|pid| format!(" (linked to pattern #{})", pid))
                 .unwrap_or_default();
-            println!("{}", green(&format!("Learning captured: [{}]{} {}", category, pattern_str, description)));
+            println!(
+                "{}",
+                green(&format!(
+                    "Learning captured: [{}]{} {}",
+                    category, pattern_str, description
+                ))
+            );
             let _ = add_learning_with_conn(
                 &conn,
                 description,
@@ -477,7 +522,10 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
 
         // Handle blocked
         if result.blocked {
-            let msg = result.blocked_message.as_deref().unwrap_or("Unknown blocker");
+            let msg = result
+                .blocked_message
+                .as_deref()
+                .unwrap_or("Unknown blocker");
             println!("{}", red(&format!("\nSubagent blocked: {}", msg)));
 
             complete_iteration(&conn, iteration_id, "failed", None, Some(msg))?;
@@ -493,7 +541,10 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
 
         // Handle completion
         if result.complete {
-            let msg = result.complete_message.as_deref().unwrap_or("Task completed");
+            let msg = result
+                .complete_message
+                .as_deref()
+                .unwrap_or("Task completed");
             println!("{}", green(&format!("\nSubagent completed: {}", msg)));
 
             // Run validation
@@ -515,7 +566,13 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                     None
                 };
 
-                complete_iteration(&conn, iteration_id, "completed", commit_hash.as_deref(), Some(msg))?;
+                complete_iteration(
+                    &conn,
+                    iteration_id,
+                    "completed",
+                    commit_hash.as_deref(),
+                    Some(msg),
+                )?;
 
                 let now = Local::now().to_rfc3339();
                 conn.execute(
@@ -526,7 +583,10 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 // Auto-unblock dependents
                 auto_unblock_dependents(&conn, task.id)?;
 
-                println!("{}", green(&format!("Task #{} completed successfully!", task.id)));
+                println!(
+                    "{}",
+                    green(&format!("Task #{} completed successfully!", task.id))
+                );
                 completed_count += 1;
 
                 // Check iteration_mode for review pause
@@ -544,18 +604,26 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                     )?;
 
                     println!();
-                    println!("{}", yellow(&format!(
-                        "Review pause ({}) — {} task(s) completed.",
-                        iteration_mode.display_name(), completed_count
-                    )));
-                    println!("{}", yellow("Run `dial approve` to continue or `dial reject` to stop."));
+                    println!(
+                        "{}",
+                        yellow(&format!(
+                            "Review pause ({}) — {} task(s) completed.",
+                            iteration_mode.display_name(),
+                            completed_count
+                        ))
+                    );
+                    println!(
+                        "{}",
+                        yellow("Run `dial approve` to continue or `dial reject` to stop.")
+                    );
                     break;
                 }
             } else {
                 // Validation failed
                 println!("{}", red("Validation failed."));
 
-                let (failure_id, _pattern_id, suggested_solutions) = record_failure(&conn, iteration_id, &error_output, None, None)?;
+                let (failure_id, _pattern_id, suggested_solutions) =
+                    record_failure(&conn, iteration_id, &error_output, None, None)?;
                 println!("{}", dim(&format!("Recorded failure #{}", failure_id)));
 
                 // Show auto-suggested solutions
@@ -566,7 +634,13 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                     }
                 }
 
-                complete_iteration(&conn, iteration_id, "failed", None, Some(&error_output[..error_output.len().min(500)]))?;
+                complete_iteration(
+                    &conn,
+                    iteration_id,
+                    "failed",
+                    None,
+                    Some(&error_output[..error_output.len().min(500)]),
+                )?;
 
                 // Reset task for retry
                 conn.execute(
@@ -575,13 +649,25 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 )?;
 
                 let remaining = MAX_FIX_ATTEMPTS as i32 - attempt_number;
-                println!("{}", yellow(&format!("Task reset. {} attempts remaining.", remaining)));
+                println!(
+                    "{}",
+                    yellow(&format!("Task reset. {} attempts remaining.", remaining))
+                );
             }
         } else {
             // No completion signal - treat as incomplete
-            println!("{}", yellow("\nNo DIAL_COMPLETE signal received. Treating as incomplete."));
+            println!(
+                "{}",
+                yellow("\nNo DIAL_COMPLETE signal received. Treating as incomplete.")
+            );
 
-            complete_iteration(&conn, iteration_id, "failed", None, Some("No completion signal"))?;
+            complete_iteration(
+                &conn,
+                iteration_id,
+                "failed",
+                None,
+                Some("No completion signal"),
+            )?;
 
             conn.execute(
                 "UPDATE tasks SET status = 'pending' WHERE id = ?1",
@@ -589,7 +675,10 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
             )?;
 
             let remaining = MAX_FIX_ATTEMPTS as i32 - attempt_number;
-            println!("{}", yellow(&format!("Task reset. {} attempts remaining.", remaining)));
+            println!(
+                "{}",
+                yellow(&format!("Task reset. {} attempts remaining.", remaining))
+            );
         }
 
         println!();
@@ -604,7 +693,14 @@ fn show_auto_run_summary(completed: u32, failed: u32) -> Result<()> {
     println!("{}", "=".repeat(70));
     println!();
     println!("  Completed: {}", green(&completed.to_string()));
-    println!("  Failed:    {}", if failed > 0 { red(&failed.to_string()) } else { failed.to_string() });
+    println!(
+        "  Failed:    {}",
+        if failed > 0 {
+            red(&failed.to_string())
+        } else {
+            failed.to_string()
+        }
+    );
     println!();
 
     let conn = get_db(None)?;
@@ -646,15 +742,18 @@ fn show_auto_run_summary(completed: u32, failed: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::signal::{self, SignalFile, SubagentSignal};
+    use super::*;
 
     #[test]
     fn test_parse_complete_signal() {
         let output = "Some output\nDIAL_COMPLETE: Task done successfully\nMore output";
         let result = SubagentResult::parse(output);
         assert!(result.complete);
-        assert_eq!(result.complete_message, Some("Task done successfully".to_string()));
+        assert_eq!(
+            result.complete_message,
+            Some("Task done successfully".to_string())
+        );
     }
 
     #[test]
@@ -662,7 +761,10 @@ mod tests {
         let output = "DIAL COMPLETE: Also works with space";
         let result = SubagentResult::parse(output);
         assert!(result.complete);
-        assert_eq!(result.complete_message, Some("Also works with space".to_string()));
+        assert_eq!(
+            result.complete_message,
+            Some("Also works with space".to_string())
+        );
     }
 
     #[test]
@@ -670,7 +772,10 @@ mod tests {
         let output = "**DIAL_COMPLETE:** Markdown formatted";
         let result = SubagentResult::parse(output);
         assert!(result.complete);
-        assert_eq!(result.complete_message, Some("Markdown formatted".to_string()));
+        assert_eq!(
+            result.complete_message,
+            Some("Markdown formatted".to_string())
+        );
     }
 
     #[test]
@@ -678,7 +783,10 @@ mod tests {
         let output = "DIAL_BLOCKED: Missing credentials";
         let result = SubagentResult::parse(output);
         assert!(result.blocked);
-        assert_eq!(result.blocked_message, Some("Missing credentials".to_string()));
+        assert_eq!(
+            result.blocked_message,
+            Some("Missing credentials".to_string())
+        );
     }
 
     #[test]
@@ -742,7 +850,10 @@ DIAL_COMPLETE: Implemented the feature successfully
 "#;
         let result = SubagentResult::parse(output);
         assert!(result.complete);
-        assert_eq!(result.complete_message, Some("Implemented the feature successfully".to_string()));
+        assert_eq!(
+            result.complete_message,
+            Some("Implemented the feature successfully".to_string())
+        );
         assert!(!result.blocked); // Should NOT match the template
         assert!(result.learnings.is_empty()); // Should NOT match the template
     }
@@ -756,31 +867,55 @@ DIAL_COMPLETE: Implemented the feature successfully
 
     #[test]
     fn test_iteration_mode_autonomous() {
-        assert_eq!(IterationMode::from_config("autonomous"), IterationMode::Autonomous);
+        assert_eq!(
+            IterationMode::from_config("autonomous"),
+            IterationMode::Autonomous
+        );
     }
 
     #[test]
     fn test_iteration_mode_review_each() {
-        assert_eq!(IterationMode::from_config("review_each"), IterationMode::ReviewEach);
+        assert_eq!(
+            IterationMode::from_config("review_each"),
+            IterationMode::ReviewEach
+        );
     }
 
     #[test]
     fn test_iteration_mode_review_every() {
-        assert_eq!(IterationMode::from_config("review_every:3"), IterationMode::ReviewEvery(3));
-        assert_eq!(IterationMode::from_config("review_every:1"), IterationMode::ReviewEvery(1));
-        assert_eq!(IterationMode::from_config("review_every:10"), IterationMode::ReviewEvery(10));
+        assert_eq!(
+            IterationMode::from_config("review_every:3"),
+            IterationMode::ReviewEvery(3)
+        );
+        assert_eq!(
+            IterationMode::from_config("review_every:1"),
+            IterationMode::ReviewEvery(1)
+        );
+        assert_eq!(
+            IterationMode::from_config("review_every:10"),
+            IterationMode::ReviewEvery(10)
+        );
     }
 
     #[test]
     fn test_iteration_mode_review_every_invalid_falls_back() {
         // Zero or negative → falls back to autonomous
-        assert_eq!(IterationMode::from_config("review_every:0"), IterationMode::Autonomous);
-        assert_eq!(IterationMode::from_config("review_every:abc"), IterationMode::Autonomous);
+        assert_eq!(
+            IterationMode::from_config("review_every:0"),
+            IterationMode::Autonomous
+        );
+        assert_eq!(
+            IterationMode::from_config("review_every:abc"),
+            IterationMode::Autonomous
+        );
     }
 
     #[test]
     fn test_iteration_mode_unknown_falls_back() {
-        assert_eq!(IterationMode::from_config("unknown"), IterationMode::Autonomous);
+        assert_eq!(
+            IterationMode::from_config("unknown"),
+            IterationMode::Autonomous
+        );
         assert_eq!(IterationMode::from_config(""), IterationMode::Autonomous);
     }
 
@@ -788,7 +923,10 @@ DIAL_COMPLETE: Implemented the feature successfully
     fn test_iteration_mode_display_name() {
         assert_eq!(IterationMode::Autonomous.display_name(), "autonomous");
         assert_eq!(IterationMode::ReviewEach.display_name(), "review_each");
-        assert_eq!(IterationMode::ReviewEvery(5).display_name(), "review_every:5");
+        assert_eq!(
+            IterationMode::ReviewEvery(5).display_name(),
+            "review_every:5"
+        );
     }
 
     // --- Signal file integration tests ---
@@ -826,7 +964,10 @@ DIAL_COMPLETE: Implemented the feature successfully
         let result = signal::signal_file_to_result(&signal_result.unwrap(), output);
         // Should use signal file values, not regex
         assert!(result.complete);
-        assert_eq!(result.complete_message, Some("Done via signal file".to_string()));
+        assert_eq!(
+            result.complete_message,
+            Some("Done via signal file".to_string())
+        );
     }
 
     #[test]
@@ -841,7 +982,10 @@ DIAL_COMPLETE: Implemented the feature successfully
         let output = "DIAL_COMPLETE: Done via regex fallback";
         let result = SubagentResult::parse(output);
         assert!(result.complete);
-        assert_eq!(result.complete_message, Some("Done via regex fallback".to_string()));
+        assert_eq!(
+            result.complete_message,
+            Some("Done via regex fallback".to_string())
+        );
     }
 
     #[test]
@@ -859,7 +1003,10 @@ DIAL_COMPLETE: Implemented the feature successfully
         let output = "DIAL_COMPLETE: Recovered via regex";
         let parsed = SubagentResult::parse(output);
         assert!(parsed.complete);
-        assert_eq!(parsed.complete_message, Some("Recovered via regex".to_string()));
+        assert_eq!(
+            parsed.complete_message,
+            Some("Recovered via regex".to_string())
+        );
     }
 
     #[test]

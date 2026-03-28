@@ -1,10 +1,11 @@
 use async_trait::async_trait;
+use dial_core::event::{Event, EventHandler};
 use dial_core::prd;
 use dial_core::provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 use dial_core::Engine;
 use serde_json::{json, Value as JsonValue};
 use std::env;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -25,8 +26,7 @@ impl Drop for CwdGuard {
 }
 
 async fn setup_engine() -> (Engine, TempDir, CwdGuard) {
-    let original_dir =
-        env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    let original_dir = env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
     let tmp = TempDir::new().unwrap();
     env::set_current_dir(tmp.path()).unwrap();
     let engine = Engine::init("test", None, false).await.unwrap();
@@ -59,12 +59,18 @@ fn seed_spec_sections() {
 // ---------------------------------------------------------------------------
 
 struct SequentialMockProvider {
+    name: &'static str,
     responses: Mutex<Vec<String>>,
 }
 
 impl SequentialMockProvider {
     fn new(responses: Vec<String>) -> Self {
+        Self::named("sequential-mock", responses)
+    }
+
+    fn named(name: &'static str, responses: Vec<String>) -> Self {
         Self {
+            name,
             responses: Mutex::new(responses),
         }
     }
@@ -74,10 +80,33 @@ impl SequentialMockProvider {
     }
 }
 
+#[derive(Default)]
+struct RecordingHandler {
+    events: Mutex<Vec<Event>>,
+}
+
+impl RecordingHandler {
+    fn snapshot(&self) -> Vec<Event> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+impl EventHandler for RecordingHandler {
+    fn handle(&self, event: &Event) {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(event.clone());
+    }
+}
+
 #[async_trait]
 impl Provider for SequentialMockProvider {
     fn name(&self) -> &str {
-        "sequential-mock"
+        self.name
     }
 
     async fn execute(&self, _request: ProviderRequest) -> dial_core::Result<ProviderResponse> {
@@ -394,8 +423,7 @@ fn setup_db_through_phase(prd_conn: &rusqlite::Connection, n: i32) {
             .unwrap();
         }
 
-        // Phase 5 inserts DIAL tasks (spec_section_id needs matching spec_sections rows)
-        seed_spec_sections();
+        // Phase 5 inserts DIAL tasks linked to PRD section ids
         let phase_conn = dial_core::get_db(None).unwrap();
         for (i, title) in ["Overview", "Architecture", "Implementation"]
             .iter()
@@ -403,11 +431,12 @@ fn setup_db_through_phase(prd_conn: &rusqlite::Connection, n: i32) {
         {
             let desc = format!("Implement: {}", title);
             let priority = (i + 1) as i32;
+            let section_id = format!("{}", i + 1);
             phase_conn
                 .execute(
-                    "INSERT INTO tasks (description, status, priority, spec_section_id)
+                    "INSERT INTO tasks (description, status, priority, prd_section_id)
                      VALUES (?1, 'pending', ?2, ?3)",
-                    rusqlite::params![desc, priority, (i + 1) as i64],
+                    rusqlite::params![desc, priority, section_id],
                 )
                 .unwrap();
         }
@@ -547,7 +576,7 @@ fn save_state_through_phase(prd_conn: &rusqlite::Connection, n: i32) {
     } else {
         state.current_phase = prd::wizard::WizardPhase::Launch;
     }
-    prd::wizard::save_wizard_state(prd_conn, &state).unwrap();
+    prd::wizard::save_wizard_state(prd_conn, &mut state).unwrap();
 }
 
 /// Provider responses needed for phases (from+1)..=8 (phase 9 has no provider call).
@@ -569,9 +598,6 @@ fn responses_from_phase(from: i32) -> Vec<String> {
 async fn test_full_wizard_all_9_phases() {
     let _lock = lock();
     let (_engine, _tmp, _guard) = setup_engine().await;
-
-    // Seed spec_sections so phase 5 task inserts satisfy FK
-    seed_spec_sections();
 
     let prd_conn = prd::get_or_init_prd_db().unwrap();
     let provider = SequentialMockProvider::new(all_provider_responses());
@@ -610,9 +636,7 @@ async fn test_full_wizard_all_9_phases() {
     assert!(result.task_count > 0);
 
     // Verify wizard state is fully complete
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(
             state.completed_phases.contains(&phase_num),
@@ -680,6 +704,55 @@ async fn test_full_wizard_all_9_phases() {
     assert_eq!(step_count, 3);
 }
 
+#[tokio::test]
+async fn test_new_project_emits_phase_progress_events_for_full_wizard() {
+    let _lock = lock();
+    let (mut engine, _tmp, _guard) = setup_engine().await;
+    let provider = Arc::new(SequentialMockProvider::new(all_provider_responses()));
+    let recorder = Arc::new(RecordingHandler::default());
+
+    engine.set_provider(provider.clone());
+    engine.on_event(recorder.clone());
+
+    engine.new_project("spec", None, false).await.unwrap();
+
+    assert_eq!(
+        provider.remaining(),
+        0,
+        "All provider responses should be consumed"
+    );
+
+    let events = recorder.snapshot();
+
+    let started: Vec<u8> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::WizardPhaseStarted { phase, .. } => Some(*phase),
+            _ => None,
+        })
+        .collect();
+    let completed: Vec<u8> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::WizardPhaseCompleted { phase, .. } => Some(*phase),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(started, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(completed, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert!(
+        matches!(events.last(), Some(Event::WizardCompleted { .. })),
+        "wizard should emit a final WizardCompleted event"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::LaunchReady { .. })),
+        "wizard should emit LaunchReady before completion"
+    );
+}
+
 // ===========================================================================
 // Test: full=false backward compatibility (phases 1-5 only)
 // ===========================================================================
@@ -688,8 +761,6 @@ async fn test_full_wizard_all_9_phases() {
 async fn test_wizard_full_false_only_runs_phases_1_to_5() {
     let _lock = lock();
     let (_engine, _tmp, _guard) = setup_engine().await;
-
-    seed_spec_sections();
 
     let prd_conn = prd::get_or_init_prd_db().unwrap();
     let responses: Vec<String> = all_provider_responses().into_iter().take(5).collect();
@@ -717,9 +788,7 @@ async fn test_wizard_full_false_only_runs_phases_1_to_5() {
     assert_eq!(result.task_count, 0);
 
     // Verify wizard state has only phases 1-5 completed
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=5 {
         assert!(
             state.completed_phases.contains(&phase_num),
@@ -747,6 +816,49 @@ async fn test_wizard_full_false_only_runs_phases_1_to_5() {
     assert_eq!(sections.len(), 3);
 }
 
+#[tokio::test]
+async fn test_phase_5_tasks_link_to_prd_sections_without_spec_section_seed() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+    let responses: Vec<String> = all_provider_responses().into_iter().take(5).collect();
+    let provider = SequentialMockProvider::new(responses);
+
+    let result = prd::wizard::run_wizard(&provider, &prd_conn, "spec", None, false, false)
+        .await
+        .unwrap();
+
+    assert_eq!(result.sections_generated, 3);
+    assert_eq!(result.tasks_generated, 3);
+
+    let phase_conn = dial_core::get_db(None).unwrap();
+    let mut stmt = phase_conn
+        .prepare("SELECT description, spec_section_id, prd_section_id FROM tasks ORDER BY id")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(rows.len(), 3);
+    for (index, (description, spec_section_id, prd_section_id)) in rows.into_iter().enumerate() {
+        assert!(description.starts_with("Implement: "));
+        assert_eq!(
+            spec_section_id, None,
+            "phase 5 should not depend on legacy spec_sections"
+        );
+        assert_eq!(prd_section_id, Some((index + 1).to_string()));
+    }
+}
+
 // ===========================================================================
 // Test: Resume from phase 2 (phase 1 already complete)
 // ===========================================================================
@@ -771,9 +883,7 @@ async fn test_wizard_resume_from_phase_2() {
     assert_eq!(result.sections_generated, 3);
     assert_eq!(result.project_name, "WizardTestProject");
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(
             state.completed_phases.contains(&phase_num),
@@ -804,9 +914,7 @@ async fn test_wizard_resume_from_phase_3() {
 
     assert_eq!(provider.remaining(), 0);
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(
             state.completed_phases.contains(&phase_num),
@@ -847,9 +955,7 @@ async fn test_wizard_resume_from_phase_4() {
     assert_eq!(provider.remaining(), 0);
     assert_eq!(result.sections_generated, 3);
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(state.completed_phases.contains(&phase_num));
     }
@@ -878,9 +984,7 @@ async fn test_wizard_resume_from_phase_5() {
     assert_eq!(result.sections_generated, 3);
     assert_eq!(result.tasks_generated, 3);
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(state.completed_phases.contains(&phase_num));
     }
@@ -927,9 +1031,7 @@ async fn test_wizard_resume_from_phase_6() {
     // Phase 9
     assert_eq!(result.project_name, "WizardTestProject");
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(
             state.completed_phases.contains(&phase_num),
@@ -964,9 +1066,7 @@ async fn test_wizard_resume_from_phase_7() {
     assert_eq!(result.iteration_mode, "review_every:3");
     assert_eq!(result.project_name, "WizardTestProject");
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(state.completed_phases.contains(&phase_num));
     }
@@ -995,13 +1095,11 @@ async fn test_wizard_resume_from_phase_8() {
     assert_eq!(result.iteration_mode, "review_every:3");
     assert_eq!(result.project_name, "WizardTestProject");
 
-    // Phase 7 results are 0/empty because phase 7 was already complete
-    assert_eq!(result.build_cmd, "");
-    assert_eq!(result.test_cmd, "");
+    // Launch summary should still surface the configured phase 7 values.
+    assert_eq!(result.build_cmd, "cargo build --release");
+    assert_eq!(result.test_cmd, "cargo test --all");
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(state.completed_phases.contains(&phase_num));
     }
@@ -1031,9 +1129,7 @@ async fn test_wizard_resume_from_phase_9() {
     assert_eq!(result.project_name, "WizardTestProject");
     assert!(result.task_count > 0);
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(
             state.completed_phases.contains(&phase_num),
@@ -1071,7 +1167,7 @@ async fn test_wizard_resume_all_complete_skips_everything() {
         state.completed_phases.push(phase_num);
     }
     state.current_phase = prd::wizard::WizardPhase::Launch;
-    prd::wizard::save_wizard_state(&prd_conn, &state).unwrap();
+    prd::wizard::save_wizard_state(&prd_conn, &mut state).unwrap();
 
     // No provider calls should happen
     let provider = SequentialMockProvider::new(vec![]);
@@ -1114,9 +1210,7 @@ async fn test_wizard_resume_no_saved_state_fresh_start() {
     assert_eq!(result.sections_generated, 3);
     assert_eq!(result.project_name, "WizardTestProject");
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=9 {
         assert!(state.completed_phases.contains(&phase_num));
     }
@@ -1146,9 +1240,7 @@ async fn test_wizard_full_false_resume_stops_at_phase_5() {
     assert_eq!(provider.remaining(), 0);
     assert_eq!(result.sections_generated, 3);
 
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     for phase_num in 1..=5 {
         assert!(state.completed_phases.contains(&phase_num));
     }
@@ -1208,10 +1300,7 @@ async fn test_wizard_provider_failure_propagates_error() {
         fn name(&self) -> &str {
             "fail-on-second"
         }
-        async fn execute(
-            &self,
-            _request: ProviderRequest,
-        ) -> dial_core::Result<ProviderResponse> {
+        async fn execute(&self, _request: ProviderRequest) -> dial_core::Result<ProviderResponse> {
             let mut count = self.call_count.lock().unwrap();
             *count += 1;
             if *count == 1 {
@@ -1243,15 +1332,12 @@ async fn test_wizard_provider_failure_propagates_error() {
         call_count: Mutex::new(0),
     };
 
-    let result =
-        prd::wizard::run_wizard(&provider, &prd_conn, "spec", None, false, true).await;
+    let result = prd::wizard::run_wizard(&provider, &prd_conn, "spec", None, false, true).await;
 
     assert!(result.is_err());
 
     // Phase 1 should be completed, phase 2 should not
-    let state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     assert!(state.completed_phases.contains(&1));
     assert!(!state.completed_phases.contains(&2));
 }
@@ -1278,7 +1364,10 @@ async fn test_phase_6_task_replacement_with_dependencies() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(original_count, 3, "Should have 3 original tasks from phase 5");
+    assert_eq!(
+        original_count, 3,
+        "Should have 3 original tasks from phase 5"
+    );
 
     // Verify original tasks have "Implement: " prefix
     let old_count: i64 = phase_conn
@@ -1288,16 +1377,17 @@ async fn test_phase_6_task_replacement_with_dependencies() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(old_count, 3, "All 3 original tasks should have 'Implement: ' prefix");
+    assert_eq!(
+        old_count, 3,
+        "All 3 original tasks should have 'Implement: ' prefix"
+    );
 
     // Load state and run phase 6 directly
-    let mut state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let mut state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     let provider = SequentialMockProvider::new(vec![phase_6_response()]);
 
     let (kept, added, removed, _sizing) =
-        prd::wizard::run_wizard_phase_6(&provider, &prd_conn, &mut state)
+        prd::wizard::run_wizard_phase_6(&provider, &prd_conn, &mut state, None)
             .await
             .unwrap();
 
@@ -1325,12 +1415,7 @@ async fn test_phase_6_task_replacement_with_dependencies() {
         .unwrap();
     let tasks: Vec<(i64, String, i32, Option<String>)> = stmt
         .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-            ))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .unwrap()
         .map(|r| r.unwrap())
@@ -1530,16 +1615,17 @@ async fn test_phase_6_task_splitting_via_sizing() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(original_count, 3, "Should have 3 original tasks from phase 5");
+    assert_eq!(
+        original_count, 3,
+        "Should have 3 original tasks from phase 5"
+    );
 
     // Load state and run phase 6 with sizing response
-    let mut state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let mut state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     let provider = SequentialMockProvider::new(vec![phase_6_response_with_sizing()]);
 
     let (kept, added, removed, sizing) =
-        prd::wizard::run_wizard_phase_6(&provider, &prd_conn, &mut state)
+        prd::wizard::run_wizard_phase_6(&provider, &prd_conn, &mut state, None)
             .await
             .unwrap();
 
@@ -1611,7 +1697,10 @@ async fn test_phase_6_task_splitting_via_sizing() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(config_task, 1, "Rewritten task should exist with concrete description");
+    assert_eq!(
+        config_task, 1,
+        "Rewritten task should exist with concrete description"
+    );
 
     // Original vague tasks should be gone
     let old_remaining: i64 = phase_conn
@@ -1621,7 +1710,10 @@ async fn test_phase_6_task_splitting_via_sizing() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(old_remaining, 0, "Original vague tasks should all be replaced");
+    assert_eq!(
+        old_remaining, 0,
+        "Original vague tasks should all be replaced"
+    );
 }
 
 // ===========================================================================
@@ -1654,20 +1746,21 @@ async fn test_phase_7_config_and_pipeline_writing() {
     assert_eq!(pre_count, 1, "Should have 1 pre-existing validation step");
 
     // Load state and run phase 7 directly
-    let mut state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let mut state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     let provider = SequentialMockProvider::new(vec![phase_7_response()]);
 
     let (build_cmd, test_cmd, steps_count, test_tasks_count) =
-        prd::wizard::run_wizard_phase_7(&provider, &prd_conn, &mut state)
+        prd::wizard::run_wizard_phase_7(&provider, &prd_conn, &mut state, None)
             .await
             .unwrap();
 
     assert_eq!(build_cmd, "cargo build --release");
     assert_eq!(test_cmd, "cargo test --all");
     assert_eq!(steps_count, 3);
-    assert_eq!(test_tasks_count, 1, "Should create 1 test task from test_tasks");
+    assert_eq!(
+        test_tasks_count, 1,
+        "Should create 1 test task from test_tasks"
+    );
 
     // Verify all 4 config values
     assert_eq!(
@@ -1762,11 +1855,12 @@ async fn test_phase_7_config_and_pipeline_writing() {
     );
 
     // Verify wizard state was updated
-    let updated_state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let updated_state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     assert!(updated_state.completed_phases.contains(&7));
-    assert!(updated_state.gathered_info.get("build_&_test_config").is_some());
+    assert!(updated_state
+        .gathered_info
+        .get("build_&_test_config")
+        .is_some());
 }
 
 // ===========================================================================
@@ -1783,12 +1877,10 @@ async fn test_phase_8_iteration_mode_read_by_auto_run() {
     setup_db_through_phase(&prd_conn, 7);
 
     // Load state and run phase 8 directly
-    let mut state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let mut state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     let provider = SequentialMockProvider::new(vec![phase_8_response()]);
 
-    let mode = prd::wizard::run_wizard_phase_8(&provider, &prd_conn, &mut state)
+    let mode = prd::wizard::run_wizard_phase_8(&provider, &prd_conn, &mut state, None)
         .await
         .unwrap();
 
@@ -1865,11 +1957,31 @@ async fn test_phase_8_iteration_mode_read_by_auto_run() {
     assert_eq!(default_mode, IterationMode::Autonomous);
 
     // Verify wizard state was updated
-    let updated_state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let updated_state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     assert!(updated_state.completed_phases.contains(&8));
     assert!(updated_state.gathered_info.get("iteration_mode").is_some());
+}
+
+#[tokio::test]
+async fn test_phase_8_prefers_current_wizard_cli_for_ai_cli() {
+    let _lock = lock();
+    let (_engine, _tmp, _guard) = setup_engine().await;
+
+    let prd_conn = prd::get_or_init_prd_db().unwrap();
+    save_state_through_phase(&prd_conn, 7);
+    setup_db_through_phase(&prd_conn, 7);
+
+    let mut state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
+    let provider = SequentialMockProvider::named("copilot", vec![phase_8_response()]);
+
+    let mode = prd::wizard::run_wizard_phase_8(&provider, &prd_conn, &mut state, None)
+        .await
+        .unwrap();
+
+    assert_eq!(mode, "review_every:3");
+
+    let stored_cli = dial_core::config::config_get("ai_cli").unwrap().unwrap();
+    assert_eq!(stored_cli, "copilot");
 }
 
 // ===========================================================================
@@ -1879,11 +1991,8 @@ async fn test_phase_8_iteration_mode_read_by_auto_run() {
 #[test]
 fn test_phase_4_prompt_contains_specificity_check() {
     let state = prd::wizard::WizardState::new("spec");
-    let prompt = prd::wizard::build_phase_prompt(
-        prd::wizard::WizardPhase::GapAnalysis,
-        &state,
-        None,
-    );
+    let prompt =
+        prd::wizard::build_phase_prompt(prd::wizard::WizardPhase::GapAnalysis, &state, None);
 
     // Verify SPECIFICITY CHECK section is present
     assert!(
@@ -1948,7 +2057,10 @@ fn test_phase_4_prompt_contains_specificity_check() {
     );
 
     // Verify the prompt still includes the original gap analysis fields
-    assert!(prompt.contains("\"gaps\""), "Prompt should still include gaps");
+    assert!(
+        prompt.contains("\"gaps\""),
+        "Prompt should still include gaps"
+    );
     assert!(
         prompt.contains("\"contradictions\""),
         "Prompt should still include contradictions"
@@ -1971,11 +2083,8 @@ fn test_phase_4_prompt_with_prior_context() {
         state.completed_phases.push(p);
     }
 
-    let prompt = prd::wizard::build_phase_prompt(
-        prd::wizard::WizardPhase::GapAnalysis,
-        &state,
-        None,
-    );
+    let prompt =
+        prd::wizard::build_phase_prompt(prd::wizard::WizardPhase::GapAnalysis, &state, None);
 
     // Should include prior gathered info
     assert!(
@@ -2060,8 +2169,14 @@ fn test_parse_specificity_response_missing_fields() {
 
     let (ratings, rewrites) = prd::wizard::parse_specificity_response(&data);
 
-    assert!(ratings.is_empty(), "Should return empty ratings for old-style response");
-    assert!(rewrites.is_empty(), "Should return empty rewrites for old-style response");
+    assert!(
+        ratings.is_empty(),
+        "Should return empty ratings for old-style response"
+    );
+    assert!(
+        rewrites.is_empty(),
+        "Should return empty rewrites for old-style response"
+    );
 }
 
 // ===========================================================================
@@ -2079,6 +2194,7 @@ fn test_parse_specificity_response_malformed_entries() {
         ],
         "rewritten_sections": [
             {"section": "valid", "original": "old text", "rewritten": "new text"},
+            {"section": "summary_only", "rewrite_summary": "new summary text"},
             {"section": "missing_rewritten", "original": "old"},
             {"original": "no section", "rewritten": "new"}
         ]
@@ -2087,13 +2203,26 @@ fn test_parse_specificity_response_malformed_entries() {
     let (ratings, rewrites) = prd::wizard::parse_specificity_response(&data);
 
     // Only entries with all required fields are included
-    assert_eq!(ratings.len(), 2, "Should parse valid entries and skip malformed");
+    assert_eq!(
+        ratings.len(),
+        2,
+        "Should parse valid entries and skip malformed"
+    );
     assert_eq!(ratings[0].section, "valid");
     assert_eq!(ratings[1].section, "no_issues");
-    assert!(ratings[1].issues.is_empty(), "Missing issues field defaults to empty vec");
+    assert!(
+        ratings[1].issues.is_empty(),
+        "Missing issues field defaults to empty vec"
+    );
 
-    assert_eq!(rewrites.len(), 1, "Should only parse fully valid rewrites");
+    assert_eq!(
+        rewrites.len(),
+        2,
+        "Should parse old and concise rewrite shapes"
+    );
     assert_eq!(rewrites[0].section, "valid");
+    assert_eq!(rewrites[1].section, "summary_only");
+    assert!(rewrites[1].original.is_empty());
 }
 
 // ===========================================================================
@@ -2108,12 +2237,39 @@ async fn test_phase_4_vague_section_rewrite_in_prd_db() {
     let prd_conn = prd::get_or_init_prd_db().unwrap();
 
     // Pre-populate prd.db with sections (as if imported via `--from`)
-    prd::prd_insert_section(&prd_conn, "1", "Overview", None, 1, 0,
-        "The system should handle various tasks", 6).unwrap();
-    prd::prd_insert_section(&prd_conn, "2", "Architecture", None, 1, 1,
-        "Uses a modular architecture with defined interfaces", 7).unwrap();
-    prd::prd_insert_section(&prd_conn, "3", "Requirements", None, 1, 2,
-        "Some requirements might be added later etc.", 7).unwrap();
+    prd::prd_insert_section(
+        &prd_conn,
+        "1",
+        "Overview",
+        None,
+        1,
+        0,
+        "The system should handle various tasks",
+        6,
+    )
+    .unwrap();
+    prd::prd_insert_section(
+        &prd_conn,
+        "2",
+        "Architecture",
+        None,
+        1,
+        1,
+        "Uses a modular architecture with defined interfaces",
+        7,
+    )
+    .unwrap();
+    prd::prd_insert_section(
+        &prd_conn,
+        "3",
+        "Requirements",
+        None,
+        1,
+        2,
+        "Some requirements might be added later etc.",
+        7,
+    )
+    .unwrap();
 
     // Set up wizard state through phase 3
     save_state_through_phase(&prd_conn, 3);
@@ -2148,10 +2304,7 @@ async fn test_phase_4_vague_section_rewrite_in_prd_db() {
 
     // Run with phase 4 rewrite response + phase 5 generate response
     seed_spec_sections();
-    let responses = vec![
-        phase_4_with_rewrites,
-        phase_5_response(),
-    ];
+    let responses = vec![phase_4_with_rewrites, phase_5_response()];
     let provider = SequentialMockProvider::new(responses);
 
     let _result = prd::wizard::run_wizard(&provider, &prd_conn, "spec", None, true, false)
@@ -2172,12 +2325,22 @@ async fn test_phase_4_vague_section_rewrite_in_prd_db() {
     assert_eq!(ratings[2]["rating"].as_str().unwrap(), "VAGUE");
 
     // Verify rewritten_sections are stored
-    let rewrites = gap_data.get("rewritten_sections").unwrap().as_array().unwrap();
+    let rewrites = gap_data
+        .get("rewritten_sections")
+        .unwrap()
+        .as_array()
+        .unwrap();
     assert_eq!(rewrites.len(), 2);
     assert_eq!(rewrites[0]["section"].as_str().unwrap(), "Overview");
-    assert!(rewrites[0]["rewritten"].as_str().unwrap().contains("Acceptance criteria"));
+    assert!(rewrites[0]["rewritten"]
+        .as_str()
+        .unwrap()
+        .contains("Acceptance criteria"));
     assert_eq!(rewrites[1]["section"].as_str().unwrap(), "Requirements");
-    assert!(rewrites[1]["rewritten"].as_str().unwrap().contains("Functional requirements"));
+    assert!(rewrites[1]["rewritten"]
+        .as_str()
+        .unwrap()
+        .contains("Functional requirements"));
 }
 
 // ===========================================================================
@@ -2192,16 +2355,36 @@ async fn test_apply_specificity_rewrites_updates_sections() {
     let prd_conn = prd::get_or_init_prd_db().unwrap();
 
     // Insert sections
-    prd::prd_insert_section(&prd_conn, "1", "Overview", None, 1, 0,
-        "The system should handle various tasks", 6).unwrap();
-    prd::prd_insert_section(&prd_conn, "2", "Architecture", None, 1, 1,
-        "Clean architecture with layers", 5).unwrap();
+    prd::prd_insert_section(
+        &prd_conn,
+        "1",
+        "Overview",
+        None,
+        1,
+        0,
+        "The system should handle various tasks",
+        6,
+    )
+    .unwrap();
+    prd::prd_insert_section(
+        &prd_conn,
+        "2",
+        "Architecture",
+        None,
+        1,
+        1,
+        "Clean architecture with layers",
+        5,
+    )
+    .unwrap();
 
     let rewrites = vec![
         prd::wizard::RewrittenSection {
             section: "Overview".to_string(),
             original: "The system should handle various tasks".to_string(),
-            rewritten: "The system processes build, test, and deploy tasks with <500ms p95 latency.".to_string(),
+            rewritten:
+                "The system processes build, test, and deploy tasks with <500ms p95 latency."
+                    .to_string(),
         },
         prd::wizard::RewrittenSection {
             section: "Nonexistent Section".to_string(),
@@ -2211,7 +2394,10 @@ async fn test_apply_specificity_rewrites_updates_sections() {
     ];
 
     let updated = prd::wizard::apply_specificity_rewrites(&prd_conn, &rewrites).unwrap();
-    assert_eq!(updated, 1, "Should update 1 section (Overview), skip nonexistent");
+    assert_eq!(
+        updated, 1,
+        "Should update 1 section (Overview), skip nonexistent"
+    );
 
     // Verify the content was updated
     let section = prd::prd_get_section(&prd_conn, "1").unwrap().unwrap();
@@ -2227,7 +2413,8 @@ async fn test_apply_specificity_rewrites_updates_sections() {
 
     // Verify word count was recalculated
     let expected_wc = "The system processes build, test, and deploy tasks with <500ms p95 latency."
-        .split_whitespace().count() as i32;
+        .split_whitespace()
+        .count() as i32;
     assert_eq!(section.word_count, expected_wc);
 
     // Verify the other section was NOT modified
@@ -2243,9 +2430,24 @@ async fn test_apply_specificity_rewrites_updates_sections() {
 fn test_phase_7_prompt_contains_test_strategy() {
     let gathered_info = gathered_info_through_phase(6);
     let tasks: Vec<(i64, String, i32, Option<String>)> = vec![
-        (1, "Set up project scaffolding".to_string(), 1, Some("1".to_string())),
-        (2, "Implement wizard phase engine".to_string(), 2, Some("2".to_string())),
-        (3, "Add integration tests".to_string(), 3, Some("3".to_string())),
+        (
+            1,
+            "Set up project scaffolding".to_string(),
+            1,
+            Some("1".to_string()),
+        ),
+        (
+            2,
+            "Implement wizard phase engine".to_string(),
+            2,
+            Some("2".to_string()),
+        ),
+        (
+            3,
+            "Add integration tests".to_string(),
+            3,
+            Some("3".to_string()),
+        ),
     ];
 
     let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info, &tasks);
@@ -2425,7 +2627,10 @@ fn test_parse_test_strategy_response_missing_fields() {
     });
 
     let test_tasks = prd::wizard::parse_test_strategy_response(&data);
-    assert!(test_tasks.is_empty(), "Should return empty vec for old-style response");
+    assert!(
+        test_tasks.is_empty(),
+        "Should return empty vec for old-style response"
+    );
 }
 
 // ===========================================================================
@@ -2446,7 +2651,11 @@ fn test_parse_test_strategy_response_malformed_entries() {
     let test_tasks = prd::wizard::parse_test_strategy_response(&data);
 
     // Only entries with required "description" field pass the filter_map
-    assert_eq!(test_tasks.len(), 3, "Should parse entries with description, skip one without");
+    assert_eq!(
+        test_tasks.len(),
+        3,
+        "Should parse entries with description, skip one without"
+    );
     assert_eq!(test_tasks[0].description, "Valid test task");
     assert_eq!(test_tasks[0].depends_on_feature, 0);
 
@@ -2481,7 +2690,10 @@ async fn test_phase_7_feature_test_task_pairing() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(pre_task_count, 3, "Should have 3 feature tasks from Phase 6");
+    assert_eq!(
+        pre_task_count, 3,
+        "Should have 3 feature tasks from Phase 6"
+    );
 
     // Phase 7 response with 2 test tasks targeting different feature tasks
     let response_with_tests = serde_json::to_string(&json!({
@@ -2512,13 +2724,11 @@ async fn test_phase_7_feature_test_task_pairing() {
     .unwrap();
 
     // Load state and run phase 7
-    let mut state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let mut state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     let provider = SequentialMockProvider::new(vec![response_with_tests]);
 
     let (build_cmd, test_cmd, steps_count, test_tasks_count) =
-        prd::wizard::run_wizard_phase_7(&provider, &prd_conn, &mut state)
+        prd::wizard::run_wizard_phase_7(&provider, &prd_conn, &mut state, None)
             .await
             .unwrap();
 
@@ -2536,7 +2746,10 @@ async fn test_phase_7_feature_test_task_pairing() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(post_task_count, 5, "Should have 5 tasks total (3 feature + 2 test)");
+    assert_eq!(
+        post_task_count, 5,
+        "Should have 5 tasks total (3 feature + 2 test)"
+    );
 
     // Verify test tasks have correct descriptions
     let test_task_1: String = phase_conn
@@ -2609,14 +2822,18 @@ async fn test_phase_7_feature_test_task_pairing() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(test_task_priority, 2, "Test task priority should be feature priority (1) + 1");
+    assert_eq!(
+        test_task_priority, 2,
+        "Test task priority should be feature priority (1) + 1"
+    );
 
     // Verify wizard state was updated
-    let updated_state = prd::wizard::load_wizard_state(&prd_conn)
-        .unwrap()
-        .unwrap();
+    let updated_state = prd::wizard::load_wizard_state(&prd_conn).unwrap().unwrap();
     assert!(updated_state.completed_phases.contains(&7));
-    assert!(updated_state.gathered_info.get("build_&_test_config").is_some());
+    assert!(updated_state
+        .gathered_info
+        .get("build_&_test_config")
+        .is_some());
     // Verify test_tasks are stored in gathered_info
     let config_data = &updated_state.gathered_info["build_&_test_config"];
     assert!(

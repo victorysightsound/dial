@@ -56,7 +56,11 @@ async fn test_prd_import_from_markdown_directory() {
     let h2_sections: Vec<_> = sections.iter().filter(|s| s.level == 2).collect();
     assert!(!h2_sections.is_empty());
     for s in &h2_sections {
-        assert!(s.parent_id.is_some(), "h2 section '{}' should have a parent_id", s.title);
+        assert!(
+            s.parent_id.is_some(),
+            "h2 section '{}' should have a parent_id",
+            s.title
+        );
     }
 
     // FTS search
@@ -79,7 +83,8 @@ async fn test_prd_import_single_file() {
     std::fs::write(
         &md_file,
         "# Test Doc\n\nSome content.\n\n## Section A\n\nDetails about A.\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let count = prd::import::prd_import_file(&md_file).unwrap();
     assert_eq!(count, 2);
@@ -117,10 +122,26 @@ async fn test_prd_terminology_crud() {
 
     let conn = prd::get_or_init_prd_db().unwrap();
 
-    let id = prd::prd_add_term(&conn, "API", "[\"api\", \"Rest API\"]", "Application Programming Interface", "technical", None).unwrap();
+    let id = prd::prd_add_term(
+        &conn,
+        "API",
+        "[\"api\", \"Rest API\"]",
+        "Application Programming Interface",
+        "technical",
+        None,
+    )
+    .unwrap();
     assert!(id > 0);
 
-    prd::prd_add_term(&conn, "PRD", "[\"prd\"]", "Product Requirements Document", "domain", Some("overview")).unwrap();
+    prd::prd_add_term(
+        &conn,
+        "PRD",
+        "[\"prd\"]",
+        "Product Requirements Document",
+        "domain",
+        Some("overview"),
+    )
+    .unwrap();
     prd::prd_add_term(&conn, "FTS", "[]", "Full-Text Search", "technical", None).unwrap();
 
     let all = prd::prd_list_terms(&conn, None).unwrap();
@@ -149,9 +170,39 @@ async fn test_prd_section_crud() {
 
     let conn = prd::get_or_init_prd_db().unwrap();
 
-    prd::prd_insert_section(&conn, "1", "Overview", None, 1, 0, "This is the overview.", 4).unwrap();
-    prd::prd_insert_section(&conn, "1.1", "Goals", Some("1"), 2, 1, "Our goals are clear.", 4).unwrap();
-    prd::prd_insert_section(&conn, "1.2", "Non-Goals", Some("1"), 2, 2, "What we won't do.", 4).unwrap();
+    prd::prd_insert_section(
+        &conn,
+        "1",
+        "Overview",
+        None,
+        1,
+        0,
+        "This is the overview.",
+        4,
+    )
+    .unwrap();
+    prd::prd_insert_section(
+        &conn,
+        "1.1",
+        "Goals",
+        Some("1"),
+        2,
+        1,
+        "Our goals are clear.",
+        4,
+    )
+    .unwrap();
+    prd::prd_insert_section(
+        &conn,
+        "1.2",
+        "Non-Goals",
+        Some("1"),
+        2,
+        2,
+        "What we won't do.",
+        4,
+    )
+    .unwrap();
 
     let section = prd::prd_get_section(&conn, "1.1").unwrap();
     assert!(section.is_some());
@@ -182,12 +233,35 @@ async fn test_context_assembly_uses_prd_when_available() {
 
     // Create prd.db with sections containing distinctive content
     let conn = prd::get_or_init_prd_db().unwrap();
-    prd::prd_insert_section(&conn, "1", "Authentication", None, 1, 0, "Users authenticate via OAuth2 tokens and bearer authentication.", 7).unwrap();
-    prd::prd_insert_section(&conn, "2", "Data Model", None, 1, 1, "The data model uses SQLite with FTS5 for search.", 9).unwrap();
+    prd::prd_insert_section(
+        &conn,
+        "1",
+        "Authentication",
+        None,
+        1,
+        0,
+        "Users authenticate via OAuth2 tokens and bearer authentication.",
+        7,
+    )
+    .unwrap();
+    prd::prd_insert_section(
+        &conn,
+        "2",
+        "Data Model",
+        None,
+        1,
+        1,
+        "The data model uses SQLite with FTS5 for search.",
+        9,
+    )
+    .unwrap();
     drop(conn);
 
     // Add a task whose description matches PRD content
-    let task_id = engine.task_add("Implement authentication", 1, None).await.unwrap();
+    let task_id = engine
+        .task_add("Implement authentication", 1, None)
+        .await
+        .unwrap();
     let task = engine.task_get(task_id).await.unwrap();
 
     // Verify prd.db is detected
@@ -217,7 +291,10 @@ async fn test_context_falls_back_to_spec_sections_without_prd() {
 
     let phase_conn = dial_core::get_db(Some("test")).unwrap();
     let context = dial_core::iteration::context::gather_context(&phase_conn, &task).unwrap();
-    assert!(!context.is_empty(), "Context should still include signs and other non-spec content");
+    assert!(
+        !context.is_empty(),
+        "Context should still include signs and other non-spec content"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -235,7 +312,8 @@ async fn test_wizard_state_save_and_load() {
     assert_eq!(state.current_phase, prd::wizard::WizardPhase::Vision);
     assert!(state.completed_phases.is_empty());
 
-    prd::wizard::save_wizard_state(&conn, &state).unwrap();
+    prd::wizard::save_wizard_state(&conn, &mut state).unwrap();
+    assert!(state.id > 0, "first save should retain the inserted row id");
 
     let loaded = prd::wizard::load_wizard_state(&conn).unwrap();
     assert!(loaded.is_some());
@@ -244,16 +322,28 @@ async fn test_wizard_state_save_and_load() {
     assert_eq!(loaded.current_phase, prd::wizard::WizardPhase::Vision);
 
     state.mark_phase_complete(prd::wizard::WizardPhase::Vision);
-    state.set_phase_data(prd::wizard::WizardPhase::Vision, serde_json::json!({
-        "problem": "Users need better specs",
-        "target_users": "Developers"
-    }));
-    prd::wizard::save_wizard_state(&conn, &state).unwrap();
+    state.set_phase_data(
+        prd::wizard::WizardPhase::Vision,
+        serde_json::json!({
+            "problem": "Users need better specs",
+            "target_users": "Developers"
+        }),
+    );
+    prd::wizard::save_wizard_state(&conn, &mut state).unwrap();
+    let wizard_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM wizard_state", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(wizard_rows, 1, "state updates should not create extra rows");
 
     let reloaded = prd::wizard::load_wizard_state(&conn).unwrap().unwrap();
-    assert_eq!(reloaded.current_phase, prd::wizard::WizardPhase::Functionality);
+    assert_eq!(
+        reloaded.current_phase,
+        prd::wizard::WizardPhase::Functionality
+    );
     assert!(reloaded.completed_phases.contains(&1));
-    assert!(reloaded.gathered_info["vision"]["problem"].as_str().is_some());
+    assert!(reloaded.gathered_info["vision"]["problem"]
+        .as_str()
+        .is_some());
 
     prd::wizard::clear_wizard_state(&conn).unwrap();
     let cleared = prd::wizard::load_wizard_state(&conn).unwrap();
@@ -274,7 +364,8 @@ async fn test_engine_prd_import_and_list() {
     std::fs::write(
         specs_dir.join("test.md"),
         "# Test\n\nContent here.\n\n## Sub\n\nSub content.\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     engine.prd_import("specs").await.unwrap();
 
@@ -296,7 +387,16 @@ async fn test_engine_prd_term_methods() {
     let _lock = lock();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let id = engine.prd_term_add("DIAL", "[]", "Deterministic Iterative Agent Loop", "acronym", None).await.unwrap();
+    let id = engine
+        .prd_term_add(
+            "DIAL",
+            "[]",
+            "Deterministic Iterative Agent Loop",
+            "acronym",
+            None,
+        )
+        .await
+        .unwrap();
     assert!(id > 0);
 
     let terms = engine.prd_term_list(None).await.unwrap();
@@ -389,7 +489,15 @@ async fn test_apply_build_test_config_writes_config_and_steps() {
         .prepare("SELECT name, command, sort_order, required, timeout_secs FROM validation_steps ORDER BY sort_order")
         .unwrap();
     let steps: Vec<(String, String, i32, i32, Option<i64>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap();
@@ -460,10 +568,16 @@ async fn test_apply_build_test_config_normalizes_unicode_dash_commands() {
     assert_eq!(steps_count, 2);
 
     let stored_build_cmd = dial_core::config::config_get("build_cmd").unwrap();
-    assert_eq!(stored_build_cmd, Some("cargo --workspace build".to_string()));
+    assert_eq!(
+        stored_build_cmd,
+        Some("cargo --workspace build".to_string())
+    );
 
     let stored_test_cmd = dial_core::config::config_get("test_cmd").unwrap();
-    assert_eq!(stored_test_cmd, Some("cargo test --all-features".to_string()));
+    assert_eq!(
+        stored_test_cmd,
+        Some("cargo test --all-features".to_string())
+    );
 
     let mut stmt = phase_conn
         .prepare("SELECT name, command FROM validation_steps ORDER BY sort_order, id")
@@ -475,8 +589,14 @@ async fn test_apply_build_test_config_normalizes_unicode_dash_commands() {
         .unwrap();
 
     assert_eq!(steps.len(), 2);
-    assert_eq!(steps[0], ("build".to_string(), "cargo --workspace build".to_string()));
-    assert_eq!(steps[1], ("test".to_string(), "cargo test --all-features".to_string()));
+    assert_eq!(
+        steps[0],
+        ("build".to_string(), "cargo --workspace build".to_string())
+    );
+    assert_eq!(
+        steps[1],
+        ("test".to_string(), "cargo test --all-features".to_string())
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -578,6 +698,32 @@ async fn test_apply_iteration_mode_defaults() {
 }
 
 #[tokio::test]
+async fn test_apply_iteration_mode_preference_overrides_model_choice() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    let mode_data = json!({
+        "recommended_mode": "review_every",
+        "review_interval": 5,
+        "ai_cli": "claude",
+        "subagent_timeout": 1200,
+        "rationale": "Prefer the current wizard CLI"
+    });
+
+    let mode =
+        prd::wizard::apply_iteration_mode_with_preference(&phase_conn, &mode_data, Some("copilot"))
+            .unwrap();
+
+    assert_eq!(mode, "review_every:5");
+    let stored_cli = dial_core::config::config_get("ai_cli").unwrap();
+    assert_eq!(stored_cli, Some("copilot".to_string()));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
 async fn test_apply_iteration_mode_review_each() {
     let _lock = lock();
     let (_engine, _tmp, original_dir) = setup_engine().await;
@@ -653,14 +799,17 @@ async fn test_run_wizard_phase_9_writes_launch_ready() {
             state.current_phase = prd::wizard::WizardPhase::Launch;
         }
     }
-    prd::wizard::save_wizard_state(&prd_conn, &state).unwrap();
+    prd::wizard::save_wizard_state(&prd_conn, &mut state).unwrap();
 
     // Run phase 9
-    let (project_name, task_count) =
-        prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
+    let summary = prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
 
-    assert_eq!(project_name, "TestProject");
-    assert_eq!(task_count, 2);
+    assert_eq!(summary.project_name, "TestProject");
+    assert_eq!(summary.task_count, 2);
+    assert_eq!(summary.build_cmd, "cargo build");
+    assert_eq!(summary.test_cmd, "cargo test");
+    assert_eq!(summary.iteration_mode, "autonomous");
+    assert_eq!(summary.ai_cli, "claude");
 
     // Verify launch_ready flag is written in gathered_info
     assert_eq!(
@@ -671,7 +820,10 @@ async fn test_run_wizard_phase_9_writes_launch_ready() {
         state.gathered_info["launch"]["project_name"].as_str(),
         Some("TestProject")
     );
-    assert_eq!(state.gathered_info["launch"]["task_count"].as_u64(), Some(2));
+    assert_eq!(
+        state.gathered_info["launch"]["task_count"].as_u64(),
+        Some(2)
+    );
     assert_eq!(
         state.gathered_info["launch"]["build_cmd"].as_str(),
         Some("cargo build")
@@ -705,13 +857,12 @@ async fn test_run_wizard_phase_9_skips_if_already_complete() {
     );
     // Mark phase 9 already complete
     state.completed_phases.push(9);
-    prd::wizard::save_wizard_state(&prd_conn, &state).unwrap();
+    prd::wizard::save_wizard_state(&prd_conn, &mut state).unwrap();
 
-    let (project_name, task_count) =
-        prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
+    let summary = prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
 
-    assert_eq!(project_name, "SkipProject");
-    assert_eq!(task_count, 0);
+    assert_eq!(summary.project_name, "SkipProject");
+    assert_eq!(summary.task_count, 0);
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -725,13 +876,12 @@ async fn test_run_wizard_phase_9_defaults_when_no_vision() {
 
     // No vision data, no config set
     let mut state = prd::wizard::WizardState::new("spec");
-    prd::wizard::save_wizard_state(&prd_conn, &state).unwrap();
+    prd::wizard::save_wizard_state(&prd_conn, &mut state).unwrap();
 
-    let (project_name, task_count) =
-        prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
+    let summary = prd::wizard::run_wizard_phase_9(&prd_conn, &mut state).unwrap();
 
-    assert_eq!(project_name, "Unknown");
-    assert_eq!(task_count, 0);
+    assert_eq!(summary.project_name, "Unknown");
+    assert_eq!(summary.task_count, 0);
 
     // Verify defaults show "(not set)" for unconfigured values
     assert_eq!(
@@ -828,7 +978,9 @@ fn test_wizard_phase_next_chain() {
         WizardPhase::Launch,
     ];
     for expected_next in &expected {
-        let next = phase.next().expect(&format!("{:?} should have a next phase", phase));
+        let next = phase
+            .next()
+            .expect(&format!("{:?} should have a next phase", phase));
         assert_eq!(next, *expected_next);
         phase = next;
     }
@@ -871,8 +1023,18 @@ fn test_wizard_phase_round_trip() {
 #[test]
 fn test_build_task_review_prompt_with_tasks() {
     let tasks: Vec<(i64, String, i32, Option<String>)> = vec![
-        (1, "Set up project skeleton".to_string(), 1, Some("1.1".to_string())),
-        (2, "Implement auth module".to_string(), 2, Some("2.1".to_string())),
+        (
+            1,
+            "Set up project skeleton".to_string(),
+            1,
+            Some("1.1".to_string()),
+        ),
+        (
+            2,
+            "Implement auth module".to_string(),
+            2,
+            Some("2.1".to_string()),
+        ),
         (3, "Add database layer".to_string(), 3, None),
     ];
     let gathered_info = json!({
@@ -885,16 +1047,23 @@ fn test_build_task_review_prompt_with_tasks() {
     // Should include each task with its ID, priority, section, and description
     assert!(prompt.contains("[#1]"), "prompt should include task ID 1");
     assert!(prompt.contains("P1"), "prompt should include priority P1");
-    assert!(prompt.contains("section: 1.1"), "prompt should include section 1.1");
+    assert!(
+        prompt.contains("section: 1.1"),
+        "prompt should include section 1.1"
+    );
     assert!(prompt.contains("Set up project skeleton"));
     assert!(prompt.contains("[#2]"));
     assert!(prompt.contains("Implement auth module"));
     assert!(prompt.contains("[#3]"));
-    assert!(prompt.contains("section: none"), "task without section should show 'none'");
+    assert!(
+        prompt.contains("section: none"),
+        "task without section should show 'none'"
+    );
 
-    // Should include PRD context
-    assert!(prompt.contains("Full PRD Context"));
+    // Should include the slimmer project context summary
+    assert!(prompt.contains("Project Summary"));
     assert!(prompt.contains("TestApp"));
+    assert!(!prompt.contains("Full PRD Context"));
 
     // Should include review instructions
     assert!(prompt.contains("0-based indices"));
@@ -909,15 +1078,14 @@ fn test_build_task_review_prompt_empty_tasks() {
     let prompt = prd::wizard::build_task_review_prompt(&tasks, &gathered_info);
 
     assert!(prompt.contains("No tasks have been generated yet."));
-    // Empty gathered_info should not include PRD context section
+    // Empty gathered_info should not include project context sections
     assert!(!prompt.contains("Full PRD Context"));
+    assert!(!prompt.contains("Project Summary"));
 }
 
 #[test]
 fn test_build_task_review_prompt_no_gathered_info() {
-    let tasks = vec![
-        (1, "A task".to_string(), 1, None),
-    ];
+    let tasks = vec![(1, "A task".to_string(), 1, None)];
     let gathered_info = json!({});
 
     let prompt = prd::wizard::build_task_review_prompt(&tasks, &gathered_info);
@@ -925,6 +1093,7 @@ fn test_build_task_review_prompt_no_gathered_info() {
     assert!(prompt.contains("[#1]"));
     assert!(prompt.contains("A task"));
     assert!(!prompt.contains("Full PRD Context"));
+    assert!(!prompt.contains("Project Summary"));
 }
 
 // =============================================================================
@@ -948,7 +1117,8 @@ fn test_build_build_test_config_prompt_with_technical() {
     assert!(prompt.contains("Technical Details (from Phase 3)"));
     assert!(prompt.contains("Rust"));
     assert!(prompt.contains("Actix Web"));
-    assert!(prompt.contains("Full PRD Context"));
+    assert!(prompt.contains("Project Summary"));
+    assert!(!prompt.contains("Full PRD Context"));
     assert!(prompt.contains("pipeline_steps"));
     assert!(prompt.contains("Respond ONLY with valid JSON"));
 }
@@ -962,8 +1132,9 @@ fn test_build_build_test_config_prompt_no_technical() {
     let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info, &[]);
 
     assert!(prompt.contains("No technical details available from prior phases."));
-    // Should still include PRD context from gathered_info
-    assert!(prompt.contains("Full PRD Context"));
+    // Should still include the project summary from gathered_info
+    assert!(prompt.contains("Project Summary"));
+    assert!(!prompt.contains("Full PRD Context"));
 }
 
 #[test]
@@ -974,6 +1145,7 @@ fn test_build_build_test_config_prompt_empty_gathered_info() {
 
     assert!(prompt.contains("No technical details available from prior phases."));
     assert!(!prompt.contains("Full PRD Context"));
+    assert!(!prompt.contains("Project Summary"));
 }
 
 // =============================================================================
@@ -1004,6 +1176,22 @@ fn test_build_iteration_mode_prompt_with_complexity() {
     assert!(prompt.contains("review_every"));
     assert!(prompt.contains("review_each"));
     assert!(prompt.contains("Respond ONLY with valid JSON"));
+}
+
+#[test]
+fn test_build_iteration_mode_prompt_with_current_cli_hint() {
+    let gathered_info = json!({
+        "vision": {"project_name": "ComplexApp"}
+    });
+
+    let prompt = prd::wizard::build_iteration_mode_prompt_with_preference(
+        &gathered_info,
+        5,
+        Some("copilot"),
+    );
+
+    assert!(prompt.contains("Current machine-default CLI"));
+    assert!(prompt.contains("`copilot`"));
 }
 
 #[test]
@@ -1050,14 +1238,18 @@ async fn test_apply_task_review_valid_response() {
     let phase_conn = dial_core::get_db(Some("test")).unwrap();
 
     // Seed some existing tasks (as if phase 5 generated them)
-    phase_conn.execute(
-        "INSERT INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
-        rusqlite::params!["Old task one", 1, "pending"],
-    ).unwrap();
-    phase_conn.execute(
-        "INSERT INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
-        rusqlite::params!["Old task two", 2, "pending"],
-    ).unwrap();
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["Old task one", 1, "pending"],
+        )
+        .unwrap();
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["Old task two", 2, "pending"],
+        )
+        .unwrap();
 
     let review_data = json!({
         "tasks": [
@@ -1075,35 +1267,48 @@ async fn test_apply_task_review_valid_response() {
 
     let (kept, added, removed) = prd::wizard::apply_task_review(&phase_conn, &review_data).unwrap();
 
-    assert_eq!(kept, 2);   // 3 tasks - 1 added = 2 kept
+    assert_eq!(kept, 2); // 3 tasks - 1 added = 2 kept
     assert_eq!(added, 1);
     assert_eq!(removed, 1);
 
     // Verify old tasks were deleted and new ones inserted
-    let count: i64 = phase_conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE status = 'pending'", [], |r| r.get(0)
-    ).unwrap();
+    let count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(count, 3);
 
     // Verify descriptions
-    let mut stmt = phase_conn.prepare(
-        "SELECT description FROM tasks WHERE status = 'pending' ORDER BY priority"
-    ).unwrap();
-    let descs: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap()
-        .collect::<std::result::Result<Vec<_>, _>>().unwrap();
-    assert_eq!(descs, vec!["Set up project", "Add database", "Implement API"]);
+    let mut stmt = phase_conn
+        .prepare("SELECT description FROM tasks WHERE status = 'pending' ORDER BY priority")
+        .unwrap();
+    let descs: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        descs,
+        vec!["Set up project", "Add database", "Implement API"]
+    );
 
     // Verify prd_section_id was set
-    let section: Option<String> = phase_conn.query_row(
-        "SELECT prd_section_id FROM tasks WHERE description = 'Set up project'",
-        [], |r| r.get(0)
-    ).unwrap();
+    let section: Option<String> = phase_conn
+        .query_row(
+            "SELECT prd_section_id FROM tasks WHERE description = 'Set up project'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(section, Some("1.0".to_string()));
 
     // Verify dependency relationships were created
-    let dep_count: i64 = phase_conn.query_row(
-        "SELECT COUNT(*) FROM task_dependencies", [], |r| r.get(0)
-    ).unwrap();
+    let dep_count: i64 = phase_conn
+        .query_row("SELECT COUNT(*) FROM task_dependencies", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(dep_count, 3); // task 2 depends on 0; task 3 depends on 0 and 1
 
     env::set_current_dir(original_dir).unwrap();
@@ -1125,7 +1330,11 @@ async fn test_apply_task_review_missing_tasks_array() {
     let result = prd::wizard::apply_task_review(&phase_conn, &review_data);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("tasks"), "error should mention missing 'tasks': {}", err_msg);
+    assert!(
+        err_msg.contains("tasks"),
+        "error should mention missing 'tasks': {}",
+        err_msg
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -1156,18 +1365,21 @@ async fn test_apply_task_review_malformed_task_fields() {
     assert_eq!(kept, 3); // 3 tasks - 0 added
 
     // Verify tasks inserted with defaults
-    let mut stmt = phase_conn.prepare(
-        "SELECT description, priority FROM tasks WHERE status = 'pending' ORDER BY rowid"
-    ).unwrap();
-    let rows: Vec<(String, i32)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+    let mut stmt = phase_conn
+        .prepare("SELECT description, priority FROM tasks WHERE status = 'pending' ORDER BY rowid")
+        .unwrap();
+    let rows: Vec<(String, i32)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
 
-    assert_eq!(rows[0].0, "Untitled task");  // default description
-    assert_eq!(rows[0].1, 5);                // default priority
+    assert_eq!(rows[0].0, "Untitled task"); // default description
+    assert_eq!(rows[0].1, 5); // default priority
     assert_eq!(rows[1].0, "Has desc only");
-    assert_eq!(rows[1].1, 5);                // default priority
-    assert_eq!(rows[2].0, "Untitled task");  // no description key
-    assert_eq!(rows[2].1, 99);               // explicit priority
+    assert_eq!(rows[1].1, 5); // default priority
+    assert_eq!(rows[2].0, "Untitled task"); // no description key
+    assert_eq!(rows[2].1, 99); // explicit priority
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -1186,13 +1398,14 @@ async fn test_apply_task_review_self_dependency_ignored() {
         ]
     });
 
-    let (kept, _added, _removed) = prd::wizard::apply_task_review(&phase_conn, &review_data).unwrap();
+    let (kept, _added, _removed) =
+        prd::wizard::apply_task_review(&phase_conn, &review_data).unwrap();
     assert_eq!(kept, 1);
 
     // Self-dependency should not be inserted
-    let dep_count: i64 = phase_conn.query_row(
-        "SELECT COUNT(*) FROM task_dependencies", [], |r| r.get(0)
-    ).unwrap();
+    let dep_count: i64 = phase_conn
+        .query_row("SELECT COUNT(*) FROM task_dependencies", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(dep_count, 0);
 
     env::set_current_dir(original_dir).unwrap();
@@ -1214,9 +1427,9 @@ async fn test_apply_task_review_out_of_bounds_dependency_ignored() {
 
     prd::wizard::apply_task_review(&phase_conn, &review_data).unwrap();
 
-    let dep_count: i64 = phase_conn.query_row(
-        "SELECT COUNT(*) FROM task_dependencies", [], |r| r.get(0)
-    ).unwrap();
+    let dep_count: i64 = phase_conn
+        .query_row("SELECT COUNT(*) FROM task_dependencies", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(dep_count, 0);
 
     env::set_current_dir(original_dir).unwrap();
@@ -1278,27 +1491,35 @@ async fn test_apply_build_test_config_malformed_pipeline_steps() {
         "SELECT name, command, sort_order, required, timeout_secs FROM validation_steps ORDER BY rowid"
     ).unwrap();
     let steps: Vec<(String, String, i32, i32, Option<i64>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap();
 
     // First step: all defaults
-    assert_eq!(steps[0].0, "step");      // default name
-    assert_eq!(steps[0].1, "");          // default command
-    assert_eq!(steps[0].2, 0);           // default order
-    assert_eq!(steps[0].3, 1);           // default required = true
-    assert_eq!(steps[0].4, None);        // default timeout = None
+    assert_eq!(steps[0].0, "step"); // default name
+    assert_eq!(steps[0].1, ""); // default command
+    assert_eq!(steps[0].2, 0); // default order
+    assert_eq!(steps[0].3, 1); // default required = true
+    assert_eq!(steps[0].4, None); // default timeout = None
 
     // Second step: only name provided
     assert_eq!(steps[1].0, "lint");
-    assert_eq!(steps[1].1, "");          // default command
+    assert_eq!(steps[1].1, ""); // default command
 
     // Third step: explicit values
-    assert_eq!(steps[2].0, "step");      // default name
+    assert_eq!(steps[2].0, "step"); // default name
     assert_eq!(steps[2].1, "cargo test");
-    assert_eq!(steps[2].3, 0);           // required = false
-    assert_eq!(steps[2].4, Some(42));    // explicit timeout
+    assert_eq!(steps[2].3, 0); // required = false
+    assert_eq!(steps[2].4, Some(42)); // explicit timeout
 
     env::set_current_dir(original_dir).unwrap();
 }

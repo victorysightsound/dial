@@ -141,7 +141,11 @@ impl Engine {
         // Verify DB exists and run migrations
         let _conn = db::get_db(config.phase.as_deref())?;
 
-        Ok(Self { config, handlers: Vec::new(), provider: None })
+        Ok(Self {
+            config,
+            handlers: Vec::new(),
+            provider: None,
+        })
     }
 
     /// Initialize a new DIAL project.
@@ -183,6 +187,15 @@ impl Engine {
         for handler in &self.handlers {
             handler.handle(&event);
         }
+    }
+
+    fn wizard_event_sink(&self) -> prd::wizard::WizardEventSink {
+        let handlers = self.handlers.clone();
+        Arc::new(move |event| {
+            for handler in &handlers {
+                handler.handle(&event);
+            }
+        })
     }
 
     /// Record provider usage for an iteration.
@@ -250,7 +263,10 @@ impl Engine {
     pub async fn config_set(&self, key: &str, value: &str) -> Result<()> {
         let result = config::config_set(key, value);
         if result.is_ok() {
-            self.emit(Event::ConfigSet { key: key.to_string(), value: value.to_string() });
+            self.emit(Event::ConfigSet {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
         }
         result
     }
@@ -303,7 +319,10 @@ impl Engine {
     pub async fn task_block(&self, task_id: i64, reason: &str) -> Result<()> {
         let result = task::task_block(task_id, reason);
         if result.is_ok() {
-            self.emit(Event::TaskBlocked { id: task_id, reason: reason.to_string() });
+            self.emit(Event::TaskBlocked {
+                id: task_id,
+                reason: reason.to_string(),
+            });
         }
         result
     }
@@ -331,7 +350,10 @@ impl Engine {
     pub async fn task_depends(&self, task_id: i64, depends_on_id: i64) -> Result<()> {
         let result = task::task_depends(task_id, depends_on_id);
         if result.is_ok() {
-            self.emit(Event::TaskDependencyAdded { task_id, depends_on_id });
+            self.emit(Event::TaskDependencyAdded {
+                task_id,
+                depends_on_id,
+            });
         }
         result
     }
@@ -340,7 +362,10 @@ impl Engine {
     pub async fn task_undepend(&self, task_id: i64, depends_on_id: i64) -> Result<()> {
         let result = task::task_undepend(task_id, depends_on_id);
         if result.is_ok() {
-            self.emit(Event::TaskDependencyRemoved { task_id, depends_on_id });
+            self.emit(Event::TaskDependencyRemoved {
+                task_id,
+                depends_on_id,
+            });
         }
         result
     }
@@ -411,7 +436,9 @@ impl Engine {
         let task = match task {
             Some(t) => t,
             None => {
-                return Err(DialError::UserError("No pending tasks available for dry run.".to_string()));
+                return Err(DialError::UserError(
+                    "No pending tasks available for dry run.".to_string(),
+                ));
             }
         };
 
@@ -533,7 +560,10 @@ impl Engine {
                     .push((*sol_id, desc.clone(), *conf));
             }
             for (failure_id, solutions) in by_failure {
-                self.emit(Event::SolutionSuggested { failure_id, solutions });
+                self.emit(Event::SolutionSuggested {
+                    failure_id,
+                    solutions,
+                });
             }
         }
 
@@ -596,7 +626,10 @@ impl Engine {
 
         // Emit warnings for excluded items
         for label in &excluded {
-            self.emit(Event::Warning(format!("Context truncated: '{}' excluded (budget exceeded)", label)));
+            self.emit(Event::Warning(format!(
+                "Context truncated: '{}' excluded (budget exceeded)",
+                label
+            )));
         }
 
         Ok((context, excluded))
@@ -664,7 +697,11 @@ impl Engine {
 
         let (iteration_id, _task_id) = match iteration {
             Some(i) => i,
-            None => return Err(DialError::UserError("No iteration awaiting approval".to_string())),
+            None => {
+                return Err(DialError::UserError(
+                    "No iteration awaiting approval".to_string(),
+                ))
+            }
         };
 
         // Resume by setting back to in_progress, then committing
@@ -695,7 +732,11 @@ impl Engine {
 
         let (iteration_id, task_id) = match iteration {
             Some(i) => i,
-            None => return Err(DialError::UserError("No iteration awaiting approval".to_string())),
+            None => {
+                return Err(DialError::UserError(
+                    "No iteration awaiting approval".to_string(),
+                ))
+            }
         };
 
         let now = chrono::Local::now().to_rfc3339();
@@ -712,7 +753,10 @@ impl Engine {
             [task_id],
         )?;
 
-        self.emit(Event::Rejected { iteration_id, reason: reason.to_string() });
+        self.emit(Event::Rejected {
+            iteration_id,
+            reason: reason.to_string(),
+        });
 
         // Revert changes if in git repo
         if crate::git::git_is_repo() && crate::git::git_has_changes() {
@@ -753,19 +797,22 @@ impl Engine {
             ],
         )?;
         let id = conn.last_insert_rowid();
-        self.emit(Event::Info(format!("Added pipeline step '{}': {}", name, sanitized.value)));
+        self.emit(Event::Info(format!(
+            "Added pipeline step '{}': {}",
+            name, sanitized.value
+        )));
         Ok(id)
     }
 
     /// Remove a step from the validation pipeline by ID.
     pub async fn pipeline_remove(&self, step_id: i64) -> Result<()> {
         let conn = self.conn()?;
-        let affected = conn.execute(
-            "DELETE FROM validation_steps WHERE id = ?1",
-            [step_id],
-        )?;
+        let affected = conn.execute("DELETE FROM validation_steps WHERE id = ?1", [step_id])?;
         if affected == 0 {
-            return Err(DialError::UserError(format!("Pipeline step #{} not found", step_id)));
+            return Err(DialError::UserError(format!(
+                "Pipeline step #{} not found",
+                step_id
+            )));
         }
         self.emit(Event::Info(format!("Removed pipeline step #{}", step_id)));
         Ok(())
@@ -856,24 +903,31 @@ impl Engine {
             rusqlite::params![pattern_key, description, category, regex_pattern, status],
         )?;
         let id = conn.last_insert_rowid();
-        self.emit(Event::Info(format!("Added pattern '{}' [{}]", pattern_key, status)));
+        self.emit(Event::Info(format!(
+            "Added pattern '{}' [{}]",
+            pattern_key, status
+        )));
         Ok(id)
     }
 
     /// Promote a pattern's status: suggested -> confirmed -> trusted.
     pub async fn patterns_promote(&self, pattern_id: i64) -> Result<String> {
         let conn = self.conn()?;
-        let current_status: String = conn.query_row(
-            "SELECT status FROM failure_patterns WHERE id = ?1",
-            [pattern_id],
-            |row| row.get(0),
-        ).map_err(|_| DialError::UserError(format!("Pattern #{} not found", pattern_id)))?;
+        let current_status: String = conn
+            .query_row(
+                "SELECT status FROM failure_patterns WHERE id = ?1",
+                [pattern_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| DialError::UserError(format!("Pattern #{} not found", pattern_id)))?;
 
         let new_status = match current_status.as_str() {
             "suggested" => "confirmed",
             "confirmed" => "trusted",
             "trusted" => {
-                return Err(DialError::UserError("Pattern is already trusted".to_string()));
+                return Err(DialError::UserError(
+                    "Pattern is already trusted".to_string(),
+                ));
             }
             other => {
                 return Err(DialError::UserError(format!("Unknown status: {}", other)));
@@ -885,7 +939,10 @@ impl Engine {
             rusqlite::params![new_status, pattern_id],
         )?;
 
-        self.emit(Event::Info(format!("Pattern #{} promoted: {} -> {}", pattern_id, current_status, new_status)));
+        self.emit(Event::Info(format!(
+            "Pattern #{} promoted: {} -> {}",
+            pattern_id, current_status, new_status
+        )));
         Ok(new_status.to_string())
     }
 
@@ -903,7 +960,10 @@ impl Engine {
         let conn = self.conn()?;
         let count = crate::failure::apply_confidence_decay(&conn, 0.05, 30)?;
         if count > 0 {
-            self.emit(Event::Info(format!("Decayed confidence on {} stale solutions", count)));
+            self.emit(Event::Info(format!(
+                "Decayed confidence on {} stale solutions",
+                count
+            )));
         }
         Ok(count)
     }
@@ -912,12 +972,18 @@ impl Engine {
     pub async fn solutions_refresh(&self, solution_id: i64) -> Result<()> {
         let conn = self.conn()?;
         crate::failure::validate_solution(&conn, solution_id)?;
-        self.emit(Event::Info(format!("Solution #{} re-validated", solution_id)));
+        self.emit(Event::Info(format!(
+            "Solution #{} re-validated",
+            solution_id
+        )));
         Ok(())
     }
 
     /// Get history for a solution.
-    pub async fn solutions_history(&self, solution_id: i64) -> Result<Vec<crate::failure::SolutionEvent>> {
+    pub async fn solutions_history(
+        &self,
+        solution_id: i64,
+    ) -> Result<Vec<crate::failure::SolutionEvent>> {
         let conn = self.conn()?;
         crate::failure::get_solution_history(&conn, solution_id)
     }
@@ -954,7 +1020,10 @@ impl Engine {
     }
 
     /// List learnings for a specific pattern.
-    pub async fn learnings_for_pattern(&self, pattern_id: i64) -> Result<Vec<learning::LearningResult>> {
+    pub async fn learnings_for_pattern(
+        &self,
+        pattern_id: i64,
+    ) -> Result<Vec<learning::LearningResult>> {
         let conn = self.conn()?;
         learning::learnings_for_pattern(&conn, pattern_id)
     }
@@ -1010,7 +1079,10 @@ impl Engine {
     /// Import spec files from a directory into prd.db.
     pub async fn prd_import(&self, specs_dir: &str) -> Result<()> {
         let result = prd::import::prd_import(specs_dir)?;
-        self.emit(Event::PrdImported { files: result.files, sections: result.sections });
+        self.emit(Event::PrdImported {
+            files: result.files,
+            sections: result.sections,
+        });
         Ok(())
     }
 
@@ -1042,8 +1114,18 @@ impl Engine {
         first_used_in: Option<&str>,
     ) -> Result<i64> {
         let conn = self.prd_conn()?;
-        let id = prd::prd_add_term(&conn, canonical, variants_json, definition, category, first_used_in)?;
-        self.emit(Event::TermAdded { canonical: canonical.to_string(), category: category.to_string() });
+        let id = prd::prd_add_term(
+            &conn,
+            canonical,
+            variants_json,
+            definition,
+            category,
+            first_used_in,
+        )?;
+        self.emit(Event::TermAdded {
+            canonical: canonical.to_string(),
+            category: category.to_string(),
+        });
         Ok(id)
     }
 
@@ -1066,23 +1148,20 @@ impl Engine {
         from_doc: Option<&str>,
         resume: bool,
     ) -> Result<()> {
-        let provider = self.provider.as_ref()
-            .ok_or(DialError::ProviderRequired)?;
+        let provider = self.provider.as_ref().ok_or(DialError::ProviderRequired)?;
 
         let conn = self.prd_conn()?;
 
-        if resume {
-            self.emit(Event::WizardResumed { phase: 0 });
-        }
-
-        let result = prd::wizard::run_wizard(
+        let result = prd::wizard::run_wizard_with_events(
             provider.as_ref(),
             &conn,
             template,
             from_doc,
             resume,
             false,
-        ).await?;
+            Some(self.wizard_event_sink()),
+        )
+        .await?;
 
         self.emit(Event::WizardCompleted {
             sections_generated: result.sections_generated,
@@ -1103,30 +1182,29 @@ impl Engine {
         from_doc: Option<&str>,
         resume: bool,
     ) -> Result<()> {
-        let provider = self.provider.as_ref()
-            .ok_or(DialError::ProviderRequired)?;
+        let provider = self.provider.as_ref().ok_or(DialError::ProviderRequired)?;
 
         let conn = self.prd_conn()?;
 
-        if resume {
-            self.emit(Event::WizardResumed { phase: 0 });
-        }
-
-        let result = prd::wizard::run_wizard(
+        let result = prd::wizard::run_wizard_with_events(
             provider.as_ref(),
             &conn,
             template,
             from_doc,
             resume,
             true,
-        ).await?;
+            Some(self.wizard_event_sink()),
+        )
+        .await?;
 
-        self.emit(Event::WizardCompleted {
-            sections_generated: result.sections_generated,
-            tasks_generated: result.tasks_generated,
-        });
+        if result.tasks_kept + result.tasks_added + result.tasks_removed > 0 {
+            self.emit(Event::TaskReviewCompleted {
+                tasks_kept: result.tasks_kept,
+                tasks_added: result.tasks_added,
+                tasks_removed: result.tasks_removed,
+            });
+        }
 
-        // Emit sizing summary if Phase 6 ran
         let s = &result.sizing_summary;
         if s.small + s.medium + s.large + s.xl > 0
             || s.total_splits + s.total_rewrites + s.total_merges > 0
@@ -1141,7 +1219,15 @@ impl Engine {
             });
         }
 
-        // Emit test coverage summary if Phase 7 generated test tasks
+        if !result.build_cmd.is_empty() || !result.test_cmd.is_empty() || result.pipeline_steps > 0
+        {
+            self.emit(Event::BuildTestConfigured {
+                build_cmd: result.build_cmd.clone(),
+                test_cmd: result.test_cmd.clone(),
+                pipeline_steps: result.pipeline_steps,
+            });
+        }
+
         if result.test_tasks_added > 0 || result.pipeline_steps > 0 {
             self.emit(Event::TestCoverageConfigured {
                 test_tasks_added: result.test_tasks_added,
@@ -1149,13 +1235,38 @@ impl Engine {
             });
         }
 
+        if !result.iteration_mode.is_empty() {
+            self.emit(Event::IterationModeSet {
+                mode: result.iteration_mode.clone(),
+            });
+        }
+
+        if !result.project_name.is_empty() || result.task_count > 0 {
+            self.emit(Event::LaunchReady {
+                project_name: result.project_name.clone(),
+                task_count: result.task_count,
+                build_cmd: result.build_cmd.clone(),
+                test_cmd: result.test_cmd.clone(),
+                iteration_mode: result.iteration_mode.clone(),
+                ai_cli: result.ai_cli.clone(),
+            });
+        }
+
+        self.emit(Event::WizardCompleted {
+            sections_generated: result.sections_generated,
+            tasks_generated: result.tasks_generated,
+        });
+
         Ok(())
     }
 
     /// Migrate existing spec_sections from the phase DB into prd.db.
     pub async fn prd_migrate(&self) -> Result<usize> {
         let count = prd::import::migrate_spec_sections_to_prd()?;
-        self.emit(Event::PrdImported { files: 0, sections: count });
+        self.emit(Event::PrdImported {
+            files: 0,
+            sections: count,
+        });
         Ok(count)
     }
 
@@ -1166,9 +1277,8 @@ impl Engine {
     pub async fn recover(&self) -> Result<u64> {
         let conn = self.conn()?;
 
-        let mut stmt = conn.prepare(
-            "SELECT id, task_id FROM iterations WHERE status = 'in_progress'",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, task_id FROM iterations WHERE status = 'in_progress'")?;
         let dangling: Vec<(i64, i64)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .filter_map(|r| r.ok())
@@ -1197,7 +1307,10 @@ impl Engine {
             )));
         }
 
-        self.emit(Event::Info(format!("Recovered {} dangling iteration(s).", count)));
+        self.emit(Event::Info(format!(
+            "Recovered {} dangling iteration(s).",
+            count
+        )));
         Ok(count)
     }
 
@@ -1209,33 +1322,41 @@ impl Engine {
 
         let path = Path::new(v2_path);
         if !path.exists() {
-            return Err(DialError::UserError(format!("V2 database not found: {}", v2_path)));
+            return Err(DialError::UserError(format!(
+                "V2 database not found: {}",
+                v2_path
+            )));
         }
 
-        let v2_conn = rusqlite::Connection::open(path)
-            .map_err(DialError::Database)?;
+        let v2_conn = rusqlite::Connection::open(path).map_err(DialError::Database)?;
         let conn = self.conn()?;
 
         let mut migrated = 0;
 
         // Migrate tasks if the table exists
-        let has_tasks: bool = v2_conn.query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tasks'",
-            [], |row| row.get(0),
-        ).unwrap_or(false);
+        let has_tasks: bool = v2_conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tasks'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if has_tasks {
-            let mut stmt = v2_conn.prepare(
-                "SELECT description, priority, status FROM tasks",
-            ).map_err(DialError::Database)?;
+            let mut stmt = v2_conn
+                .prepare("SELECT description, priority, status FROM tasks")
+                .map_err(DialError::Database)?;
 
-            let tasks = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1).unwrap_or(5),
-                    row.get::<_, String>(2).unwrap_or_else(|_| "pending".to_string()),
-                ))
-            }).map_err(DialError::Database)?;
+            let tasks = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1).unwrap_or(5),
+                        row.get::<_, String>(2)
+                            .unwrap_or_else(|_| "pending".to_string()),
+                    ))
+                })
+                .map_err(DialError::Database)?;
 
             for task in tasks {
                 if let Ok((desc, priority, status)) = task {
@@ -1251,22 +1372,24 @@ impl Engine {
         }
 
         // Migrate learnings if the table exists
-        let has_learnings: bool = v2_conn.query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='learnings'",
-            [], |row| row.get(0),
-        ).unwrap_or(false);
+        let has_learnings: bool = v2_conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='learnings'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if has_learnings {
-            let mut stmt = v2_conn.prepare(
-                "SELECT description, category FROM learnings",
-            ).map_err(DialError::Database)?;
+            let mut stmt = v2_conn
+                .prepare("SELECT description, category FROM learnings")
+                .map_err(DialError::Database)?;
 
-            let learnings = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                ))
-            }).map_err(DialError::Database)?;
+            let learnings = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .map_err(DialError::Database)?;
 
             for learning in learnings {
                 if let Ok((desc, cat)) = learning {
@@ -1282,19 +1405,24 @@ impl Engine {
         }
 
         // Migrate config if the table exists
-        let has_config: bool = v2_conn.query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='config'",
-            [], |row| row.get(0),
-        ).unwrap_or(false);
+        let has_config: bool = v2_conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='config'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if has_config {
-            let mut stmt = v2_conn.prepare(
-                "SELECT key, value FROM config",
-            ).map_err(DialError::Database)?;
+            let mut stmt = v2_conn
+                .prepare("SELECT key, value FROM config")
+                .map_err(DialError::Database)?;
 
-            let configs = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            }).map_err(DialError::Database)?;
+            let configs = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(DialError::Database)?;
 
             for config in configs {
                 if let Ok((key, value)) = config {
@@ -1306,7 +1434,10 @@ impl Engine {
             }
         }
 
-        self.emit(Event::Info(format!("Migrated {} records from v2 database: {}", migrated, v2_path)));
+        self.emit(Event::Info(format!(
+            "Migrated {} records from v2 database: {}",
+            migrated, v2_path
+        )));
         Ok(())
     }
 
@@ -1345,7 +1476,14 @@ impl Engine {
     ) -> Result<()> {
         let conn = self.conn()?;
         crate::metrics::record_iteration_metric(
-            &conn, iteration_id, task_id, success, duration_secs, tokens_in, tokens_out, cost_usd,
+            &conn,
+            iteration_id,
+            task_id,
+            success,
+            duration_secs,
+            tokens_in,
+            tokens_out,
+            cost_usd,
         )
     }
 }

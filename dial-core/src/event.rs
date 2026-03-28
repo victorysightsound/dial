@@ -5,7 +5,11 @@ use crate::task::models::Task;
 pub enum Event {
     // --- Task Events ---
     /// A new task was added to the backlog.
-    TaskAdded { id: i64, description: String, priority: i32 },
+    TaskAdded {
+        id: i64,
+        description: String,
+        priority: i32,
+    },
     /// A task was marked as done.
     TaskCompleted { id: i64 },
     /// A task was blocked with a reason.
@@ -21,11 +25,24 @@ pub enum Event {
 
     // --- Iteration Events ---
     /// An iteration started for a task.
-    IterationStarted { iteration_id: i64, task: Task, attempt: i32, max_attempts: u32 },
+    IterationStarted {
+        iteration_id: i64,
+        task: Task,
+        attempt: i32,
+        max_attempts: u32,
+    },
     /// An iteration completed successfully, optionally with a git commit hash.
-    IterationCompleted { iteration_id: i64, task_id: i64, commit_hash: Option<String> },
+    IterationCompleted {
+        iteration_id: i64,
+        task_id: i64,
+        commit_hash: Option<String>,
+    },
     /// An iteration failed with an error message.
-    IterationFailed { iteration_id: i64, task_id: i64, error: String },
+    IterationFailed {
+        iteration_id: i64,
+        task_id: i64,
+        error: String,
+    },
 
     // --- Validation Events ---
     /// Validation pipeline started for an iteration.
@@ -49,17 +66,30 @@ pub enum Event {
 
     // --- Pipeline Step Events ---
     /// A named pipeline step started.
-    StepStarted { name: String, command: String, required: bool },
+    StepStarted {
+        name: String,
+        command: String,
+        required: bool,
+    },
     /// A named pipeline step passed.
     StepPassed { name: String, duration_secs: f64 },
     /// A named pipeline step failed.
-    StepFailed { name: String, required: bool, output: String, duration_secs: f64 },
+    StepFailed {
+        name: String,
+        required: bool,
+        output: String,
+        duration_secs: f64,
+    },
     /// A named pipeline step was skipped (e.g., after a required step failed).
     StepSkipped { name: String, reason: String },
 
     // --- Learning Events ---
     /// A new learning was recorded.
-    LearningAdded { id: i64, description: String, category: Option<String> },
+    LearningAdded {
+        id: i64,
+        description: String,
+        category: Option<String>,
+    },
     /// A learning was deleted.
     LearningDeleted { id: i64 },
 
@@ -67,9 +97,15 @@ pub enum Event {
     /// A failure was recorded and matched to a pattern.
     FailureRecorded { failure_id: i64, pattern_id: i64 },
     /// A trusted solution was found for a failure.
-    SolutionFound { description: String, confidence: f64 },
+    SolutionFound {
+        description: String,
+        confidence: f64,
+    },
     /// Solutions were auto-suggested for a recorded failure pattern.
-    SolutionSuggested { failure_id: i64, solutions: Vec<(i64, String, f64)> },
+    SolutionSuggested {
+        failure_id: i64,
+        solutions: Vec<(i64, String, f64)>,
+    },
 
     // --- Config Events ---
     /// A configuration key was set or updated.
@@ -77,7 +113,11 @@ pub enum Event {
 
     // --- Approval Events ---
     /// An iteration is awaiting manual approval (Review/Manual mode).
-    ApprovalRequired { iteration_id: i64, task_id: i64, diff_summary: String },
+    ApprovalRequired {
+        iteration_id: i64,
+        task_id: i64,
+        diff_summary: String,
+    },
     /// A paused iteration was approved.
     Approved { iteration_id: i64 },
     /// A paused iteration was rejected with a reason.
@@ -91,7 +131,10 @@ pub enum Event {
     /// A wizard phase completed.
     WizardPhaseCompleted { phase: u8, name: String },
     /// The wizard finished, generating sections and tasks.
-    WizardCompleted { sections_generated: usize, tasks_generated: usize },
+    WizardCompleted {
+        sections_generated: usize,
+        tasks_generated: usize,
+    },
     /// The wizard was paused (state saved for resume).
     WizardPaused { phase: u8 },
     /// The wizard was resumed from a saved state.
@@ -99,7 +142,11 @@ pub enum Event {
     /// A terminology entry was added.
     TermAdded { canonical: String, category: String },
     /// Task review phase completed with summary of changes.
-    TaskReviewCompleted { tasks_kept: usize, tasks_added: usize, tasks_removed: usize },
+    TaskReviewCompleted {
+        tasks_kept: usize,
+        tasks_added: usize,
+        tasks_removed: usize,
+    },
     /// A task was split into smaller sub-tasks during sizing analysis.
     TaskSplit { original: String, into_count: usize },
     /// Task sizing analysis completed with summary of size distribution.
@@ -112,21 +159,42 @@ pub enum Event {
         merges: usize,
     },
     /// Build and test commands were configured.
-    BuildTestConfigured { build_cmd: String, test_cmd: String, pipeline_steps: usize },
+    BuildTestConfigured {
+        build_cmd: String,
+        test_cmd: String,
+        pipeline_steps: usize,
+    },
     /// Test coverage tasks were generated from test strategy analysis.
-    TestCoverageConfigured { test_tasks_added: usize, pipeline_steps: usize },
+    TestCoverageConfigured {
+        test_tasks_added: usize,
+        pipeline_steps: usize,
+    },
     /// Iteration mode was selected.
     IterationModeSet { mode: String },
     /// Project is ready for launch.
-    LaunchReady { project_name: String, task_count: usize },
+    LaunchReady {
+        project_name: String,
+        task_count: usize,
+        build_cmd: String,
+        test_cmd: String,
+        iteration_mode: String,
+        ai_cli: String,
+    },
 
     // --- Chronic Failure Events ---
     /// A task was detected as a chronic failure and auto-blocked.
-    ChronicFailureDetected { task_id: i64, total_failures: i64, total_attempts: i64 },
+    ChronicFailureDetected {
+        task_id: i64,
+        total_failures: i64,
+        total_attempts: i64,
+    },
 
     // --- Checkpoint Events ---
     /// A checkpoint was created before task execution.
-    CheckpointCreated { iteration_id: i64, checkpoint_id: String },
+    CheckpointCreated {
+        iteration_id: i64,
+        checkpoint_id: String,
+    },
     /// A checkpoint was restored after validation failure.
     CheckpointRestored { iteration_id: i64 },
     /// A checkpoint was dropped after successful validation.

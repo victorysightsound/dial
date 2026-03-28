@@ -88,7 +88,7 @@ pub enum DialError {
     TemplateNotFound(String),
 
     /// A provider is required but none is configured.
-    #[error("Provider required for wizard. Set ANTHROPIC_API_KEY or use --cli flag.")]
+    #[error("Wizard backend required. Pass --wizard-backend or configure wizard_backend.")]
     ProviderRequired,
 
     /// Adding a dependency would create a cycle in the task graph.

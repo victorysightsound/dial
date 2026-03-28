@@ -1,11 +1,16 @@
+use crate::budget;
 use crate::command_safety::sanitize_shell_command;
 use crate::errors::{DialError, Result};
+use crate::event::Event;
 use crate::output::print_warning;
 use crate::prd::templates::{get_template, Template};
 use crate::provider::{Provider, ProviderRequest};
 use rusqlite::{params, Connection};
 use serde_json::Value as JsonValue;
+use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Wizard phases for PRD creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +119,586 @@ pub struct WizardResult {
     pub iteration_mode: String,
     pub project_name: String,
     pub task_count: usize,
+    pub ai_cli: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LaunchSummary {
+    pub project_name: String,
+    pub task_count: usize,
+    pub build_cmd: String,
+    pub test_cmd: String,
+    pub iteration_mode: String,
+    pub ai_cli: String,
+}
+
+pub type WizardEventSink = Arc<dyn Fn(Event) + Send + Sync>;
+
+fn emit_wizard_event(event_sink: Option<&WizardEventSink>, event: Event) {
+    if let Some(sink) = event_sink {
+        sink(event);
+    }
+}
+
+fn json_context_block(title: &str, value: &JsonValue) -> String {
+    format!(
+        "\n## {}\n```json\n{}\n```\n",
+        title,
+        serde_json::to_string_pretty(value).unwrap_or_default()
+    )
+}
+
+fn selected_gathered_context(gathered_info: &JsonValue, blocks: &[(&str, &str)]) -> String {
+    let mut result = String::new();
+    for (key, label) in blocks {
+        if let Some(value) = gathered_info.get(*key) {
+            result.push_str(&json_context_block(label, value));
+        }
+    }
+    result
+}
+
+fn truncate_for_prompt(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let truncated: String = trimmed.chars().take(max_chars).collect();
+    format!("{}...", truncated.trim_end())
+}
+
+fn build_project_summary_context(gathered_info: &JsonValue) -> String {
+    let mut lines = Vec::new();
+
+    if let Some(vision) = gathered_info.get("vision") {
+        if let Some(name) = vision.get("project_name").and_then(|v| v.as_str()) {
+            lines.push(format!("- Project: {}", name));
+        }
+        if let Some(problem) = vision.get("problem_statement").and_then(|v| v.as_str()) {
+            lines.push(format!("- Problem: {}", truncate_for_prompt(problem, 220)));
+        }
+        if let Some(users) = vision.get("target_users").and_then(|v| v.as_array()) {
+            let names: Vec<&str> = users.iter().filter_map(|value| value.as_str()).collect();
+            if !names.is_empty() {
+                lines.push(format!("- Target users: {}", names.join(", ")));
+            }
+        }
+    }
+
+    if let Some(functionality) = gathered_info.get("functionality") {
+        if let Some(features) = functionality.get("mvp_features").and_then(|v| v.as_array()) {
+            let names: Vec<&str> = features
+                .iter()
+                .filter_map(|feature| feature.get("name").and_then(|v| v.as_str()))
+                .take(6)
+                .collect();
+            if !names.is_empty() {
+                lines.push(format!("- MVP features: {}", names.join(", ")));
+            }
+        }
+    }
+
+    if let Some(technical) = gathered_info.get("technical") {
+        if let Some(platform) = technical.get("platform") {
+            let languages = platform
+                .get("languages")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let frameworks = platform
+                .get("frameworks")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let database = platform
+                .get("database")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let hosting = platform
+                .get("hosting")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let mut platform_parts = Vec::new();
+            if !languages.is_empty() {
+                platform_parts.push(format!("languages: {}", languages));
+            }
+            if !frameworks.is_empty() {
+                platform_parts.push(format!("frameworks: {}", frameworks));
+            }
+            if !database.is_empty() {
+                platform_parts.push(format!("database: {}", database));
+            }
+            if !hosting.is_empty() {
+                platform_parts.push(format!("hosting: {}", hosting));
+            }
+
+            if !platform_parts.is_empty() {
+                lines.push(format!("- Platform: {}", platform_parts.join("; ")));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n## Project Summary\n{}\n", lines.join("\n"))
+    }
+}
+
+fn build_generated_section_outline(gathered_info: &JsonValue) -> String {
+    let Some(sections) = gathered_info
+        .get("generate")
+        .and_then(|value| value.get("sections"))
+        .and_then(|value| value.as_array())
+    else {
+        return String::new();
+    };
+
+    let lines: Vec<String> = sections
+        .iter()
+        .enumerate()
+        .map(|(index, section)| {
+            let title = section
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Untitled");
+            let content = section
+                .get("content")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            format!(
+                "- {} {}: {}",
+                index + 1,
+                title,
+                truncate_for_prompt(content, 180)
+            )
+        })
+        .collect();
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n## PRD Section Outline\n{}\n", lines.join("\n"))
+    }
+}
+
+fn build_functionality_detail_context(gathered_info: &JsonValue) -> String {
+    let Some(functionality) = gathered_info.get("functionality") else {
+        return String::new();
+    };
+
+    let mut lines = Vec::new();
+
+    if let Some(features) = functionality
+        .get("mvp_features")
+        .and_then(|value| value.as_array())
+    {
+        for feature in features.iter().take(6) {
+            let name = feature
+                .get("name")
+                .and_then(|value| value.as_str())
+                .or_else(|| feature.as_str())
+                .unwrap_or("Unnamed feature");
+            let description = feature
+                .get("description")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let priority = feature
+                .get("priority")
+                .and_then(|value| value.as_i64())
+                .map(|value| format!("P{} ", value))
+                .unwrap_or_default();
+
+            if description.is_empty() {
+                lines.push(format!("- {}{}", priority, name));
+            } else {
+                lines.push(format!(
+                    "- {}{}: {}",
+                    priority,
+                    name,
+                    truncate_for_prompt(description, 140)
+                ));
+            }
+        }
+
+        if features.len() > 6 {
+            lines.push(format!("- ... {} more MVP features", features.len() - 6));
+        }
+    }
+
+    if let Some(workflows) = functionality
+        .get("user_workflows")
+        .and_then(|value| value.as_array())
+    {
+        for workflow in workflows.iter().take(4) {
+            let name = workflow
+                .get("name")
+                .and_then(|value| value.as_str())
+                .or_else(|| workflow.as_str())
+                .unwrap_or("Unnamed workflow");
+            let steps = workflow
+                .get("steps")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .take(3)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            if steps.is_empty() {
+                lines.push(format!("- Workflow: {}", name));
+            } else {
+                lines.push(format!("- Workflow: {} ({})", name, steps.join(" -> ")));
+            }
+        }
+    }
+
+    if let Some(deferred) = functionality
+        .get("deferred_features")
+        .and_then(|value| value.as_array())
+    {
+        let names: Vec<&str> = deferred
+            .iter()
+            .filter_map(|feature| {
+                feature
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| feature.as_str())
+            })
+            .take(4)
+            .collect();
+        if !names.is_empty() {
+            lines.push(format!("- Deferred for later: {}", names.join(", ")));
+        }
+    }
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n## Functionality Details\n{}\n", lines.join("\n"))
+    }
+}
+
+fn build_technical_detail_context(gathered_info: &JsonValue) -> String {
+    let Some(technical) = gathered_info.get("technical") else {
+        return String::new();
+    };
+
+    let mut lines = Vec::new();
+
+    let platform = technical.get("platform").unwrap_or(technical);
+    let languages = platform
+        .get("languages")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let frameworks = platform
+        .get("frameworks")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let database = platform
+        .get("database")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let hosting = platform
+        .get("hosting")
+        .and_then(|value| value.as_str())
+        .or_else(|| technical.get("platform").and_then(|value| value.as_str()))
+        .unwrap_or("");
+
+    let mut platform_parts = Vec::new();
+    if !languages.is_empty() {
+        platform_parts.push(format!("languages: {}", languages));
+    }
+    if !frameworks.is_empty() {
+        platform_parts.push(format!("frameworks: {}", frameworks));
+    }
+    if !database.is_empty() {
+        platform_parts.push(format!("database: {}", database));
+    }
+    if !hosting.is_empty() {
+        platform_parts.push(format!("hosting: {}", hosting));
+    }
+    if !platform_parts.is_empty() {
+        lines.push(format!("- Platform: {}", platform_parts.join("; ")));
+    }
+
+    if let Some(entities) = technical
+        .get("data_model")
+        .and_then(|value| value.as_array())
+    {
+        for entity in entities.iter().take(5) {
+            let name = entity
+                .get("entity")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Unnamed entity");
+            let field_count = entity
+                .get("fields")
+                .and_then(|value| value.as_array())
+                .map(|items| items.len())
+                .unwrap_or(0);
+            if field_count > 0 {
+                lines.push(format!("- Data model: {} ({} fields)", name, field_count));
+            } else {
+                lines.push(format!("- Data model: {}", name));
+            }
+        }
+    }
+
+    if let Some(integrations) = technical
+        .get("integrations")
+        .and_then(|value| value.as_array())
+    {
+        for integration in integrations.iter().take(5) {
+            let name = integration
+                .get("service")
+                .and_then(|value| value.as_str())
+                .or_else(|| integration.as_str())
+                .unwrap_or("Unnamed integration");
+            let purpose = integration
+                .get("purpose")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if purpose.is_empty() {
+                lines.push(format!("- Integration: {}", name));
+            } else {
+                lines.push(format!(
+                    "- Integration: {} ({})",
+                    name,
+                    truncate_for_prompt(purpose, 120)
+                ));
+            }
+        }
+    }
+
+    if let Some(constraints) = technical
+        .get("constraints")
+        .and_then(|value| value.as_array())
+    {
+        let items: Vec<&str> = constraints
+            .iter()
+            .filter_map(|value| value.as_str())
+            .take(5)
+            .collect();
+        if !items.is_empty() {
+            lines.push(format!("- Constraints: {}", items.join("; ")));
+        }
+    }
+
+    if let Some(requirements) = technical
+        .get("performance_requirements")
+        .and_then(|value| value.as_array())
+    {
+        let items: Vec<&str> = requirements
+            .iter()
+            .filter_map(|value| value.as_str())
+            .take(4)
+            .collect();
+        if !items.is_empty() {
+            lines.push(format!("- Performance: {}", items.join("; ")));
+        }
+    }
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n## Technical Details Summary\n{}\n", lines.join("\n"))
+    }
+}
+
+fn build_gap_analysis_detail_context(gathered_info: &JsonValue) -> String {
+    let Some(gap_analysis) = gathered_info.get("gap_analysis") else {
+        return String::new();
+    };
+
+    let mut lines = Vec::new();
+
+    if let Some(gaps) = gap_analysis.get("gaps").and_then(|value| value.as_array()) {
+        for gap in gaps.iter().take(6) {
+            let area = gap
+                .get("area")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Unspecified area");
+            let issue = gap
+                .get("issue")
+                .or_else(|| gap.get("description"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let suggestion = gap
+                .get("suggestion")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+
+            let mut detail = truncate_for_prompt(issue, 140);
+            if !suggestion.is_empty() {
+                detail.push_str(&format!(
+                    " | Suggested fix: {}",
+                    truncate_for_prompt(suggestion, 100)
+                ));
+            }
+            lines.push(format!("- Gap: {} -> {}", area, detail));
+        }
+    }
+
+    if let Some(contradictions) = gap_analysis
+        .get("contradictions")
+        .and_then(|value| value.as_array())
+    {
+        for contradiction in contradictions.iter().take(4) {
+            let between = contradiction
+                .get("between")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" vs ")
+                })
+                .unwrap_or_else(|| "unknown sections".to_string());
+            let issue = contradiction
+                .get("issue")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            lines.push(format!(
+                "- Contradiction: {} -> {}",
+                between,
+                truncate_for_prompt(issue, 120)
+            ));
+        }
+    }
+
+    if let Some(recommendations) = gap_analysis
+        .get("recommendations")
+        .and_then(|value| value.as_array())
+    {
+        for recommendation in recommendations.iter().take(5) {
+            let text = recommendation
+                .get("recommendation")
+                .or_else(|| recommendation.get("topic"))
+                .and_then(|value| value.as_str())
+                .or_else(|| recommendation.as_str())
+                .unwrap_or("");
+            if !text.is_empty() {
+                lines.push(format!(
+                    "- Recommendation: {}",
+                    truncate_for_prompt(text, 140)
+                ));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n## Gap Analysis Summary\n{}\n", lines.join("\n"))
+    }
+}
+
+fn phase_context_for_prompt(phase: WizardPhase, gathered_info: &JsonValue) -> String {
+    let context = match phase {
+        WizardPhase::Vision => String::new(),
+        WizardPhase::Functionality => selected_gathered_context(
+            gathered_info,
+            &[("vision", "Vision & Problem (from Phase 1)")],
+        ),
+        WizardPhase::Technical => selected_gathered_context(
+            gathered_info,
+            &[
+                ("vision", "Vision & Problem (from Phase 1)"),
+                ("functionality", "Functionality (from Phase 2)"),
+            ],
+        ),
+        WizardPhase::GapAnalysis => format!(
+            "{}{}{}",
+            build_project_summary_context(gathered_info),
+            build_functionality_detail_context(gathered_info),
+            build_technical_detail_context(gathered_info),
+        ),
+        WizardPhase::Generate => format!(
+            "{}{}{}{}",
+            build_project_summary_context(gathered_info),
+            build_functionality_detail_context(gathered_info),
+            build_technical_detail_context(gathered_info),
+            build_gap_analysis_detail_context(gathered_info),
+        ),
+        _ => String::new(),
+    };
+
+    if context.is_empty() {
+        String::new()
+    } else {
+        format!("\n## Previously Gathered Information\n{context}")
+    }
+}
+
+fn wizard_phase_timeout_secs(phase: WizardPhase) -> u64 {
+    match phase {
+        WizardPhase::GapAnalysis | WizardPhase::TaskReview | WizardPhase::BuildTestConfig => 300,
+        WizardPhase::Launch => 30,
+        _ => 180,
+    }
+}
+
+fn emit_prompt_diagnostics(
+    event_sink: Option<&WizardEventSink>,
+    provider: &dyn Provider,
+    phase: WizardPhase,
+    prompt: &str,
+    timeout_secs: u64,
+) {
+    let estimated_tokens = budget::estimate_tokens(prompt);
+    emit_wizard_event(
+        event_sink,
+        Event::Info(format!(
+            "Wizard phase {} using {}: {} chars (~{} tokens), {}s timeout",
+            phase as i32,
+            provider.name(),
+            prompt.len(),
+            estimated_tokens,
+            timeout_secs
+        )),
+    );
+
+    if estimated_tokens > 3500 {
+        emit_wizard_event(
+            event_sink,
+            Event::Warning(format!(
+                "Wizard phase {} prompt is large (~{} tokens). Expect slower backend responses.",
+                phase as i32, estimated_tokens
+            )),
+        );
+    }
 }
 
 /// Summary of task sizing analysis performed during Phase 6.
@@ -161,11 +746,11 @@ pub struct TestTaskRecord {
 }
 
 /// Save wizard state to the database (upsert).
-pub fn save_wizard_state(conn: &Connection, state: &WizardState) -> Result<()> {
-    let completed_json = serde_json::to_string(&state.completed_phases)
-        .unwrap_or_else(|_| "[]".to_string());
-    let info_json = serde_json::to_string(&state.gathered_info)
-        .unwrap_or_else(|_| "{}".to_string());
+pub fn save_wizard_state(conn: &Connection, state: &mut WizardState) -> Result<()> {
+    let completed_json =
+        serde_json::to_string(&state.completed_phases).unwrap_or_else(|_| "[]".to_string());
+    let info_json =
+        serde_json::to_string(&state.gathered_info).unwrap_or_else(|_| "{}".to_string());
 
     if state.id > 0 {
         conn.execute(
@@ -191,6 +776,7 @@ pub fn save_wizard_state(conn: &Connection, state: &WizardState) -> Result<()> {
                 state.template,
             ],
         )?;
+        state.id = conn.last_insert_rowid();
     }
     Ok(())
 }
@@ -245,16 +831,7 @@ pub fn build_phase_prompt(
         .map(|t| format_template_context(t))
         .unwrap_or_default();
 
-    let prior_context = if state.gathered_info.is_object()
-        && !state.gathered_info.as_object().unwrap().is_empty()
-    {
-        format!(
-            "\n## Previously Gathered Information\n```json\n{}\n```\n",
-            serde_json::to_string_pretty(&state.gathered_info).unwrap_or_default()
-        )
-    } else {
-        String::new()
-    };
+    let prior_context = phase_context_for_prompt(phase, &state.gathered_info);
 
     let doc_context = existing_doc
         .map(|doc| format!("\n## Existing Document\n{}\n", doc))
@@ -345,6 +922,10 @@ For each section, rate it as:
 - VAGUE: Uses vague language with no concrete acceptance criteria
 
 Do not proceed to Phase 5 with any VAGUE sections. Rewrite them now with specific acceptance criteria.
+Keep the response concise:
+- Return at most 8 gaps, 4 contradictions, 6 recommendations, 8 section_ratings, and 4 rewritten_sections
+- Keep each string concise and plain
+- In rewritten_sections, use plain prose only. Do not include code blocks, JSON examples, or quoted example payloads.
 
 Respond in JSON format:
 {{
@@ -361,7 +942,7 @@ Respond in JSON format:
     {{"section": "section name", "rating": "SPECIFIC or NEEDS_DETAIL or VAGUE", "issues": ["vague language found"]}}
   ],
   "rewritten_sections": [
-    {{"section": "section name", "original": "original vague text", "rewritten": "concrete rewrite with acceptance criteria"}}
+    {{"section": "section name", "rewritten": "concise rewrite guidance with concrete acceptance criteria"}}
   ]
 }}
 
@@ -375,6 +956,10 @@ Respond ONLY with valid JSON."#
 Generate the complete PRD content as a JSON object where each key is a section title
 from the template and each value is the markdown content for that section.
 Include all relevant information gathered from prior phases.
+Keep the section content plain and parse-safe:
+- Use normal markdown paragraphs and bullet lists only
+- Do not include JSON snippets or code fences inside section content
+- Avoid double-quoted literal examples inside section content; use backticks for enum values, field names, and literal strings
 
 Respond in JSON format:
 {{
@@ -426,7 +1011,11 @@ pub async fn run_wizard_phases_1_3(
     state: &mut WizardState,
     from_doc: Option<&str>,
 ) -> Result<()> {
-    let phases = [WizardPhase::Vision, WizardPhase::Functionality, WizardPhase::Technical];
+    let phases = [
+        WizardPhase::Vision,
+        WizardPhase::Functionality,
+        WizardPhase::Technical,
+    ];
 
     for phase in &phases {
         // Skip already completed phases (for resume)
@@ -438,10 +1027,10 @@ pub async fn run_wizard_phases_1_3(
         save_wizard_state(prd_conn, state)?;
 
         let prompt = build_phase_prompt(*phase, state, from_doc);
-        let response = execute_wizard_prompt(provider, &prompt).await?;
+        let response = execute_wizard_prompt(provider, *phase, &prompt, None).await?;
 
         // Parse JSON response
-        let data = parse_json_response(&response, provider, &prompt).await?;
+        let data = parse_json_response(&response, provider, *phase, &prompt, None).await?;
         state.set_phase_data(*phase, data);
         state.mark_phase_complete(*phase);
         save_wizard_state(prd_conn, state)?;
@@ -454,14 +1043,25 @@ pub async fn run_wizard_phases_1_3(
 pub fn load_existing_doc(from_path: &str) -> Result<String> {
     let path = Path::new(from_path);
     if !path.exists() {
-        return Err(DialError::UserError(format!("File not found: {}", from_path)));
+        return Err(DialError::UserError(format!(
+            "File not found: {}",
+            from_path
+        )));
     }
     let content = std::fs::read_to_string(path)?;
     Ok(content)
 }
 
 /// Execute a wizard prompt against the provider.
-async fn execute_wizard_prompt(provider: &dyn Provider, prompt: &str) -> Result<String> {
+async fn execute_wizard_prompt(
+    provider: &dyn Provider,
+    phase: WizardPhase,
+    prompt: &str,
+    event_sink: Option<&WizardEventSink>,
+) -> Result<String> {
+    let timeout_secs = wizard_phase_timeout_secs(phase);
+    emit_prompt_diagnostics(event_sink, provider, phase, prompt, timeout_secs);
+
     let request = ProviderRequest {
         prompt: prompt.to_string(),
         work_dir: std::env::current_dir()
@@ -470,10 +1070,24 @@ async fn execute_wizard_prompt(provider: &dyn Provider, prompt: &str) -> Result<
             .to_string(),
         max_tokens: Some(4096),
         model: None,
-        timeout_secs: Some(120),
+        timeout_secs: Some(timeout_secs),
     };
 
+    let started = Instant::now();
     let response = provider.execute(request).await?;
+    let duration_secs = response
+        .duration_secs
+        .unwrap_or_else(|| started.elapsed().as_secs_f64());
+
+    emit_wizard_event(
+        event_sink,
+        Event::Info(format!(
+            "Wizard phase {} backend response received in {:.1}s ({} chars)",
+            phase as i32,
+            duration_secs,
+            response.output.len()
+        )),
+    );
 
     if !response.success {
         return Err(DialError::WizardError(format!(
@@ -495,7 +1109,13 @@ fn extract_json_brute(text: &str) -> Option<String> {
     let brace_pos = trimmed.find('{');
     let bracket_pos = trimmed.find('[');
     let (open, close) = match (brace_pos, bracket_pos) {
-        (Some(b), Some(k)) => if b < k { (b, '}') } else { (k, ']') },
+        (Some(b), Some(k)) => {
+            if b < k {
+                (b, '}')
+            } else {
+                (k, ']')
+            }
+        }
         (Some(b), None) => (b, '}'),
         (None, Some(k)) => (k, ']'),
         (None, None) => return None,
@@ -539,42 +1159,175 @@ fn extract_json_brute(text: &str) -> Option<String> {
 async fn parse_json_response(
     response: &str,
     provider: &dyn Provider,
+    phase: WizardPhase,
     original_prompt: &str,
+    event_sink: Option<&WizardEventSink>,
 ) -> Result<JsonValue> {
-    // Attempt 1: extract JSON from markdown code blocks
-    let json_str = extract_json(response);
-    if let Ok(value) = serde_json::from_str::<JsonValue>(&json_str) {
+    if let Some(value) = parse_json_candidate(response) {
         return Ok(value);
     }
 
-    // Attempt 2: brute-force extract outermost {}/[] from original response
-    if let Some(brute) = extract_json_brute(response) {
-        if let Ok(value) = serde_json::from_str::<JsonValue>(&brute) {
-            return Ok(value);
-        }
+    emit_wizard_event(
+        event_sink,
+        Event::Warning(format!(
+            "Wizard phase {} returned invalid JSON. Attempting a JSON repair pass.",
+            phase as i32
+        )),
+    );
+
+    let repair_prompt = format!(
+        r#"You are repairing malformed JSON for DIAL wizard phase {} ({}).
+
+Convert the response below into valid JSON only.
+- Preserve the original meaning and structure as much as possible
+- Use double quotes for all keys and string values
+- Remove markdown fences, comments, and trailing commas
+- Return only a single valid JSON object or array, with no explanation
+
+Malformed response:
+```text
+{}
+```"#,
+        phase as i32,
+        phase.name(),
+        truncate_for_prompt(response, 24000)
+    );
+    let repair_response =
+        execute_wizard_prompt(provider, phase, &repair_prompt, event_sink).await?;
+    if let Some(value) = parse_json_candidate(&repair_response) {
+        return Ok(value);
     }
 
-    // Attempt 3: ask the AI to retry with stricter instructions
+    emit_wizard_event(
+        event_sink,
+        Event::Warning(format!(
+            "Wizard phase {} JSON repair failed. Regenerating with stricter instructions.",
+            phase as i32
+        )),
+    );
+
     let retry_prompt = format!(
         "{}\n\nYour previous response was not valid JSON. Please respond with ONLY a valid JSON object. No markdown, no explanation, just JSON.",
         original_prompt
     );
-    let retry_response = execute_wizard_prompt(provider, &retry_prompt).await?;
-    let retry_json = extract_json(&retry_response);
-    if let Ok(value) = serde_json::from_str::<JsonValue>(&retry_json) {
+    let retry_response = execute_wizard_prompt(provider, phase, &retry_prompt, event_sink).await?;
+    if let Some(value) = parse_json_candidate(&retry_response) {
         return Ok(value);
     }
 
-    // Attempt 4: brute-force the retry response
-    if let Some(brute) = extract_json_brute(&retry_response) {
-        if let Ok(value) = serde_json::from_str::<JsonValue>(&brute) {
-            return Ok(value);
-        }
-    }
+    emit_saved_debug_artifact(event_sink, phase, "original", response);
+    emit_saved_debug_artifact(event_sink, phase, "repair", &repair_response);
+    emit_saved_debug_artifact(event_sink, phase, "retry", &retry_response);
 
     Err(DialError::WizardError(
         "Failed to parse JSON response after multiple attempts. The AI provider returned invalid JSON.".to_string()
     ))
+}
+
+fn parse_json_candidate(response: &str) -> Option<JsonValue> {
+    let json_str = extract_json(response);
+    if let Ok(value) = serde_json::from_str::<JsonValue>(&json_str) {
+        return Some(value);
+    }
+    let normalized = normalize_wrapped_json(&json_str);
+    if normalized != json_str {
+        if let Ok(value) = serde_json::from_str::<JsonValue>(&normalized) {
+            return Some(value);
+        }
+    }
+
+    if let Some(brute) = extract_json_brute(response) {
+        if let Ok(value) = serde_json::from_str::<JsonValue>(&brute) {
+            return Some(value);
+        }
+        let normalized = normalize_wrapped_json(&brute);
+        if normalized != brute {
+            if let Ok(value) = serde_json::from_str::<JsonValue>(&normalized) {
+                return Some(value);
+            }
+        }
+    }
+
+    None
+}
+
+fn normalize_wrapped_json(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut last_string_was_space = false;
+
+    for ch in text.chars() {
+        if in_string {
+            if escaped {
+                output.push(ch);
+                escaped = false;
+                last_string_was_space = false;
+                continue;
+            }
+
+            match ch {
+                '\\' => {
+                    output.push(ch);
+                    escaped = true;
+                    last_string_was_space = false;
+                }
+                '"' => {
+                    output.push(ch);
+                    in_string = false;
+                    last_string_was_space = false;
+                }
+                c if c.is_whitespace() => {
+                    if !last_string_was_space {
+                        output.push(' ');
+                        last_string_was_space = true;
+                    }
+                }
+                _ => {
+                    output.push(ch);
+                    last_string_was_space = false;
+                }
+            }
+        } else {
+            if ch == '"' {
+                in_string = true;
+            }
+            output.push(ch);
+        }
+    }
+
+    output
+}
+
+fn emit_saved_debug_artifact(
+    event_sink: Option<&WizardEventSink>,
+    phase: WizardPhase,
+    kind: &str,
+    response: &str,
+) {
+    if let Some(path) = save_debug_response(phase, kind, response) {
+        emit_wizard_event(
+            event_sink,
+            Event::Warning(format!(
+                "Saved wizard phase {} {} response for debugging: {}",
+                phase as i32, kind, path
+            )),
+        );
+    }
+}
+
+fn save_debug_response(phase: WizardPhase, kind: &str, response: &str) -> Option<String> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let filename = format!(
+        "dial-wizard-phase-{}-{}-{}.txt",
+        phase as i32, kind, timestamp
+    );
+    let path = std::env::temp_dir().join(filename);
+    fs::write(&path, response).ok()?;
+    Some(path.to_string_lossy().to_string())
 }
 
 /// Run wizard phases 4-5 (gap analysis and generation).
@@ -592,13 +1345,19 @@ pub async fn run_wizard_phases_4_5(
     let mut tasks_generated = 0;
 
     // Phase 4: Gap Analysis with specificity check
-    if !state.completed_phases.contains(&(WizardPhase::GapAnalysis as i32)) {
+    if !state
+        .completed_phases
+        .contains(&(WizardPhase::GapAnalysis as i32))
+    {
         state.current_phase = WizardPhase::GapAnalysis;
         save_wizard_state(prd_conn, state)?;
 
         let prompt = build_phase_prompt(WizardPhase::GapAnalysis, state, from_doc);
-        let response = execute_wizard_prompt(provider, &prompt).await?;
-        let data = parse_json_response(&response, provider, &prompt).await?;
+        let response =
+            execute_wizard_prompt(provider, WizardPhase::GapAnalysis, &prompt, None).await?;
+        let data =
+            parse_json_response(&response, provider, WizardPhase::GapAnalysis, &prompt, None)
+                .await?;
 
         // Apply specificity rewrites to prd.db if sections exist
         let (_, rewrites) = parse_specificity_response(&data);
@@ -612,21 +1371,32 @@ pub async fn run_wizard_phases_4_5(
     }
 
     // Phase 5: Generate
-    if !state.completed_phases.contains(&(WizardPhase::Generate as i32)) {
+    if !state
+        .completed_phases
+        .contains(&(WizardPhase::Generate as i32))
+    {
         state.current_phase = WizardPhase::Generate;
         save_wizard_state(prd_conn, state)?;
 
         let prompt = build_phase_prompt(WizardPhase::Generate, state, from_doc);
-        let response = execute_wizard_prompt(provider, &prompt).await?;
-        let data = parse_json_response(&response, provider, &prompt).await?;
+        let response =
+            execute_wizard_prompt(provider, WizardPhase::Generate, &prompt, None).await?;
+        let data =
+            parse_json_response(&response, provider, WizardPhase::Generate, &prompt, None).await?;
 
         // Insert generated sections into prd.db
         if let Some(sections) = data.get("sections").and_then(|s| s.as_array()) {
             crate::prd::prd_delete_all_sections(prd_conn)?;
 
             for (i, section) in sections.iter().enumerate() {
-                let title = section.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
-                let content = section.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                let title = section
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("Untitled");
+                let content = section
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
                 let word_count = content.split_whitespace().count() as i32;
 
                 // Generate section_id from position
@@ -649,18 +1419,22 @@ pub async fn run_wizard_phases_4_5(
         // Extract and store terminology
         if let Some(terms) = data.get("terminology").and_then(|t| t.as_array()) {
             for term in terms {
-                let canonical = term.get("term").and_then(|t| t.as_str()).unwrap_or_default();
-                let definition = term.get("definition").and_then(|d| d.as_str()).unwrap_or_default();
-                let category = term.get("category").and_then(|c| c.as_str()).unwrap_or("general");
+                let canonical = term
+                    .get("term")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default();
+                let definition = term
+                    .get("definition")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or_default();
+                let category = term
+                    .get("category")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("general");
 
                 if !canonical.is_empty() {
                     let _ = crate::prd::prd_add_term(
-                        prd_conn,
-                        canonical,
-                        "[]",
-                        definition,
-                        category,
-                        None,
+                        prd_conn, canonical, "[]", definition, category, None,
                     );
                 }
             }
@@ -670,14 +1444,18 @@ pub async fn run_wizard_phases_4_5(
         let phase_conn = crate::db::get_db(None)?;
         if let Some(sections) = data.get("sections").and_then(|s| s.as_array()) {
             for (i, section) in sections.iter().enumerate() {
-                let title = section.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+                let title = section
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("Untitled");
                 let desc = format!("Implement: {}", title);
                 let priority = (i + 1) as i32;
+                let section_id = format!("{}", i + 1);
 
                 phase_conn.execute(
-                    "INSERT INTO tasks (description, status, priority, spec_section_id)
-                     VALUES (?1, 'pending', ?2, ?3)",
-                    rusqlite::params![desc, priority, (i + 1) as i64],
+                    "INSERT INTO tasks (description, status, priority, prd_section_id)
+                             VALUES (?1, 'pending', ?2, ?3)",
+                    rusqlite::params![desc, priority, section_id],
                 )?;
                 tasks_generated += 1;
             }
@@ -704,9 +1482,20 @@ pub async fn run_wizard(
     resume: bool,
     full: bool,
 ) -> Result<WizardResult> {
+    run_wizard_with_events(provider, prd_conn, template, from_doc, resume, full, None).await
+}
+
+pub async fn run_wizard_with_events(
+    provider: &dyn Provider,
+    prd_conn: &Connection,
+    template: &str,
+    from_doc: Option<&str>,
+    resume: bool,
+    full: bool,
+    event_sink: Option<WizardEventSink>,
+) -> Result<WizardResult> {
     let mut state = if resume {
-        load_wizard_state(prd_conn)?
-            .unwrap_or_else(|| WizardState::new(template))
+        load_wizard_state(prd_conn)?.unwrap_or_else(|| WizardState::new(template))
     } else {
         clear_wizard_state(prd_conn)?;
         WizardState::new(template)
@@ -720,6 +1509,20 @@ pub async fn run_wizard(
     let max_phase: i32 = if full { 9 } else { 5 };
     let mut result = WizardResult::default();
 
+    if resume {
+        let resumed_phase = if state.id > 0 {
+            state.current_phase as u8
+        } else {
+            0
+        };
+        emit_wizard_event(
+            event_sink.as_ref(),
+            Event::WizardResumed {
+                phase: resumed_phase,
+            },
+        );
+    }
+
     for phase_num in 1..=max_phase {
         let phase = WizardPhase::from_i32(phase_num).unwrap();
 
@@ -727,30 +1530,44 @@ pub async fn run_wizard(
             continue;
         }
 
-        match phase {
+        emit_wizard_event(
+            event_sink.as_ref(),
+            Event::WizardPhaseStarted {
+                phase: phase_num as u8,
+                name: phase.name().to_string(),
+            },
+        );
+        let phase_started = Instant::now();
+
+        let phase_result = match phase {
             // Phases 1-3: generic prompt → parse → store
-            WizardPhase::Vision
-            | WizardPhase::Functionality
-            | WizardPhase::Technical => {
+            WizardPhase::Vision | WizardPhase::Functionality | WizardPhase::Technical => {
                 state.current_phase = phase;
-                save_wizard_state(prd_conn, &state)?;
+                save_wizard_state(prd_conn, &mut state)?;
 
                 let prompt = build_phase_prompt(phase, &state, from_doc);
-                let response = execute_wizard_prompt(provider, &prompt).await?;
-                let data = parse_json_response(&response, provider, &prompt).await?;
+                let response =
+                    execute_wizard_prompt(provider, phase, &prompt, event_sink.as_ref()).await?;
+                let data =
+                    parse_json_response(&response, provider, phase, &prompt, event_sink.as_ref())
+                        .await?;
                 state.set_phase_data(phase, data);
                 state.mark_phase_complete(phase);
-                save_wizard_state(prd_conn, &state)?;
+                save_wizard_state(prd_conn, &mut state)?;
+                Ok(())
             }
 
             // Phase 4: gap analysis with specificity check
             WizardPhase::GapAnalysis => {
                 state.current_phase = phase;
-                save_wizard_state(prd_conn, &state)?;
+                save_wizard_state(prd_conn, &mut state)?;
 
                 let prompt = build_phase_prompt(phase, &state, from_doc);
-                let response = execute_wizard_prompt(provider, &prompt).await?;
-                let data = parse_json_response(&response, provider, &prompt).await?;
+                let response =
+                    execute_wizard_prompt(provider, phase, &prompt, event_sink.as_ref()).await?;
+                let data =
+                    parse_json_response(&response, provider, phase, &prompt, event_sink.as_ref())
+                        .await?;
 
                 // Apply specificity rewrites to prd.db if sections exist
                 let (_, rewrites) = parse_specificity_response(&data);
@@ -760,25 +1577,35 @@ pub async fn run_wizard(
 
                 state.set_phase_data(phase, data);
                 state.mark_phase_complete(phase);
-                save_wizard_state(prd_conn, &state)?;
+                save_wizard_state(prd_conn, &mut state)?;
+                Ok(())
             }
 
             // Phase 5: generate PRD sections, terminology, and DIAL tasks
             WizardPhase::Generate => {
                 state.current_phase = phase;
-                save_wizard_state(prd_conn, &state)?;
+                save_wizard_state(prd_conn, &mut state)?;
 
                 let prompt = build_phase_prompt(phase, &state, from_doc);
-                let response = execute_wizard_prompt(provider, &prompt).await?;
-                let data = parse_json_response(&response, provider, &prompt).await?;
+                let response =
+                    execute_wizard_prompt(provider, phase, &prompt, event_sink.as_ref()).await?;
+                let data =
+                    parse_json_response(&response, provider, phase, &prompt, event_sink.as_ref())
+                        .await?;
 
                 // Insert generated sections into prd.db
                 if let Some(sections) = data.get("sections").and_then(|s| s.as_array()) {
                     crate::prd::prd_delete_all_sections(prd_conn)?;
 
                     for (i, section) in sections.iter().enumerate() {
-                        let title = section.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
-                        let content = section.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                        let title = section
+                            .get("title")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("Untitled");
+                        let content = section
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
                         let word_count = content.split_whitespace().count() as i32;
                         let section_id = format!("{}", i + 1);
 
@@ -799,18 +1626,22 @@ pub async fn run_wizard(
                 // Extract and store terminology
                 if let Some(terms) = data.get("terminology").and_then(|t| t.as_array()) {
                     for term in terms {
-                        let canonical = term.get("term").and_then(|t| t.as_str()).unwrap_or_default();
-                        let definition = term.get("definition").and_then(|d| d.as_str()).unwrap_or_default();
-                        let category = term.get("category").and_then(|c| c.as_str()).unwrap_or("general");
+                        let canonical = term
+                            .get("term")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or_default();
+                        let definition = term
+                            .get("definition")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or_default();
+                        let category = term
+                            .get("category")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("general");
 
                         if !canonical.is_empty() {
                             let _ = crate::prd::prd_add_term(
-                                prd_conn,
-                                canonical,
-                                "[]",
-                                definition,
-                                category,
-                                None,
+                                prd_conn, canonical, "[]", definition, category, None,
                             );
                         }
                     }
@@ -820,14 +1651,18 @@ pub async fn run_wizard(
                 let phase_conn = crate::db::get_db(None)?;
                 if let Some(sections) = data.get("sections").and_then(|s| s.as_array()) {
                     for (i, section) in sections.iter().enumerate() {
-                        let title = section.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+                        let title = section
+                            .get("title")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("Untitled");
                         let desc = format!("Implement: {}", title);
                         let priority = (i + 1) as i32;
+                        let section_id = format!("{}", i + 1);
 
                         phase_conn.execute(
-                            "INSERT INTO tasks (description, status, priority, spec_section_id)
+                            "INSERT INTO tasks (description, status, priority, prd_section_id)
                              VALUES (?1, 'pending', ?2, ?3)",
-                            rusqlite::params![desc, priority, (i + 1) as i64],
+                            rusqlite::params![desc, priority, section_id],
                         )?;
                         result.tasks_generated += 1;
                     }
@@ -835,44 +1670,85 @@ pub async fn run_wizard(
 
                 state.set_phase_data(phase, data);
                 state.mark_phase_complete(phase);
-                save_wizard_state(prd_conn, &state)?;
+                save_wizard_state(prd_conn, &mut state)?;
+                Ok(())
             }
 
             // Phase 6: task review with sizing analysis
             WizardPhase::TaskReview => {
                 let (kept, added, removed, sizing) =
-                    run_wizard_phase_6(provider, prd_conn, &mut state).await?;
+                    run_wizard_phase_6(provider, prd_conn, &mut state, event_sink.as_ref()).await?;
                 result.tasks_kept = kept;
                 result.tasks_added = added;
                 result.tasks_removed = removed;
                 result.sizing_summary = sizing;
+                Ok(())
             }
 
             // Phase 7: build & test config with test strategy
             WizardPhase::BuildTestConfig => {
                 let (build_cmd, test_cmd, steps, test_tasks) =
-                    run_wizard_phase_7(provider, prd_conn, &mut state).await?;
+                    run_wizard_phase_7(provider, prd_conn, &mut state, event_sink.as_ref()).await?;
                 result.build_cmd = build_cmd;
                 result.test_cmd = test_cmd;
                 result.pipeline_steps = steps;
                 result.test_tasks_added = test_tasks;
+                Ok(())
             }
 
             // Phase 8: iteration mode
             WizardPhase::IterationMode => {
                 let mode =
-                    run_wizard_phase_8(provider, prd_conn, &mut state).await?;
+                    run_wizard_phase_8(provider, prd_conn, &mut state, event_sink.as_ref()).await?;
                 result.iteration_mode = mode;
+                Ok(())
             }
 
             // Phase 9: launch summary (no provider call)
             WizardPhase::Launch => {
-                let (name, count) =
-                    run_wizard_phase_9(prd_conn, &mut state)?;
-                result.project_name = name;
-                result.task_count = count;
+                let summary = run_wizard_phase_9(prd_conn, &mut state)?;
+                result.project_name = summary.project_name;
+                result.task_count = summary.task_count;
+                result.build_cmd = summary.build_cmd;
+                result.test_cmd = summary.test_cmd;
+                result.iteration_mode = summary.iteration_mode;
+                result.ai_cli = summary.ai_cli;
+                Ok(())
             }
+        };
+
+        if let Err(error) = phase_result {
+            emit_wizard_event(
+                event_sink.as_ref(),
+                Event::Warning(format!(
+                    "Wizard stopped at phase {}. State was saved and can be resumed.",
+                    phase_num
+                )),
+            );
+            emit_wizard_event(
+                event_sink.as_ref(),
+                Event::WizardPaused {
+                    phase: phase_num as u8,
+                },
+            );
+            return Err(error);
         }
+
+        let phase_duration = phase_started.elapsed().as_secs_f64();
+        emit_wizard_event(
+            event_sink.as_ref(),
+            Event::WizardPhaseCompleted {
+                phase: phase_num as u8,
+                name: phase.name().to_string(),
+            },
+        );
+        emit_wizard_event(
+            event_sink.as_ref(),
+            Event::Info(format!(
+                "Wizard phase {} finished in {:.1}s",
+                phase_num, phase_duration
+            )),
+        );
     }
 
     Ok(result)
@@ -907,23 +1783,15 @@ pub fn build_task_review_prompt(
         items.join("\n")
     };
 
-    let prd_context = if gathered_info.is_object()
-        && !gathered_info.as_object().unwrap().is_empty()
-    {
-        format!(
-            "\n## Full PRD Context (from phases 1-5)\n```json\n{}\n```\n",
-            serde_json::to_string_pretty(gathered_info).unwrap_or_default()
-        )
-    } else {
-        String::new()
-    };
+    let project_summary = build_project_summary_context(gathered_info);
+    let section_outline = build_generated_section_outline(gathered_info);
 
     format!(
         r#"You are a senior software architect reviewing and refining a task list generated from a PRD.
 
 ## Current Task List (generated from PRD)
 {task_list}
-{prd_context}
+{project_summary}{section_outline}
 
 ## TASK SIZING ANALYSIS
 
@@ -1025,8 +1893,12 @@ pub async fn run_wizard_phase_6(
     provider: &dyn Provider,
     prd_conn: &Connection,
     state: &mut WizardState,
+    event_sink: Option<&WizardEventSink>,
 ) -> Result<(usize, usize, usize, SizingSummary)> {
-    if state.completed_phases.contains(&(WizardPhase::TaskReview as i32)) {
+    if state
+        .completed_phases
+        .contains(&(WizardPhase::TaskReview as i32))
+    {
         return Ok((0, 0, 0, SizingSummary::default()));
     }
 
@@ -1041,8 +1913,16 @@ pub async fn run_wizard_phase_6(
     let prompt = build_task_review_prompt(&tasks, &state.gathered_info);
 
     // 3. Send to provider and parse JSON response
-    let response = execute_wizard_prompt(provider, &prompt).await?;
-    let data = parse_json_response(&response, provider, &prompt).await?;
+    let response =
+        execute_wizard_prompt(provider, WizardPhase::TaskReview, &prompt, event_sink).await?;
+    let data = parse_json_response(
+        &response,
+        provider,
+        WizardPhase::TaskReview,
+        &prompt,
+        event_sink,
+    )
+    .await?;
 
     // 4. Parse sizing analysis data (splits, rewrites, merges, summary)
     let (_splits, _rewrites, _merges, sizing) = parse_sizing_response(&data);
@@ -1113,13 +1993,8 @@ pub fn apply_task_review(
             .get("description")
             .and_then(|d| d.as_str())
             .unwrap_or("Untitled task");
-        let priority = task
-            .get("priority")
-            .and_then(|p| p.as_i64())
-            .unwrap_or(5) as i32;
-        let spec_section = task
-            .get("spec_section")
-            .and_then(|s| s.as_str());
+        let priority = task.get("priority").and_then(|p| p.as_i64()).unwrap_or(5) as i32;
+        let spec_section = task.get("spec_section").and_then(|s| s.as_str());
         let prd_section_id = spec_section.map(|s| s.to_string());
 
         conn.execute(
@@ -1179,16 +2054,8 @@ pub fn build_build_test_config_prompt(
         "\nNo technical details available from prior phases.\n".to_string()
     };
 
-    let prd_context = if gathered_info.is_object()
-        && !gathered_info.as_object().unwrap().is_empty()
-    {
-        format!(
-            "\n## Full PRD Context (from phases 1-6)\n```json\n{}\n```\n",
-            serde_json::to_string_pretty(gathered_info).unwrap_or_default()
-        )
-    } else {
-        String::new()
-    };
+    let project_summary = build_project_summary_context(gathered_info);
+    let section_outline = build_generated_section_outline(gathered_info);
 
     let task_list = if tasks.is_empty() {
         "No feature tasks available.".to_string()
@@ -1210,7 +2077,7 @@ pub fn build_build_test_config_prompt(
     format!(
         r#"You are configuring build and test commands for a software project.
 {technical_context}
-{prd_context}
+{project_summary}{section_outline}
 Based on the technical details above (languages, frameworks, platform, constraints),
 suggest the appropriate build and test commands and a validation pipeline.
 
@@ -1262,6 +2129,7 @@ Respond in JSON format:
 }}
 
 Important: Use only ASCII hyphen-minus characters in shell commands and flags. Never use Unicode dash punctuation in build_cmd, test_cmd, or pipeline_steps[].command.
+Important: Every command string must be valid shell syntax and also JSON-safe. Do not use unescaped double quotes inside build_cmd, test_cmd, or pipeline_steps[].command. Prefer single quotes around shell arguments when quoting is needed (for example, `-destination 'platform=macOS'`).
 
 Notes on the JSON fields:
 - `pipeline_steps[].sort_order`: integer execution sequence (1, 2, 3...)
@@ -1287,8 +2155,12 @@ pub async fn run_wizard_phase_7(
     provider: &dyn Provider,
     prd_conn: &Connection,
     state: &mut WizardState,
+    event_sink: Option<&WizardEventSink>,
 ) -> Result<(String, String, usize, usize)> {
-    if state.completed_phases.contains(&(WizardPhase::BuildTestConfig as i32)) {
+    if state
+        .completed_phases
+        .contains(&(WizardPhase::BuildTestConfig as i32))
+    {
         return Ok((String::new(), String::new(), 0, 0));
     }
 
@@ -1303,8 +2175,16 @@ pub async fn run_wizard_phase_7(
     let prompt = build_build_test_config_prompt(&state.gathered_info, &tasks);
 
     // 3. Send to provider and parse JSON response
-    let response = execute_wizard_prompt(provider, &prompt).await?;
-    let data = parse_json_response(&response, provider, &prompt).await?;
+    let response =
+        execute_wizard_prompt(provider, WizardPhase::BuildTestConfig, &prompt, event_sink).await?;
+    let data = parse_json_response(
+        &response,
+        provider,
+        WizardPhase::BuildTestConfig,
+        &prompt,
+        event_sink,
+    )
+    .await?;
 
     // 4. Apply config, pipeline steps, and test tasks to the database
     let (build_cmd, test_cmd, steps_count, test_tasks_count) =
@@ -1376,7 +2256,9 @@ pub fn apply_build_test_config(
     crate::config::config_set("test_timeout", &test_timeout.to_string())?;
 
     // Insert pipeline steps if provided
-    let steps_count = if let Some(steps) = config_data.get("pipeline_steps").and_then(|s| s.as_array()) {
+    let steps_count = if let Some(steps) =
+        config_data.get("pipeline_steps").and_then(|s| s.as_array())
+    {
         if !steps.is_empty() {
             // Clear existing validation steps before inserting new ones
             conn.execute("DELETE FROM validation_steps", [])?;
@@ -1384,7 +2266,8 @@ pub fn apply_build_test_config(
             for step in steps {
                 let name = step.get("name").and_then(|v| v.as_str()).unwrap_or("step");
                 let raw_command = step.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                let command = sanitize_shell_command(&format!("pipeline step '{}'", name), raw_command)?;
+                let command =
+                    sanitize_shell_command(&format!("pipeline step '{}'", name), raw_command)?;
                 if let Some(warning) = &command.warning {
                     print_warning(warning);
                 }
@@ -1394,7 +2277,10 @@ pub fn apply_build_test_config(
                     .and_then(|v| v.as_i64())
                     .or_else(|| step.get("order").and_then(|v| v.as_i64()))
                     .unwrap_or(0) as i32;
-                let required = step.get("required").and_then(|v| v.as_bool()).unwrap_or(true);
+                let required = step
+                    .get("required")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 let timeout = step.get("timeout").and_then(|v| v.as_i64());
 
                 conn.execute(
@@ -1452,7 +2338,12 @@ pub fn apply_build_test_config(
         }
     }
 
-    Ok((build_cmd.value, test_cmd.value, steps_count, test_tasks_count))
+    Ok((
+        build_cmd.value,
+        test_cmd.value,
+        steps_count,
+        test_tasks_count,
+    ))
 }
 
 /// Build the phase 8 (Iteration Mode) prompt with project context and task count.
@@ -1465,6 +2356,14 @@ pub fn apply_build_test_config(
 /// * `gathered_info` - Accumulated wizard state from phases 1-7
 /// * `task_count` - Number of pending/in-progress tasks in the database
 pub fn build_iteration_mode_prompt(gathered_info: &JsonValue, task_count: usize) -> String {
+    build_iteration_mode_prompt_with_preference(gathered_info, task_count, None)
+}
+
+pub fn build_iteration_mode_prompt_with_preference(
+    gathered_info: &JsonValue,
+    task_count: usize,
+    preferred_ai_cli: Option<&str>,
+) -> String {
     let project_name = gathered_info
         .get("vision")
         .and_then(|v| v.get("project_name"))
@@ -1505,16 +2404,15 @@ pub fn build_iteration_mode_prompt(gathered_info: &JsonValue, task_count: usize)
         }
     };
 
-    let prd_context = if gathered_info.is_object()
-        && !gathered_info.as_object().unwrap().is_empty()
-    {
-        format!(
-            "\n## Full PRD Context (from phases 1-7)\n```json\n{}\n```\n",
-            serde_json::to_string_pretty(gathered_info).unwrap_or_default()
-        )
-    } else {
-        String::new()
-    };
+    let project_summary = build_project_summary_context(gathered_info);
+    let current_cli_hint = preferred_ai_cli
+        .map(|cli| {
+            format!(
+                "\nCurrent machine-default CLI for this wizard run: `{}`. Unless there is a strong reason otherwise, keep `ai_cli` set to this current backend so auto-run continues with the same available tool.\n",
+                cli
+            )
+        })
+        .unwrap_or_default();
 
     format!(
         r#"You are recommending an iteration mode for autonomous AI development of a software project.
@@ -1523,7 +2421,8 @@ pub fn build_iteration_mode_prompt(gathered_info: &JsonValue, task_count: usize)
 - Project: {project_name}
 - Pending tasks: {task_count}
 {complexity_context}
-{prd_context}
+{project_summary}
+{current_cli_hint}
 Available iteration modes:
 - "autonomous": Run all tasks without stopping. Commit on pass, skip to next on failure. Best for well-specified projects with strong test coverage.
 - "review_every:N": Pause for human review after every N completed tasks. Good balance of speed and oversight.
@@ -1547,7 +2446,7 @@ Respond in JSON format:
 Notes:
 - "recommended_mode" must be one of: "autonomous", "review_every", "review_each"
 - "review_interval" should be a positive integer when mode is "review_every", null otherwise
-- "ai_cli" should be "claude", "codex", or "gemini"
+- "ai_cli" should be "claude", "codex", "copilot", or "gemini"
 - "subagent_timeout" is in seconds (default 1800 = 30 minutes)
 
 Respond ONLY with valid JSON."#
@@ -1565,8 +2464,12 @@ pub async fn run_wizard_phase_8(
     provider: &dyn Provider,
     prd_conn: &Connection,
     state: &mut WizardState,
+    event_sink: Option<&WizardEventSink>,
 ) -> Result<String> {
-    if state.completed_phases.contains(&(WizardPhase::IterationMode as i32)) {
+    if state
+        .completed_phases
+        .contains(&(WizardPhase::IterationMode as i32))
+    {
         return Ok(String::new());
     }
 
@@ -1583,15 +2486,32 @@ pub async fn run_wizard_phase_8(
         )
         .unwrap_or(0) as usize;
 
+    let preferred_ai_cli = match provider.name() {
+        "claude" | "codex" | "copilot" | "gemini" => Some(provider.name()),
+        _ => None,
+    };
+
     // 2. Build the prompt with project context and task count
-    let prompt = build_iteration_mode_prompt(&state.gathered_info, task_count);
+    let prompt = build_iteration_mode_prompt_with_preference(
+        &state.gathered_info,
+        task_count,
+        preferred_ai_cli,
+    );
 
     // 3. Send to provider and parse JSON response
-    let response = execute_wizard_prompt(provider, &prompt).await?;
-    let data = parse_json_response(&response, provider, &prompt).await?;
+    let response =
+        execute_wizard_prompt(provider, WizardPhase::IterationMode, &prompt, event_sink).await?;
+    let data = parse_json_response(
+        &response,
+        provider,
+        WizardPhase::IterationMode,
+        &prompt,
+        event_sink,
+    )
+    .await?;
 
     // 4. Apply iteration mode config to the database
-    let mode = apply_iteration_mode(&phase_conn, &data)?;
+    let mode = apply_iteration_mode_with_preference(&phase_conn, &data, preferred_ai_cli)?;
 
     // 5. Store in wizard state and mark complete
     state.set_phase_data(WizardPhase::IterationMode, data);
@@ -1607,18 +2527,21 @@ pub async fn run_wizard_phase_8(
 /// to the config table.
 ///
 /// Returns the resolved mode string (e.g., "autonomous", "review_every:5", "review_each").
-pub fn apply_iteration_mode(
+pub fn apply_iteration_mode(_conn: &Connection, mode_data: &JsonValue) -> Result<String> {
+    apply_iteration_mode_with_preference(_conn, mode_data, None)
+}
+
+pub fn apply_iteration_mode_with_preference(
     _conn: &Connection,
     mode_data: &JsonValue,
+    preferred_ai_cli: Option<&str>,
 ) -> Result<String> {
     let raw_mode = mode_data
         .get("recommended_mode")
         .and_then(|v| v.as_str())
         .unwrap_or("autonomous");
 
-    let review_interval = mode_data
-        .get("review_interval")
-        .and_then(|v| v.as_u64());
+    let review_interval = mode_data.get("review_interval").and_then(|v| v.as_u64());
 
     // Build the full mode string: "review_every:N" when interval is provided
     let mode = if raw_mode == "review_every" {
@@ -1628,9 +2551,8 @@ pub fn apply_iteration_mode(
         raw_mode.to_string()
     };
 
-    let ai_cli = mode_data
-        .get("ai_cli")
-        .and_then(|v| v.as_str())
+    let ai_cli = preferred_ai_cli
+        .or_else(|| mode_data.get("ai_cli").and_then(|v| v.as_str()))
         .unwrap_or("claude")
         .to_string();
 
@@ -1656,20 +2578,56 @@ pub fn apply_iteration_mode(
 /// 4. Formats and prints a launch summary
 /// 5. Writes launch_ready flag to wizard state gathered_info
 ///
-/// Returns (project_name, task_count) for event emission.
-pub fn run_wizard_phase_9(
-    prd_conn: &Connection,
-    state: &mut WizardState,
-) -> Result<(String, usize)> {
-    if state.completed_phases.contains(&(WizardPhase::Launch as i32)) {
-        let project_name = state
+/// Returns the launch summary for event emission.
+pub fn run_wizard_phase_9(prd_conn: &Connection, state: &mut WizardState) -> Result<LaunchSummary> {
+    if state
+        .completed_phases
+        .contains(&(WizardPhase::Launch as i32))
+    {
+        let launch = state
             .gathered_info
-            .get("vision")
-            .and_then(|v| v.get("project_name"))
+            .get("launch")
+            .cloned()
+            .unwrap_or_default();
+        let project_name = launch
+            .get("project_name")
             .and_then(|v| v.as_str())
+            .or_else(|| {
+                state
+                    .gathered_info
+                    .get("vision")
+                    .and_then(|v| v.get("project_name"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("Unknown")
             .to_string();
-        return Ok((project_name, 0));
+        return Ok(LaunchSummary {
+            project_name,
+            task_count: launch
+                .get("task_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize,
+            build_cmd: launch
+                .get("build_cmd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(not set)")
+                .to_string(),
+            test_cmd: launch
+                .get("test_cmd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(not set)")
+                .to_string(),
+            iteration_mode: launch
+                .get("iteration_mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(not set)")
+                .to_string(),
+            ai_cli: launch
+                .get("ai_cli")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(not set)")
+                .to_string(),
+        });
     }
 
     state.current_phase = WizardPhase::Launch;
@@ -1709,26 +2667,7 @@ pub fn run_wizard_phase_9(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| not_set);
 
-    // 4. Print launch summary
-    println!();
-    println!("{}", crate::output::bold("Launch Summary"));
-    println!("{}", "═".repeat(50));
-    println!("  Project:        {}", crate::output::bold(&project_name));
-    println!("  Tasks:          {}", task_count);
-    println!("  Build command:  {}", build_cmd);
-    println!("  Test command:   {}", test_cmd);
-    println!("  Iteration mode: {}", iteration_mode);
-    println!("  AI CLI:         {}", ai_cli);
-    println!("{}", "═".repeat(50));
-    println!();
-    println!(
-        "{}",
-        crate::output::green(
-            "Project configured. Run `dial auto-run` to start autonomous iteration."
-        )
-    );
-
-    // 5. Write launch_ready flag to wizard state
+    // 4. Write launch_ready flag to wizard state
     let launch_data = serde_json::json!({
         "launch_ready": true,
         "project_name": project_name,
@@ -1743,7 +2682,14 @@ pub fn run_wizard_phase_9(
     state.mark_phase_complete(WizardPhase::Launch);
     save_wizard_state(prd_conn, state)?;
 
-    Ok((project_name, task_count))
+    Ok(LaunchSummary {
+        project_name,
+        task_count,
+        build_cmd,
+        test_cmd,
+        iteration_mode,
+        ai_cli,
+    })
 }
 
 /// A specificity rating for a PRD section from Phase 4 gap analysis.
@@ -1802,8 +2748,16 @@ pub fn parse_specificity_response(data: &JsonValue) -> (Vec<SectionRating>, Vec<
             arr.iter()
                 .filter_map(|item| {
                     let section = item.get("section")?.as_str()?.to_string();
-                    let original = item.get("original")?.as_str()?.to_string();
-                    let rewritten = item.get("rewritten")?.as_str()?.to_string();
+                    let original = item
+                        .get("original")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let rewritten = item
+                        .get("rewritten")
+                        .or_else(|| item.get("rewrite_summary"))
+                        .and_then(|v| v.as_str())?
+                        .to_string();
                     Some(RewrittenSection {
                         section,
                         original,
@@ -1821,7 +2775,10 @@ pub fn parse_specificity_response(data: &JsonValue) -> (Vec<SectionRating>, Vec<
 ///
 /// Looks up sections by title and updates their content with the rewritten text.
 /// Returns the number of sections successfully updated.
-pub fn apply_specificity_rewrites(conn: &Connection, rewrites: &[RewrittenSection]) -> Result<usize> {
+pub fn apply_specificity_rewrites(
+    conn: &Connection,
+    rewrites: &[RewrittenSection],
+) -> Result<usize> {
     let mut updated = 0;
     for rewrite in rewrites {
         // Look up the section by title
@@ -1854,7 +2811,12 @@ pub fn apply_specificity_rewrites(conn: &Connection, rewrites: &[RewrittenSectio
 /// Returns defaults if any fields are missing (backward compatible with older Phase 6 responses).
 pub fn parse_sizing_response(
     data: &JsonValue,
-) -> (Vec<TaskSplitRecord>, Vec<TaskRewriteRecord>, Vec<TaskMergeRecord>, SizingSummary) {
+) -> (
+    Vec<TaskSplitRecord>,
+    Vec<TaskRewriteRecord>,
+    Vec<TaskMergeRecord>,
+    SizingSummary,
+) {
     let splits: Vec<TaskSplitRecord> = data
         .get("splits")
         .and_then(|v| v.as_array())
@@ -2081,7 +3043,12 @@ mod tests {
     #[test]
     fn test_task_review_prompt_contains_sizing_section() {
         let tasks = vec![
-            (1, "Build auth system".to_string(), 1, Some("1.1".to_string())),
+            (
+                1,
+                "Build auth system".to_string(),
+                1,
+                Some("1.1".to_string()),
+            ),
             (2, "Set up database".to_string(), 2, None),
         ];
         let gathered = json!({});
@@ -2143,6 +3110,37 @@ mod tests {
         assert!(prompt.contains("\"rewrites\""));
         assert!(prompt.contains("\"merges\""));
         assert!(prompt.contains("\"sizing_summary\""));
+    }
+
+    #[test]
+    fn test_task_review_prompt_uses_compact_summary_context() {
+        let tasks = vec![(
+            1,
+            "Implement: Problem".to_string(),
+            1,
+            Some("1".to_string()),
+        )];
+        let gathered = json!({
+            "vision": {
+                "project_name": "WizardTestProject",
+                "problem_statement": "A fairly long problem statement that should be summarized instead of dumping the entire gathered_info blob back into the prompt."
+            },
+            "functionality": {
+                "mvp_features": [{"name": "Import specs"}]
+            },
+            "generate": {
+                "sections": [
+                    {"title": "Problem", "content": "Long markdown content for the problem section"},
+                    {"title": "Scope", "content": "Long markdown content for the scope section"}
+                ]
+            }
+        });
+
+        let prompt = build_task_review_prompt(&tasks, &gathered);
+
+        assert!(prompt.contains("Project Summary"));
+        assert!(prompt.contains("PRD Section Outline"));
+        assert!(!prompt.contains("Full PRD Context"));
     }
 
     #[test]
@@ -2344,7 +3342,8 @@ mod tests {
                 PRIMARY KEY (task_id, depends_on_id)
             );
             INSERT INTO tasks (description, status, priority) VALUES ('old task', 'pending', 1);",
-        ).unwrap();
+        )
+        .unwrap();
 
         let review_data = json!({
             "tasks": [
@@ -2372,7 +3371,9 @@ mod tests {
 
         // Verify dependency was created
         let dep_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(dep_count, 1);
     }
@@ -2382,8 +3383,42 @@ mod tests {
         let prompt = build_build_test_config_prompt(&serde_json::json!({}), &[]);
 
         assert!(prompt.contains("Use only ASCII hyphen-minus characters"));
+        assert!(prompt.contains("Prefer single quotes around shell arguments"));
         assert!(!prompt.contains('—'));
         assert!(!prompt.contains('–'));
+    }
+
+    #[test]
+    fn test_build_test_config_prompt_uses_targeted_context() {
+        let prompt = build_build_test_config_prompt(
+            &serde_json::json!({
+                "vision": {"project_name": "WizardTestProject"},
+                "technical": {"platform": {"languages": ["Rust"], "database": "SQLite"}},
+                "generate": {"sections": [{"title": "Problem", "content": "content"}]}
+            }),
+            &[],
+        );
+
+        assert!(prompt.contains("Project Summary"));
+        assert!(prompt.contains("Technical Details"));
+        assert!(prompt.contains("PRD Section Outline"));
+        assert!(!prompt.contains("Full PRD Context"));
+    }
+
+    #[test]
+    fn test_iteration_mode_prompt_uses_summary_not_full_dump() {
+        let prompt = build_iteration_mode_prompt(
+            &serde_json::json!({
+                "vision": {"project_name": "WizardTestProject", "problem_statement": "Needs better wizard progress"},
+                "functionality": {"mvp_features": [{"name": "Wizard"}]},
+                "technical": {"constraints": ["offline support"], "integrations": []}
+            }),
+            12,
+        );
+
+        assert!(prompt.contains("Project Summary"));
+        assert!(prompt.contains("Complexity Indicators"));
+        assert!(!prompt.contains("Full PRD Context"));
     }
 
     // --- JSON Extraction Robustness Tests ---
@@ -2430,6 +3465,23 @@ mod tests {
         let input = r#"{"path": "C:\\Users\\test", "ok": true}"#;
         let result = extract_json_brute(input).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["ok"], true);
+    }
+
+    #[test]
+    fn test_normalize_wrapped_json_flattens_string_line_breaks() {
+        let input = "{\n  \"msg\": \"line one\n    line two\",\n  \"ok\": true\n}";
+        let normalized = normalize_wrapped_json(input);
+        let parsed: serde_json::Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(parsed["msg"], "line one line two");
+        assert_eq!(parsed["ok"], true);
+    }
+
+    #[test]
+    fn test_parse_json_candidate_handles_bulleted_wrapped_json() {
+        let input = "● { \"msg\": \"line one\n  line two\", \"ok\": true }";
+        let parsed = parse_json_candidate(input).unwrap();
+        assert_eq!(parsed["msg"], "line one line two");
         assert_eq!(parsed["ok"], true);
     }
 }
