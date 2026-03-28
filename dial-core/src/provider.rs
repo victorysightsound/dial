@@ -8,6 +8,8 @@ pub struct ProviderRequest {
     pub prompt: String,
     /// Working directory for the provider to operate in.
     pub work_dir: String,
+    /// Optional JSON schema for structured output.
+    pub output_schema: Option<String>,
     /// Maximum tokens for the response (if applicable).
     pub max_tokens: Option<u32>,
     /// Model identifier (provider-specific).

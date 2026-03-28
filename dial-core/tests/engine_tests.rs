@@ -653,6 +653,7 @@ async fn test_mock_provider_execute() {
     let request = ProviderRequest {
         prompt: "test prompt".to_string(),
         work_dir: "/tmp".to_string(),
+        output_schema: None,
         max_tokens: None,
         model: None,
         timeout_secs: None,

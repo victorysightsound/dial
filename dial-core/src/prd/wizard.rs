@@ -1064,10 +1064,8 @@ async fn execute_wizard_prompt(
 
     let request = ProviderRequest {
         prompt: prompt.to_string(),
-        work_dir: std::env::current_dir()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string(),
+        work_dir: wizard_work_dir(),
+        output_schema: wizard_phase_output_schema(phase),
         max_tokens: Some(4096),
         model: None,
         timeout_secs: Some(timeout_secs),
@@ -1097,6 +1095,419 @@ async fn execute_wizard_prompt(
     }
 
     Ok(response.output)
+}
+
+fn wizard_work_dir() -> String {
+    // Run wizard prompts from a neutral temp directory so agentic CLI backends
+    // do not inherit project-local instructions (for example AGENTS.md).
+    std::env::temp_dir().to_string_lossy().to_string()
+}
+
+fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
+    Some(
+        match phase {
+            WizardPhase::Vision => serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                    "project_name",
+                    "elevator_pitch",
+                    "problem_statement",
+                    "target_users",
+                    "success_criteria",
+                    "scope_exclusions"
+                ],
+                "properties": {
+                    "project_name": { "type": "string" },
+                    "elevator_pitch": { "type": "string" },
+                    "problem_statement": { "type": "string" },
+                    "target_users": { "type": "array", "items": { "type": "string" } },
+                    "success_criteria": { "type": "array", "items": { "type": "string" } },
+                    "scope_exclusions": { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+            WizardPhase::Functionality => serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mvp_features", "deferred_features", "user_workflows"],
+                "properties": {
+                    "mvp_features": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["name", "description", "priority"],
+                            "properties": {
+                                "name": { "type": "string" },
+                                "description": { "type": "string" },
+                                "priority": { "type": "integer" }
+                            }
+                        }
+                    },
+                    "deferred_features": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["name", "description", "rationale"],
+                            "properties": {
+                                "name": { "type": "string" },
+                                "description": { "type": "string" },
+                                "rationale": { "type": "string" }
+                            }
+                        }
+                    },
+                    "user_workflows": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["name", "steps"],
+                            "properties": {
+                                "name": { "type": "string" },
+                                "steps": { "type": "array", "items": { "type": "string" } }
+                            }
+                        }
+                    }
+                }
+            }),
+            WizardPhase::Technical => serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                    "data_model",
+                    "integrations",
+                    "platform",
+                    "constraints",
+                    "performance_requirements"
+                ],
+                "properties": {
+                    "data_model": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["entity", "fields", "relationships"],
+                            "properties": {
+                                "entity": { "type": "string" },
+                                "fields": { "type": "array", "items": { "type": "string" } },
+                                "relationships": { "type": "array", "items": { "type": "string" } }
+                            }
+                        }
+                    },
+                    "integrations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["service", "purpose", "api_type"],
+                            "properties": {
+                                "service": { "type": "string" },
+                                "purpose": { "type": "string" },
+                                "api_type": { "type": "string" }
+                            }
+                        }
+                    },
+                    "platform": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["languages", "frameworks", "database", "hosting"],
+                        "properties": {
+                            "languages": { "type": "array", "items": { "type": "string" } },
+                            "frameworks": { "type": "array", "items": { "type": "string" } },
+                            "database": { "type": "string" },
+                            "hosting": { "type": "string" }
+                        }
+                    },
+                    "constraints": { "type": "array", "items": { "type": "string" } },
+                    "performance_requirements": { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+            WizardPhase::GapAnalysis => serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                    "gaps",
+                    "contradictions",
+                    "recommendations",
+                    "section_ratings",
+                    "rewritten_sections"
+                ],
+                "properties": {
+                    "gaps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["area", "issue", "suggestion"],
+                            "properties": {
+                                "area": { "type": "string" },
+                                "issue": { "type": "string" },
+                                "suggestion": { "type": "string" }
+                            }
+                        }
+                    },
+                    "contradictions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["between", "issue"],
+                            "properties": {
+                                "between": { "type": "array", "items": { "type": "string" } },
+                                "issue": { "type": "string" }
+                            }
+                        }
+                    },
+                    "recommendations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["topic", "recommendation"],
+                            "properties": {
+                                "topic": { "type": "string" },
+                                "recommendation": { "type": "string" }
+                            }
+                        }
+                    },
+                    "section_ratings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["section", "rating", "issues"],
+                            "properties": {
+                                "section": { "type": "string" },
+                                "rating": { "type": "string", "enum": ["SPECIFIC", "NEEDS_DETAIL", "VAGUE"] },
+                                "issues": { "type": "array", "items": { "type": "string" } }
+                            }
+                        }
+                    },
+                    "rewritten_sections": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["section", "rewritten"],
+                            "properties": {
+                                "section": { "type": "string" },
+                                "rewritten": { "type": "string" }
+                            }
+                        }
+                    }
+                }
+            }),
+            WizardPhase::Generate => serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["sections", "terminology"],
+                "properties": {
+                    "sections": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["title", "content"],
+                            "properties": {
+                                "title": { "type": "string" },
+                                "content": { "type": "string" }
+                            }
+                        }
+                    },
+                    "terminology": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["term", "definition", "category"],
+                            "properties": {
+                                "term": { "type": "string" },
+                                "definition": { "type": "string" },
+                                "category": { "type": "string" }
+                            }
+                        }
+                    }
+                }
+            }),
+            WizardPhase::TaskReview => serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["tasks", "removed", "added", "splits", "rewrites", "merges", "sizing_summary"],
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["description", "priority", "spec_section", "depends_on", "rationale", "size"],
+                            "properties": {
+                                "description": { "type": "string" },
+                                "priority": { "type": "integer" },
+                                "spec_section": { "type": ["string", "null"] },
+                                "depends_on": { "type": "array", "items": { "type": "integer" } },
+                                "rationale": { "type": "string" },
+                                "size": { "type": "string", "enum": ["S", "M", "L", "XL"] }
+                            }
+                        }
+                    },
+                    "removed": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["original", "reason"],
+                            "properties": {
+                                "original": { "type": "string" },
+                                "reason": { "type": "string" }
+                            }
+                        }
+                    },
+                    "added": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["description", "reason"],
+                            "properties": {
+                                "description": { "type": "string" },
+                                "reason": { "type": "string" }
+                            }
+                        }
+                    },
+                    "splits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["original", "into", "reason"],
+                            "properties": {
+                                "original": { "type": "string" },
+                                "into": { "type": "array", "items": { "type": "string" } },
+                                "reason": { "type": "string" }
+                            }
+                        }
+                    },
+                    "rewrites": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["original", "rewritten", "reason"],
+                            "properties": {
+                                "original": { "type": "string" },
+                                "rewritten": { "type": "string" },
+                                "reason": { "type": "string" }
+                            }
+                        }
+                    },
+                    "merges": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["merged", "into", "reason"],
+                            "properties": {
+                                "merged": { "type": "array", "items": { "type": "string" } },
+                                "into": { "type": "string" },
+                                "reason": { "type": "string" }
+                            }
+                        }
+                    },
+                    "sizing_summary": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["S", "M", "L", "XL", "total_splits", "total_rewrites", "total_merges"],
+                        "properties": {
+                            "S": { "type": "integer" },
+                            "M": { "type": "integer" },
+                            "L": { "type": "integer" },
+                            "XL": { "type": "integer" },
+                            "total_splits": { "type": "integer" },
+                            "total_rewrites": { "type": "integer" },
+                            "total_merges": { "type": "integer" }
+                        }
+                    }
+                }
+            }),
+            WizardPhase::BuildTestConfig => serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                    "build_cmd",
+                    "test_cmd",
+                    "test_framework",
+                    "pipeline_steps",
+                    "test_tasks",
+                    "build_timeout",
+                    "test_timeout",
+                    "rationale"
+                ],
+                "properties": {
+                    "build_cmd": { "type": "string" },
+                    "test_cmd": { "type": "string" },
+                    "test_framework": { "type": "string" },
+                    "pipeline_steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["name", "command", "sort_order", "required", "timeout"],
+                            "properties": {
+                                "name": { "type": "string" },
+                                "command": { "type": "string" },
+                                "sort_order": { "type": "integer" },
+                                "required": { "type": "boolean" },
+                                "timeout": { "type": "integer" }
+                            }
+                        }
+                    },
+                    "test_tasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["description", "depends_on_feature", "rationale"],
+                            "properties": {
+                                "description": { "type": "string" },
+                                "depends_on_feature": { "type": "integer" },
+                                "rationale": { "type": "string" }
+                            }
+                        }
+                    },
+                    "build_timeout": { "type": "integer" },
+                    "test_timeout": { "type": "integer" },
+                    "rationale": { "type": "string" }
+                }
+            }),
+            WizardPhase::IterationMode => serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                    "recommended_mode",
+                    "review_interval",
+                    "ai_cli",
+                    "subagent_timeout",
+                    "rationale"
+                ],
+                "properties": {
+                    "recommended_mode": {
+                        "type": "string",
+                        "enum": ["autonomous", "review_every", "review_each"]
+                    },
+                    "review_interval": { "type": ["integer", "null"] },
+                    "ai_cli": {
+                        "type": "string",
+                        "enum": ["claude", "codex", "copilot", "gemini"]
+                    },
+                    "subagent_timeout": { "type": "integer" },
+                    "rationale": { "type": "string" }
+                }
+            }),
+            WizardPhase::Launch => return None,
+        }
+        .to_string(),
+    )
 }
 
 /// Parse a JSON response from the provider, with one retry on failure.
@@ -3039,6 +3450,23 @@ mod tests {
     use serde_json::json;
 
     // --- Prompt Content Tests ---
+
+    #[test]
+    fn test_wizard_work_dir_uses_temp_directory() {
+        assert_eq!(
+            wizard_work_dir(),
+            std::env::temp_dir().to_string_lossy().to_string()
+        );
+    }
+
+    #[test]
+    fn test_vision_phase_schema_requires_expected_fields() {
+        let schema = wizard_phase_output_schema(WizardPhase::Vision).unwrap();
+        let value: JsonValue = serde_json::from_str(&schema).unwrap();
+        let required = value["required"].as_array().unwrap();
+        assert!(required.iter().any(|item| item == "project_name"));
+        assert!(required.iter().any(|item| item == "target_users"));
+    }
 
     #[test]
     fn test_task_review_prompt_contains_sizing_section() {

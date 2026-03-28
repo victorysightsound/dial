@@ -1,4 +1,6 @@
 mod cli_handler;
+#[cfg(test)]
+mod test_support;
 mod wizard_backend;
 
 use clap::{Parser, Subcommand};
@@ -1474,18 +1476,13 @@ fn print_health(health: &dial_core::health::HealthScore) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::cwd_lock;
     use std::env;
-    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
-
-    fn cwd_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[tokio::test]
     async fn test_open_or_init_new_engine_resume_uses_existing_project() {
-        let _guard = cwd_lock().lock().unwrap();
+        let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
         let original_dir = env::current_dir().unwrap();
         let temp = tempdir().unwrap();
         env::set_current_dir(temp.path()).unwrap();

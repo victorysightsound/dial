@@ -61,6 +61,7 @@ async fn main() -> dial_core::Result<()> {
     let request = ProviderRequest {
         prompt: "Implement a fibonacci function in Rust".to_string(),
         work_dir: ".".to_string(),
+        output_schema: None,
         max_tokens: Some(4096),
         model: None,
         timeout_secs: None,
