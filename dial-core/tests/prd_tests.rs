@@ -436,6 +436,51 @@ async fn test_apply_build_test_config_defaults() {
     env::set_current_dir(original_dir).unwrap();
 }
 
+#[tokio::test]
+async fn test_apply_build_test_config_normalizes_unicode_dash_commands() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    let config_data = json!({
+        "build_cmd": "cargo —workspace build",
+        "test_cmd": "cargo test —all—features",
+        "pipeline_steps": [
+            {"name": "build", "command": "cargo —workspace build", "sort_order": 1, "required": true, "timeout": 120},
+            {"name": "test", "command": "cargo test —all—features", "sort_order": 2, "required": true, "timeout": 300}
+        ]
+    });
+
+    let (build_cmd, test_cmd, steps_count, _test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &[]).unwrap();
+
+    assert_eq!(build_cmd, "cargo --workspace build");
+    assert_eq!(test_cmd, "cargo test --all-features");
+    assert_eq!(steps_count, 2);
+
+    let stored_build_cmd = dial_core::config::config_get("build_cmd").unwrap();
+    assert_eq!(stored_build_cmd, Some("cargo --workspace build".to_string()));
+
+    let stored_test_cmd = dial_core::config::config_get("test_cmd").unwrap();
+    assert_eq!(stored_test_cmd, Some("cargo test --all-features".to_string()));
+
+    let mut stmt = phase_conn
+        .prepare("SELECT name, command FROM validation_steps ORDER BY sort_order, id")
+        .unwrap();
+    let steps: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0], ("build".to_string(), "cargo --workspace build".to_string()));
+    assert_eq!(steps[1], ("test".to_string(), "cargo test --all-features".to_string()));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
 // --- Phase 8: Iteration Mode Config Writing ---
 
 #[tokio::test]

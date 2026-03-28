@@ -619,9 +619,11 @@ You are a fresh AI agent spawned by DIAL to complete ONE task with clean context
 ```
 
 Signal types:
-- `complete` — task finished: `{{"type": "complete", "summary": "..."}}`
-- `blocked` — cannot proceed: `{{"type": "blocked", "reason": "..."}}`
-- `learning` — valuable insight: `{{"type": "learning", "category": "...", "description": "..."}}`
+- `complete`: task finished with `{{"type": "complete", "summary": "..."}}`
+- `blocked`: cannot proceed with `{{"type": "blocked", "reason": "..."}}`
+- `learning`: valuable insight with `{{"type": "learning", "category": "...", "description": "..."}}`
+
+Use only ASCII hyphen-minus characters in commands, flags, JSON, and code. Never use Unicode dash punctuation where syntax matters.
 
 Write the file as the **last step** before exiting. Include any learnings alongside your completion or blocked signal. If you cannot write the file, fall back to printing `DIAL_COMPLETE: <summary>`, `DIAL_BLOCKED: <reason>`, or `DIAL_LEARNING: <category>: <description>` as text output.
 
@@ -1095,5 +1097,17 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert!(after_refs > 0, "Normal mode should increment references");
+    }
+
+    #[test]
+    fn test_generate_subagent_prompt_uses_ascii_dash_guidance() {
+        let conn = setup_context_test_db();
+        let task = make_test_task(1);
+
+        let prompt = generate_subagent_prompt(&conn, &task).unwrap();
+
+        assert!(prompt.contains("Use only ASCII hyphen-minus characters"));
+        assert!(!prompt.contains('—'));
+        assert!(!prompt.contains('–'));
     }
 }

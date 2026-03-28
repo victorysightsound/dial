@@ -7,6 +7,8 @@
 pub mod budget;
 /// Key-value configuration storage.
 pub mod config;
+/// Shell command normalization and Unicode dash safeguards.
+pub mod command_safety;
 /// SQLite database initialization, migrations, and access.
 pub mod db;
 /// Central engine coordinating tasks, iterations, and validation.

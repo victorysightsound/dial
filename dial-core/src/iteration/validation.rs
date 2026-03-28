@@ -1,6 +1,7 @@
 use crate::config::config_get;
+use crate::command_safety::sanitize_shell_command;
 use crate::errors::Result;
-use crate::output::{dim, green, red};
+use crate::output::{dim, green, print_warning, red};
 use crate::DEFAULT_TIMEOUT_SECS;
 use rusqlite::Connection;
 use std::process::Command;
@@ -13,6 +14,10 @@ pub struct CommandResult {
 }
 
 pub fn run_command(cmd: &str, timeout_secs: Option<u64>) -> Result<CommandResult> {
+    run_command_with_label("command", cmd, timeout_secs)
+}
+
+fn run_command_with_label(label: &str, cmd: &str, timeout_secs: Option<u64>) -> Result<CommandResult> {
     if cmd.is_empty() {
         return Ok(CommandResult {
             success: true,
@@ -21,13 +26,15 @@ pub fn run_command(cmd: &str, timeout_secs: Option<u64>) -> Result<CommandResult
         });
     }
 
+    let sanitized = sanitize_shell_command(label, cmd)?;
+    if let Some(warning) = &sanitized.warning {
+        print_warning(warning);
+    }
+
     let _timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     let start = Instant::now();
 
-    let result = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .output();
+    let result = Command::new("sh").arg("-c").arg(&sanitized.value).output();
 
     let duration = start.elapsed().as_secs_f64();
 
@@ -235,7 +242,7 @@ fn run_pipeline_validation(
             None,
         )?;
 
-        let result = run_command(&step.command, Some(timeout))?;
+        let result = run_command_with_label(&format!("pipeline step '{}'", step.name), &step.command, Some(timeout))?;
 
         let output_preview = truncate_str(&result.output, 500);
         let error_preview = truncate_str(&result.output, 1000);
@@ -318,7 +325,7 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<Validat
         println!("{}", dim(&format!("Running build: {}", build_cmd)));
         let action_id = record_action(conn, iteration_id, "build", &format!("Build: {}", build_cmd), None)?;
 
-        let result = run_command(&build_cmd, Some(build_timeout))?;
+        let result = run_command_with_label("build command", &build_cmd, Some(build_timeout))?;
         let output_preview = truncate_str(&result.output, 500);
         let error_preview = truncate_str(&result.output, 1000);
 
@@ -369,7 +376,7 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<Validat
         println!("{}", dim(&format!("Running tests: {}", test_cmd)));
         let action_id = record_action(conn, iteration_id, "test", &format!("Test: {}", test_cmd), None)?;
 
-        let result = run_command(&test_cmd, Some(test_timeout))?;
+        let result = run_command_with_label("test command", &test_cmd, Some(test_timeout))?;
         let output_preview = truncate_str(&result.output, 500);
         let error_preview = truncate_str(&result.output, 1000);
 
@@ -416,5 +423,17 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
         &s[..max_len]
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_command_normalizes_unicode_dash_flags() {
+        let result = run_command("cargo —version", Some(30)).unwrap();
+        assert!(result.success, "expected sanitized cargo command to succeed");
+        assert!(result.output.contains("cargo "), "unexpected output: {}", result.output);
     }
 }

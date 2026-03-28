@@ -1,4 +1,5 @@
 use crate::budget;
+use crate::command_safety::sanitize_shell_command;
 use crate::config;
 use crate::db::{self, migrations};
 use crate::errors::{DialError, Result};
@@ -6,6 +7,7 @@ use crate::event::{Event, EventHandler};
 use crate::failure;
 use crate::iteration;
 use crate::learning;
+use crate::output::print_warning;
 use crate::prd;
 use crate::provider::{Provider, ProviderResponse};
 use crate::spec;
@@ -733,20 +735,25 @@ impl Engine {
         required: bool,
         timeout_secs: Option<u64>,
     ) -> Result<i64> {
+        let sanitized = sanitize_shell_command(&format!("pipeline step '{}'", name), command)?;
+        if let Some(warning) = &sanitized.warning {
+            print_warning(warning);
+        }
+
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO validation_steps (name, command, sort_order, required, timeout_secs)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
                 name,
-                command,
+                sanitized.value,
                 sort_order,
                 if required { 1 } else { 0 },
                 timeout_secs.map(|t| t as i64),
             ],
         )?;
         let id = conn.last_insert_rowid();
-        self.emit(Event::Info(format!("Added pipeline step '{}': {}", name, command)));
+        self.emit(Event::Info(format!("Added pipeline step '{}': {}", name, sanitized.value)));
         Ok(id)
     }
 

@@ -1,4 +1,6 @@
+use crate::command_safety::sanitize_shell_command;
 use crate::errors::{DialError, Result};
+use crate::output::print_warning;
 use crate::prd::templates::{get_template, Template};
 use crate::provider::{Provider, ProviderRequest};
 use rusqlite::{params, Connection};
@@ -942,7 +944,7 @@ Before producing the final task list, evaluate EVERY task on three dimensions:
 - **SPLIT** any task that requires more than 3 files OR implements multiple features. Create sub-tasks with explicit dependency relationships between them (the sub-tasks should appear in order in the tasks array, with later ones depending on earlier ones).
 - **REWRITE** any vague task description to be concrete with specific inputs, outputs, and acceptance criteria.
 - **MERGE** tasks that are too small for a separate iteration (e.g., single-line config changes) into a related neighboring task.
-- **SIZE** every task as one of: [S]mall (1 file, <15 min), [M]edium (1-2 files, ~30 min), [L]arge (2-3 files, ~45 min), [XL]needs-review (>3 files or >1 hour — should be split further).
+- **SIZE** every task as one of: [S]mall (1 file, <15 min), [M]edium (1-2 files, ~30 min), [L]arge (2-3 files, ~45 min), [XL]needs-review (>3 files or >1 hour; should be split further).
 
 Any task sized [XL] MUST be split. Do not leave XL tasks in the final list.
 
@@ -1228,7 +1230,7 @@ For EACH feature task, decide:
    - BAD: "Write tests for user module"
    - GOOD: "Write integration tests for POST /users: valid input returns 201, duplicate email returns 409, missing required fields returns 422"
 
-2. **Simple features** (config changes, single-function utilities, constants) include tests inline with the feature — no separate test task needed.
+2. **Simple features** (config changes, single-function utilities, constants) include tests inline with the feature; no separate test task needed.
 
 ### Test Framework
 
@@ -1259,9 +1261,11 @@ Respond in JSON format:
   "rationale": "why these commands and steps are appropriate for this project"
 }}
 
+Important: Use only ASCII hyphen-minus characters in shell commands and flags. Never use Unicode dash punctuation in build_cmd, test_cmd, or pipeline_steps[].command.
+
 Notes on the JSON fields:
 - `pipeline_steps[].sort_order`: integer execution sequence (1, 2, 3...)
-- `pipeline_steps[].required`: boolean — if true, pipeline stops on failure
+- `pipeline_steps[].required`: boolean; if true, pipeline stops on failure
 - `pipeline_steps[].timeout`: integer seconds before the step is killed
 - `test_tasks[].depends_on_feature`: 0-based index into the feature tasks list above
 - Only include test_tasks for complex features that need dedicated test tasks
@@ -1333,17 +1337,27 @@ pub fn apply_build_test_config(
     config_data: &JsonValue,
     feature_tasks: &[(i64, String, i32, Option<String>)],
 ) -> Result<(String, String, usize, usize)> {
-    let build_cmd = config_data
+    let raw_build_cmd = config_data
         .get("build_cmd")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    let test_cmd = config_data
+    let raw_test_cmd = config_data
         .get("test_cmd")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+
+    let build_cmd = sanitize_shell_command("build command", &raw_build_cmd)?;
+    if let Some(warning) = &build_cmd.warning {
+        print_warning(warning);
+    }
+
+    let test_cmd = sanitize_shell_command("test command", &raw_test_cmd)?;
+    if let Some(warning) = &test_cmd.warning {
+        print_warning(warning);
+    }
 
     let build_timeout = config_data
         .get("build_timeout")
@@ -1356,8 +1370,8 @@ pub fn apply_build_test_config(
         .unwrap_or(600);
 
     // Write config values via config_set
-    crate::config::config_set("build_cmd", &build_cmd)?;
-    crate::config::config_set("test_cmd", &test_cmd)?;
+    crate::config::config_set("build_cmd", &build_cmd.value)?;
+    crate::config::config_set("test_cmd", &test_cmd.value)?;
     crate::config::config_set("build_timeout", &build_timeout.to_string())?;
     crate::config::config_set("test_timeout", &test_timeout.to_string())?;
 
@@ -1369,7 +1383,11 @@ pub fn apply_build_test_config(
 
             for step in steps {
                 let name = step.get("name").and_then(|v| v.as_str()).unwrap_or("step");
-                let command = step.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let raw_command = step.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let command = sanitize_shell_command(&format!("pipeline step '{}'", name), raw_command)?;
+                if let Some(warning) = &command.warning {
+                    print_warning(warning);
+                }
                 // Accept both "sort_order" (new) and "order" (legacy) field names
                 let order = step
                     .get("sort_order")
@@ -1384,7 +1402,7 @@ pub fn apply_build_test_config(
                      VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![
                         name,
-                        command,
+                        command.value,
                         order,
                         if required { 1 } else { 0 },
                         timeout,
@@ -1434,7 +1452,7 @@ pub fn apply_build_test_config(
         }
     }
 
-    Ok((build_cmd, test_cmd, steps_count, test_tasks_count))
+    Ok((build_cmd.value, test_cmd.value, steps_count, test_tasks_count))
 }
 
 /// Build the phase 8 (Iteration Mode) prompt with project context and task count.
@@ -2357,6 +2375,15 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| row.get(0))
             .unwrap();
         assert_eq!(dep_count, 1);
+    }
+
+    #[test]
+    fn test_build_test_config_prompt_warns_about_unicode_dashes() {
+        let prompt = build_build_test_config_prompt(&serde_json::json!({}), &[]);
+
+        assert!(prompt.contains("Use only ASCII hyphen-minus characters"));
+        assert!(!prompt.contains('—'));
+        assert!(!prompt.contains('–'));
     }
 
     // --- JSON Extraction Robustness Tests ---

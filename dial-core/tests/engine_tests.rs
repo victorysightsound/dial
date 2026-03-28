@@ -114,6 +114,18 @@ async fn test_config_set_overwrites() {
 }
 
 #[tokio::test]
+async fn test_config_set_normalizes_unicode_dash_commands() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let (engine, _tmp, original_dir) = setup_engine().await;
+
+    engine.config_set("build_cmd", "cargo —version").await.unwrap();
+    let value = engine.config_get("build_cmd").await.unwrap();
+    assert_eq!(value, Some("cargo --version".to_string()));
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
 async fn test_task_add_returns_id() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
