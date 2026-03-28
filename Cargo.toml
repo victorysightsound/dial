@@ -30,8 +30,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 futures = "0.3"
 
 # Internal crates
-dial-core = { path = "dial-core" }
-dial-providers = { path = "dial-providers" }
+dial-core = { path = "dial-core", version = "4.1.1" }
+dial-providers = { path = "dial-providers", version = "4.1.1" }
 
 [profile.release]
 lto = true
