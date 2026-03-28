@@ -462,3 +462,19 @@ your-project/
 ## License
 
 MIT OR Apache-2.0 — see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
+
+## Copyright and Branding
+
+Copyright (c) 2026 Victory AV, LLC.
+
+DIAL is authored and maintained by John Deaton / Victory AV, LLC. The
+repository's open-source licenses grant rights to the code under their stated
+terms, but they do not grant trademark or branding rights beyond what
+applicable law otherwise allows.
+
+If you redistribute DIAL or publish modified versions, preserve the copyright
+and license notices and do not use the DIAL name, logos, or branding in a way
+that suggests endorsement, affiliation, or official upstream status without
+written permission.
+
+See [NOTICE](NOTICE).
