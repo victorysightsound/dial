@@ -2831,6 +2831,20 @@ pub async fn run_wizard_with_events(
                 name: phase.name().to_string(),
             },
         );
+        if full && matches!(phase, WizardPhase::Generate) {
+            emit_wizard_event(
+                event_sink.as_ref(),
+                Event::WizardCheckpoint {
+                    phase: phase_num as u8,
+                    title: "Planning checkpoint".to_string(),
+                    message: "The PRD and initial task list are ready. DIAL is still in planning/configuration mode and has not started implementation.".to_string(),
+                    next_step: Some(
+                        "Next: task review, build/test configuration, and iteration mode setup."
+                            .to_string(),
+                    ),
+                },
+            );
+        }
         emit_wizard_event(
             event_sink.as_ref(),
             Event::Info(format!(

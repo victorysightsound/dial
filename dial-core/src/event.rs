@@ -138,6 +138,14 @@ pub enum Event {
     WizardCompleted {
         sections_generated: usize,
         tasks_generated: usize,
+        full_flow: bool,
+    },
+    /// The wizard reached a user-facing checkpoint between major stages.
+    WizardCheckpoint {
+        phase: u8,
+        title: String,
+        message: String,
+        next_step: Option<String>,
     },
     /// A provider-backed wizard phase is still waiting on the backend.
     WizardHeartbeat {

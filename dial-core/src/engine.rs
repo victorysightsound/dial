@@ -1166,6 +1166,7 @@ impl Engine {
         self.emit(Event::WizardCompleted {
             sections_generated: result.sections_generated,
             tasks_generated: result.tasks_generated,
+            full_flow: false,
         });
 
         Ok(())
@@ -1255,6 +1256,7 @@ impl Engine {
         self.emit(Event::WizardCompleted {
             sections_generated: result.sections_generated,
             tasks_generated: result.tasks_generated,
+            full_flow: true,
         });
 
         Ok(())

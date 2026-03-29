@@ -404,11 +404,39 @@ impl EventHandler for CliEventHandler {
             Event::WizardCompleted {
                 sections_generated,
                 tasks_generated,
+                full_flow,
             } => {
-                println!("\n{}", output::bold("Wizard Complete"));
+                let title = if *full_flow {
+                    "Wizard Complete"
+                } else {
+                    "PRD Wizard Complete"
+                };
+                println!("\n{}", output::bold(title));
                 println!("{}", "=".repeat(40));
                 output::print_success(&format!("Generated {} PRD sections", sections_generated));
                 output::print_success(&format!("Created {} linked tasks", tasks_generated));
+                if !*full_flow {
+                    println!(
+                        "{}",
+                        output::dim(
+                            "PRD generation is complete. Review the spec now, or run `dial new` later to continue through task, build/test, and launch setup."
+                        )
+                    );
+                }
+            }
+            Event::WizardCheckpoint {
+                phase,
+                title,
+                message,
+                next_step,
+            } => {
+                println!("\n{}", output::bold(title));
+                println!("{}", "=".repeat(40));
+                println!("Phase {} complete.", phase);
+                println!("{}", message);
+                if let Some(next_step) = next_step {
+                    println!("{}", output::dim(next_step));
+                }
             }
             Event::WizardHeartbeat {
                 phase,
@@ -526,6 +554,12 @@ impl EventHandler for CliEventHandler {
                 println!("  Iteration mode: {}", iteration_mode);
                 println!("  AI CLI:         {}", ai_cli);
                 println!("{}", "=".repeat(40));
+                println!(
+                    "{}",
+                    output::dim(
+                        "Configuration is complete. Nothing will be implemented until you explicitly run `dial auto-run`."
+                    )
+                );
                 println!();
                 output::print_success(
                     "Project configured. Run `dial auto-run` to start autonomous iteration.",
