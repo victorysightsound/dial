@@ -139,6 +139,13 @@ pub enum Event {
         sections_generated: usize,
         tasks_generated: usize,
     },
+    /// A provider-backed wizard phase is still waiting on the backend.
+    WizardHeartbeat {
+        phase: u8,
+        name: String,
+        backend: String,
+        elapsed_secs: u64,
+    },
     /// The wizard was paused (state saved for resume).
     WizardPaused { phase: u8 },
     /// The wizard was resumed from a saved state.

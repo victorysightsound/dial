@@ -10,7 +10,7 @@ use serde_json::Value as JsonValue;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Wizard phases for PRD creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1581,6 +1581,25 @@ async fn execute_wizard_prompt(
     prompt: &str,
     event_sink: Option<&WizardEventSink>,
 ) -> Result<String> {
+    execute_wizard_prompt_with_heartbeat(
+        provider,
+        phase,
+        prompt,
+        event_sink,
+        Duration::from_secs(15),
+        Duration::from_secs(30),
+    )
+    .await
+}
+
+async fn execute_wizard_prompt_with_heartbeat(
+    provider: &dyn Provider,
+    phase: WizardPhase,
+    prompt: &str,
+    event_sink: Option<&WizardEventSink>,
+    first_heartbeat_after: Duration,
+    heartbeat_every: Duration,
+) -> Result<String> {
     let timeout_secs = wizard_phase_timeout_secs(phase);
     emit_prompt_diagnostics(event_sink, provider, phase, prompt, timeout_secs);
 
@@ -1594,7 +1613,31 @@ async fn execute_wizard_prompt(
     };
 
     let started = Instant::now();
-    let response = provider.execute(request).await?;
+    let execute = provider.execute(request);
+    tokio::pin!(execute);
+
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + first_heartbeat_after,
+        heartbeat_every,
+    );
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let response = loop {
+        tokio::select! {
+            result = &mut execute => break result?,
+            _ = heartbeat.tick(), if phase != WizardPhase::Launch => {
+                emit_wizard_event(
+                    event_sink,
+                    Event::WizardHeartbeat {
+                        phase: phase as u8,
+                        name: phase.name().to_string(),
+                        backend: provider.name().to_string(),
+                        elapsed_secs: started.elapsed().as_secs(),
+                    },
+                );
+            }
+        }
+    };
     let duration_secs = response
         .duration_secs
         .unwrap_or_else(|| started.elapsed().as_secs_f64());
@@ -4091,7 +4134,8 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use tokio::time::sleep;
 
     struct TestProvider {
         responses: Mutex<Vec<String>>,
@@ -4136,6 +4180,58 @@ mod tests {
         async fn is_available(&self) -> bool {
             true
         }
+    }
+
+    struct DelayedTestProvider {
+        response: String,
+        delay: Duration,
+        name: &'static str,
+    }
+
+    impl DelayedTestProvider {
+        fn new(name: &'static str, response: &str, delay: Duration) -> Self {
+            Self {
+                response: response.to_string(),
+                delay,
+                name,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for DelayedTestProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        async fn execute(
+            &self,
+            _request: ProviderRequest,
+        ) -> Result<crate::provider::ProviderResponse> {
+            sleep(self.delay).await;
+
+            Ok(crate::provider::ProviderResponse {
+                output: self.response.clone(),
+                success: true,
+                exit_code: Some(0),
+                usage: None,
+                model: Some("test-model".to_string()),
+                duration_secs: Some(self.delay.as_secs_f64()),
+            })
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
+
+    fn recording_sink(events: Arc<Mutex<Vec<Event>>>) -> WizardEventSink {
+        Arc::new(move |event| {
+            events
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(event);
+        })
     }
 
     // --- Prompt Content Tests ---
@@ -4334,6 +4430,99 @@ mod tests {
 
         assert_eq!(parsed["project_name"], json!("ChoirCue"));
         assert_eq!(parsed["target_users"][0], json!("worship leaders"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_wizard_prompt_emits_heartbeat_for_slow_provider() {
+        let provider = DelayedTestProvider::new(
+            "codex",
+            r#"{"project_name":"Signal","elevator_pitch":"Signal helps teams organize launches.","problem_statement":"Teams lose track of launch tasks across channels and docs.","target_users":["product teams"],"success_criteria":["Launch work stays visible"],"scope_exclusions":["roadmap planning"]}"#,
+            Duration::from_millis(35),
+        );
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = recording_sink(events.clone());
+
+        let _ = execute_wizard_prompt_with_heartbeat(
+            &provider,
+            WizardPhase::Vision,
+            "Return JSON.",
+            Some(&sink),
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+
+        let heartbeats: Vec<Event> = events
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .iter()
+            .filter(|event| matches!(event, Event::WizardHeartbeat { .. }))
+            .cloned()
+            .collect();
+
+        assert!(
+            !heartbeats.is_empty(),
+            "expected at least one heartbeat event for a slow provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_wizard_prompt_skips_heartbeat_for_fast_provider() {
+        let provider = DelayedTestProvider::new(
+            "codex",
+            r#"{"project_name":"Signal","elevator_pitch":"Signal helps teams organize launches.","problem_statement":"Teams lose track of launch tasks across channels and docs.","target_users":["product teams"],"success_criteria":["Launch work stays visible"],"scope_exclusions":["roadmap planning"]}"#,
+            Duration::from_millis(5),
+        );
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = recording_sink(events.clone());
+
+        let _ = execute_wizard_prompt_with_heartbeat(
+            &provider,
+            WizardPhase::Vision,
+            "Return JSON.",
+            Some(&sink),
+            Duration::from_millis(20),
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            events
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .iter()
+                .all(|event| !matches!(event, Event::WizardHeartbeat { .. })),
+            "did not expect heartbeat events for a fast provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_wizard_prompt_never_emits_launch_heartbeat() {
+        let provider = DelayedTestProvider::new("codex", "{}", Duration::from_millis(35));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = recording_sink(events.clone());
+
+        let _ = execute_wizard_prompt_with_heartbeat(
+            &provider,
+            WizardPhase::Launch,
+            "No-op launch prompt.",
+            Some(&sink),
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            events
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .iter()
+                .all(|event| !matches!(event, Event::WizardHeartbeat { .. })),
+            "launch should never emit heartbeat events"
+        );
     }
 
     #[test]

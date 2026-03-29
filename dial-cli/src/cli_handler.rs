@@ -410,6 +410,20 @@ impl EventHandler for CliEventHandler {
                 output::print_success(&format!("Generated {} PRD sections", sections_generated));
                 output::print_success(&format!("Created {} linked tasks", tasks_generated));
             }
+            Event::WizardHeartbeat {
+                phase,
+                name,
+                backend,
+                elapsed_secs,
+            } => {
+                println!(
+                    "{}",
+                    output::dim(&format!(
+                        "Still waiting on {} for phase {}: {} ({}s elapsed). This is normal for larger phases.",
+                        backend, phase, name, elapsed_secs
+                    ))
+                );
+            }
             Event::WizardPaused { phase } => {
                 if *phase == 0 {
                     println!("{}", output::yellow("Wizard paused. Resume with 'dial spec wizard --resume' or 'dial new --resume'."));
