@@ -505,9 +505,10 @@ async fn run_command(command: Commands) -> Result<()> {
         let resolved = resolve_wizard_provider(wizard_backend.as_deref(), wizard_model.as_deref())?;
         let mut engine = open_or_init_new_engine(&phase, resume).await?;
         engine.on_event(Arc::new(cli_handler::CliEventHandler));
-        println!(
-            "{}",
-            output::dim(&format!("Wizard backend: {}", resolved.backend.as_str()))
+        cli_handler::print_wizard_orientation(
+            cli_handler::WizardRunKind::Full,
+            resolved.backend.as_str(),
+            from.as_deref(),
         );
         engine.set_provider(resolved.provider);
 
@@ -650,9 +651,10 @@ async fn run_command(command: Commands) -> Result<()> {
                         wizard_backend.as_deref(),
                         wizard_model.as_deref(),
                     )?;
-                    println!(
-                        "{}",
-                        output::dim(&format!("Wizard backend: {}", resolved.backend.as_str()))
+                    cli_handler::print_wizard_orientation(
+                        cli_handler::WizardRunKind::PrdOnly,
+                        resolved.backend.as_str(),
+                        from.as_deref(),
                     );
                     engine.set_provider(resolved.provider);
                     engine

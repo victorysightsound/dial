@@ -1,6 +1,128 @@
 use dial_core::event::{Event, EventHandler};
 use dial_core::output;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WizardRunKind {
+    Full,
+    PrdOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WizardOrientation {
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WizardPhasePresentation {
+    banner: String,
+    description: &'static str,
+    wait_hint: Option<&'static str>,
+}
+
+pub(crate) fn build_wizard_orientation(
+    kind: WizardRunKind,
+    backend: &str,
+    from_doc: Option<&str>,
+) -> WizardOrientation {
+    let (title, phase_count, summary, resume_cmd) = match kind {
+        WizardRunKind::Full => (
+            "Starting DIAL project wizard",
+            9,
+            "This wizard will guide your project through spec, task, validation, and launch planning.",
+            "dial new --resume",
+        ),
+        WizardRunKind::PrdOnly => (
+            "Starting DIAL PRD wizard",
+            5,
+            "This wizard focuses on PRD generation only. It does not configure iteration or start implementation.",
+            "dial spec wizard --resume",
+        ),
+    };
+
+    let mut lines = vec![
+        format!("Wizard backend: {}", backend),
+        format!("This run covers {} guided phase{}.", phase_count, if phase_count == 1 { "" } else { "s" }),
+        summary.to_string(),
+        "It will not edit your source code or run `dial auto-run`.".to_string(),
+        "You do not need to craft a special AI prompt here; DIAL sends structured prompts for each phase.".to_string(),
+    ];
+
+    if let Some(path) = from_doc {
+        lines.push(format!("Using existing document as source material: {}", path));
+    }
+
+    lines.push(format!("You can stop at any time and resume with `{}`.", resume_cmd));
+
+    WizardOrientation {
+        title: title.to_string(),
+        lines,
+    }
+}
+
+pub(crate) fn print_wizard_orientation(
+    kind: WizardRunKind,
+    backend: &str,
+    from_doc: Option<&str>,
+) {
+    let orientation = build_wizard_orientation(kind, backend, from_doc);
+    println!("\n{}", output::bold(&orientation.title));
+    println!("{}", "=".repeat(60));
+    for line in orientation.lines {
+        println!("{}", line);
+    }
+    println!("{}", "=".repeat(60));
+    println!();
+}
+
+fn wizard_phase_presentation(phase: u8, total_phases: u8, name: &str) -> WizardPhasePresentation {
+    let (description, wait_hint) = match phase {
+        1 => (
+            "Defining the problem, target users, success criteria, and scope boundaries.",
+            None,
+        ),
+        2 => (
+            "Identifying the MVP features, deferred work, and core user workflows.",
+            None,
+        ),
+        3 => (
+            "Outlining architecture, data model, integrations, constraints, and performance expectations.",
+            Some("Technical planning can take a little longer while the backend expands the project shape."),
+        ),
+        4 => (
+            "Reviewing the draft for missing details, contradictions, and vague requirements.",
+            Some("This phase can be quiet for a while. Later planning passes are often slower."),
+        ),
+        5 => (
+            "Writing the PRD sections and creating the initial task list.",
+            Some("Generation phases often take longer because the backend is assembling full structured output."),
+        ),
+        6 => (
+            "Cleaning up, reordering, and resizing tasks into a practical implementation sequence.",
+            Some("Task review can take a little while while DIAL refines the generated backlog."),
+        ),
+        7 => (
+            "Suggesting build/test commands and a validation pipeline for the current stack.",
+            Some("Configuration phases may pause while the backend inspects the technical plan."),
+        ),
+        8 => (
+            "Choosing how much human review DIAL should require during execution.",
+            None,
+        ),
+        9 => (
+            "Summarizing the configuration and confirming the project is ready, but not yet running autonomously.",
+            None,
+        ),
+        _ => ("Running guided wizard work for this phase.", None),
+    };
+
+    WizardPhasePresentation {
+        banner: format!("Phase {} of {}: {}", phase, total_phases, name),
+        description,
+        wait_hint,
+    }
+}
+
 /// CLI event handler that prints events to the terminal.
 pub struct CliEventHandler;
 
@@ -260,9 +382,18 @@ impl EventHandler for CliEventHandler {
                     sections, files
                 ));
             }
-            Event::WizardPhaseStarted { phase, name } => {
-                println!("\n{}", output::bold(&format!("Phase {}: {}", phase, name)));
+            Event::WizardPhaseStarted {
+                phase,
+                total_phases,
+                name,
+            } => {
+                let presentation = wizard_phase_presentation(*phase, *total_phases, name);
+                println!("\n{}", output::bold(&presentation.banner));
                 println!("{}", "─".repeat(40));
+                println!("{}", presentation.description);
+                if let Some(wait_hint) = presentation.wait_hint {
+                    println!("{}", output::dim(wait_hint));
+                }
             }
             Event::WizardPhaseCompleted { phase, name } => {
                 println!(
@@ -438,6 +569,100 @@ impl EventHandler for CliEventHandler {
             Event::Error(msg) => {
                 println!("{}", output::red(msg));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_wizard_orientation_mentions_control_and_resume() {
+        let orientation = build_wizard_orientation(WizardRunKind::Full, "codex", None);
+
+        assert_eq!(orientation.title, "Starting DIAL project wizard");
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("Wizard backend: codex"))
+        );
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("9 guided phases"))
+        );
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("structured prompts"))
+        );
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("dial new --resume"))
+        );
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("will not edit your source code"))
+        );
+    }
+
+    #[test]
+    fn prd_wizard_orientation_mentions_prd_only_mode_and_source_doc() {
+        let orientation = build_wizard_orientation(
+            WizardRunKind::PrdOnly,
+            "copilot",
+            Some("docs/existing-prd.md"),
+        );
+
+        assert_eq!(orientation.title, "Starting DIAL PRD wizard");
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("5 guided phases"))
+        );
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("PRD generation only"))
+        );
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("docs/existing-prd.md"))
+        );
+        assert!(
+            orientation
+                .lines
+                .iter()
+                .any(|line| line.contains("dial spec wizard --resume"))
+        );
+    }
+
+    #[test]
+    fn phase_presentation_covers_all_guided_phases() {
+        for phase in 1..=9 {
+            let presentation = wizard_phase_presentation(phase, 9, "Example");
+            assert!(
+                presentation.banner.contains(&format!("Phase {} of 9", phase)),
+                "missing banner for phase {}",
+                phase
+            );
+            assert!(
+                !presentation.description.is_empty(),
+                "missing description for phase {}",
+                phase
+            );
         }
     }
 }

@@ -127,7 +127,11 @@ pub enum Event {
     /// Spec files were imported into prd.db.
     PrdImported { files: usize, sections: usize },
     /// A wizard phase started.
-    WizardPhaseStarted { phase: u8, name: String },
+    WizardPhaseStarted {
+        phase: u8,
+        total_phases: u8,
+        name: String,
+    },
     /// A wizard phase completed.
     WizardPhaseCompleted { phase: u8, name: String },
     /// The wizard finished, generating sections and tasks.

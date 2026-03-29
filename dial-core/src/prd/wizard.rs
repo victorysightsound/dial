@@ -2579,6 +2579,7 @@ pub async fn run_wizard_with_events(
             event_sink.as_ref(),
             Event::WizardPhaseStarted {
                 phase: phase_num as u8,
+                total_phases: max_phase as u8,
                 name: phase.name().to_string(),
             },
         );
