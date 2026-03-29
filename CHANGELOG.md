@@ -1,5 +1,28 @@
 # Changelog
 
+## 4.2.2 — 2026-03-29
+
+Guided wizard trust and observability release.
+
+### Guided Wizard UX
+- adds startup orientation for both `dial new` and `dial spec wizard` so users are told what the wizard will do, what it will not do, and how to resume safely
+- adds plain-English narration for all nine wizard phases so the runtime output reads like guidance instead of only diagnostics
+- keeps technical prompt/timing diagnostics available while demoting them behind the new guidance layer
+
+### Wizard Trust Messaging
+- emits long-wait heartbeat events while provider-backed phases are still running so quiet Windows terminal periods feel active instead of hung
+- adds a planning checkpoint after phase 5 in the full wizard to reinforce that DIAL is still planning and has not started implementation
+- strengthens launch and PRD-only completion messaging so it is explicit that `dial auto-run` is always a separate user-triggered step
+
+### Verification
+- adds unit coverage for wizard orientation, phase presentation, and heartbeat behavior
+- adds integration coverage for full-wizard checkpoint emission and PRD-only completion semantics
+- updates README and CLI reference to match the new guided-default wizard behavior
+
+No schema migrations needed.
+
+---
+
 ## 4.2.1 — 2026-03-28
 
 Wizard stability and Windows validation patch release.

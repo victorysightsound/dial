@@ -23,16 +23,14 @@ pub fn index_specs(specs_dir: &str) -> Result<bool> {
     let md_files: Vec<_> = WalkDir::new(specs_path)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "md")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
         .collect();
 
     if md_files.is_empty() {
-        println!("{}", yellow(&format!("No markdown files found in '{}'.", specs_dir)));
+        println!(
+            "{}",
+            yellow(&format!("No markdown files found in '{}'.", specs_dir))
+        );
         return Ok(true);
     }
 
@@ -54,7 +52,12 @@ pub fn index_specs(specs_dir: &str) -> Result<bool> {
                 conn.execute(
                     "INSERT INTO spec_sections (file_path, heading_path, level, content)
                      VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![relative_path, section.heading_path, section.level, section.content],
+                    rusqlite::params![
+                        relative_path,
+                        section.heading_path,
+                        section.level,
+                        section.content
+                    ],
                 )?;
                 total_sections += 1;
             }
@@ -94,7 +97,10 @@ pub fn spec_search(query: &str) -> Result<Vec<SpecSearchResult>> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     if rows.is_empty() {
-        println!("{}", dim(&format!("No spec sections matching '{}'.", query)));
+        println!(
+            "{}",
+            dim(&format!("No spec sections matching '{}'.", query))
+        );
         return Ok(rows);
     }
 
@@ -128,9 +134,8 @@ pub struct SpecSearchResult {
 pub fn spec_show(section_id: i64) -> Result<Option<SpecSearchResult>> {
     let conn = get_db(None)?;
 
-    let mut stmt = conn.prepare(
-        "SELECT id, file_path, heading_path, content FROM spec_sections WHERE id = ?1",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, file_path, heading_path, content FROM spec_sections WHERE id = ?1")?;
 
     let result = stmt
         .query_row([section_id], |row| {
@@ -167,11 +172,16 @@ pub fn spec_list() -> Result<()> {
     )?;
 
     let rows: Vec<(i64, String, String, i32)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     if rows.is_empty() {
-        println!("{}", dim("No spec sections indexed. Run 'dial index' first."));
+        println!(
+            "{}",
+            dim("No spec sections indexed. Run 'dial index' first.")
+        );
         return Ok(());
     }
 

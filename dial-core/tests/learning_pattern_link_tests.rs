@@ -30,11 +30,15 @@ async fn test_learning_pattern_link_full_cycle() {
     let engine = Engine::open(config).await.unwrap();
 
     // 1. Add a task
-    let task_id = engine.task_add("integration test task", 1, None).await.unwrap();
+    let task_id = engine
+        .task_add("integration test task", 1, None)
+        .await
+        .unwrap();
 
     // 2. Seed iteration, pattern, and failure via direct DB access
     let conn = rusqlite::Connection::open(tmp.path().join(".dial/test.db")).unwrap();
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        .unwrap();
 
     conn.execute(
         "INSERT INTO iterations (task_id, attempt_number, duration_seconds, status) VALUES (?1, 1, 30.0, 'failed')",
@@ -73,12 +77,16 @@ async fn test_learning_pattern_link_full_cycle() {
     // 4. Query learnings for this pattern
     let learnings = engine.learnings_for_pattern(pattern_id).await.unwrap();
     assert_eq!(learnings.len(), 1);
-    assert_eq!(learnings[0].description, "Always check import paths after refactoring");
+    assert_eq!(
+        learnings[0].description,
+        "Always check import paths after refactoring"
+    );
     assert_eq!(learnings[0].category.as_deref(), Some("gotcha"));
 
     // 5. Verify the learning is stored with correct links in the DB
     let conn = rusqlite::Connection::open(tmp.path().join(".dial/test.db")).unwrap();
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        .unwrap();
 
     let (stored_pid, stored_iid): (Option<i64>, Option<i64>) = conn
         .query_row(
@@ -95,7 +103,9 @@ async fn test_learning_pattern_link_full_cycle() {
     let (context, _excluded) = engine.gather_context_budgeted(&task, 50000).await.unwrap();
 
     assert!(
-        context.contains("LEARNING (from pattern: IntegLinkErr): Always check import paths after refactoring"),
+        context.contains(
+            "LEARNING (from pattern: IntegLinkErr): Always check import paths after refactoring"
+        ),
         "Budgeted context should contain pattern-linked learning. Got:\n{}",
         context
     );
@@ -106,7 +116,11 @@ async fn test_learning_pattern_link_full_cycle() {
         .await
         .unwrap();
     let learnings_after = engine.learnings_for_pattern(pattern_id).await.unwrap();
-    assert_eq!(learnings_after.len(), 1, "Unlinked learning should not appear in pattern query");
+    assert_eq!(
+        learnings_after.len(),
+        1,
+        "Unlinked learning should not appear in pattern query"
+    );
 
     drop(conn);
     env::set_current_dir(original_dir).unwrap();
@@ -126,12 +140,16 @@ async fn test_learn_without_links_backward_compat() {
     let engine = Engine::open(config).await.unwrap();
 
     // Use the original learn() method — should still work
-    let id = engine.learn("simple learning", Some("build")).await.unwrap();
+    let id = engine
+        .learn("simple learning", Some("build"))
+        .await
+        .unwrap();
     assert!(id > 0);
 
     // Verify no pattern/iteration links
     let conn = rusqlite::Connection::open(tmp.path().join(".dial/test.db")).unwrap();
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        .unwrap();
 
     let (pid, iid): (Option<i64>, Option<i64>) = conn
         .query_row(

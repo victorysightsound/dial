@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::errors::Result;
+use rusqlite::Connection;
 
 /// Structured metrics report returned by [`Engine::stats()`](crate::Engine::stats).
 #[derive(Debug, Clone)]
@@ -36,17 +36,25 @@ pub struct MetricsReport {
 
 /// Compute a structured metrics report from the database.
 pub fn compute_metrics(conn: &Connection) -> Result<MetricsReport> {
-    let total_iterations: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM iterations", [], |row| row.get(0),
-    ).unwrap_or(0);
+    let total_iterations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM iterations", [], |row| row.get(0))
+        .unwrap_or(0);
 
-    let completed_iterations: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM iterations WHERE status = 'completed'", [], |row| row.get(0),
-    ).unwrap_or(0);
+    let completed_iterations: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM iterations WHERE status = 'completed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
-    let failed_iterations: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM iterations WHERE status = 'failed'", [], |row| row.get(0),
-    ).unwrap_or(0);
+    let failed_iterations: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM iterations WHERE status = 'failed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     let success_rate = if total_iterations > 0 {
         completed_iterations as f64 / total_iterations as f64
@@ -54,17 +62,25 @@ pub fn compute_metrics(conn: &Connection) -> Result<MetricsReport> {
         0.0
     };
 
-    let total_tasks: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks", [], |row| row.get(0),
-    ).unwrap_or(0);
+    let total_tasks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+        .unwrap_or(0);
 
-    let completed_tasks: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE status = 'completed'", [], |row| row.get(0),
-    ).unwrap_or(0);
+    let completed_tasks: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'completed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
-    let pending_tasks: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE status = 'pending'", [], |row| row.get(0),
-    ).unwrap_or(0);
+    let pending_tasks: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // Token and cost totals from provider_usage
     let (total_tokens_in, total_tokens_out, total_cost_usd): (i64, i64, f64) = conn.query_row(
@@ -85,13 +101,13 @@ pub fn compute_metrics(conn: &Connection) -> Result<MetricsReport> {
         0.0
     };
 
-    let total_failures: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM failures", [], |row| row.get(0),
-    ).unwrap_or(0);
+    let total_failures: i64 = conn
+        .query_row("SELECT COUNT(*) FROM failures", [], |row| row.get(0))
+        .unwrap_or(0);
 
-    let total_learnings: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM learnings", [], |row| row.get(0),
-    ).unwrap_or(0);
+    let total_learnings: i64 = conn
+        .query_row("SELECT COUNT(*) FROM learnings", [], |row| row.get(0))
+        .unwrap_or(0);
 
     Ok(MetricsReport {
         total_iterations,
@@ -212,11 +228,20 @@ impl MetricsReport {
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"total_iterations":{},"completed_iterations":{},"failed_iterations":{},"success_rate":{:.4},"total_tasks":{},"completed_tasks":{},"pending_tasks":{},"total_tokens_in":{},"total_tokens_out":{},"total_cost_usd":{:.4},"total_duration_secs":{:.1},"avg_iteration_duration_secs":{:.1},"total_failures":{},"total_learnings":{}}}"#,
-            self.total_iterations, self.completed_iterations, self.failed_iterations,
-            self.success_rate, self.total_tasks, self.completed_tasks, self.pending_tasks,
-            self.total_tokens_in, self.total_tokens_out, self.total_cost_usd,
-            self.total_duration_secs, self.avg_iteration_duration_secs,
-            self.total_failures, self.total_learnings,
+            self.total_iterations,
+            self.completed_iterations,
+            self.failed_iterations,
+            self.success_rate,
+            self.total_tasks,
+            self.completed_tasks,
+            self.pending_tasks,
+            self.total_tokens_in,
+            self.total_tokens_out,
+            self.total_cost_usd,
+            self.total_duration_secs,
+            self.avg_iteration_duration_secs,
+            self.total_failures,
+            self.total_learnings,
         )
     }
 
@@ -225,11 +250,20 @@ impl MetricsReport {
         let header = "total_iterations,completed_iterations,failed_iterations,success_rate,total_tasks,completed_tasks,pending_tasks,total_tokens_in,total_tokens_out,total_cost_usd,total_duration_secs,avg_iteration_duration_secs,total_failures,total_learnings";
         let row = format!(
             "{},{},{},{:.4},{},{},{},{},{},{:.4},{:.1},{:.1},{},{}",
-            self.total_iterations, self.completed_iterations, self.failed_iterations,
-            self.success_rate, self.total_tasks, self.completed_tasks, self.pending_tasks,
-            self.total_tokens_in, self.total_tokens_out, self.total_cost_usd,
-            self.total_duration_secs, self.avg_iteration_duration_secs,
-            self.total_failures, self.total_learnings,
+            self.total_iterations,
+            self.completed_iterations,
+            self.failed_iterations,
+            self.success_rate,
+            self.total_tasks,
+            self.completed_tasks,
+            self.pending_tasks,
+            self.total_tokens_in,
+            self.total_tokens_out,
+            self.total_cost_usd,
+            self.total_duration_secs,
+            self.avg_iteration_duration_secs,
+            self.total_failures,
+            self.total_learnings,
         );
         format!("{}\n{}", header, row)
     }
@@ -240,8 +274,14 @@ impl TrendPoint {
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"date":"{}","iterations":{},"successes":{},"failures":{},"success_rate":{:.4},"tokens_in":{},"tokens_out":{},"cost_usd":{:.4}}}"#,
-            self.date, self.iterations, self.successes, self.failures,
-            self.success_rate, self.tokens_in, self.tokens_out, self.cost_usd,
+            self.date,
+            self.iterations,
+            self.successes,
+            self.failures,
+            self.success_rate,
+            self.tokens_in,
+            self.tokens_out,
+            self.cost_usd,
         )
     }
 }

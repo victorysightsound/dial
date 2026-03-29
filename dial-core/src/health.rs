@@ -65,10 +65,7 @@ pub fn compute_health(conn: &Connection) -> Result<HealthScore> {
         compute_pattern_resolution_rate(conn)?,
     ];
 
-    let weighted_sum: f64 = factors
-        .iter()
-        .map(|f| f.score as f64 * f.weight)
-        .sum();
+    let weighted_sum: f64 = factors.iter().map(|f| f.score as f64 * f.weight).sum();
 
     let score = weighted_sum.round() as u32;
     let trend = compute_trend(conn)?;
@@ -82,9 +79,7 @@ pub fn compute_health(conn: &Connection) -> Result<HealthScore> {
 
 /// Success rate of the last 20 iterations (weight: 0.30).
 fn compute_success_rate(conn: &Connection) -> Result<HealthFactor> {
-    let mut stmt = conn.prepare(
-        "SELECT status FROM iterations ORDER BY id DESC LIMIT 20",
-    )?;
+    let mut stmt = conn.prepare("SELECT status FROM iterations ORDER BY id DESC LIMIT 20")?;
 
     let statuses: Vec<String> = stmt
         .query_map([], |row| row.get(0))?
@@ -99,7 +94,15 @@ fn compute_success_rate(conn: &Connection) -> Result<HealthFactor> {
     } else {
         let rate = completed as f64 / total as f64;
         let s = (rate * 100.0).round() as u32;
-        (s, format!("{}/{} recent iterations succeeded ({:.0}%)", completed, total, rate * 100.0))
+        (
+            s,
+            format!(
+                "{}/{} recent iterations succeeded ({:.0}%)",
+                completed,
+                total,
+                rate * 100.0
+            ),
+        )
     };
 
     Ok(HealthFactor {
@@ -112,9 +115,7 @@ fn compute_success_rate(conn: &Connection) -> Result<HealthFactor> {
 
 /// Success trend: last 10 vs previous 10 iterations (weight: 0.15).
 fn compute_success_trend(conn: &Connection) -> Result<HealthFactor> {
-    let mut stmt = conn.prepare(
-        "SELECT status FROM iterations ORDER BY id DESC LIMIT 20",
-    )?;
+    let mut stmt = conn.prepare("SELECT status FROM iterations ORDER BY id DESC LIMIT 20")?;
 
     let statuses: Vec<String> = stmt
         .query_map([], |row| row.get(0))?
@@ -183,7 +184,13 @@ fn compute_solution_confidence(conn: &Connection) -> Result<HealthFactor> {
     } else {
         // confidence is 0.0 to 1.0, map to 0-100
         let s = (avg_conf * 100.0).round() as u32;
-        (s, format!("Average confidence: {:.2} across {} solutions", avg_conf, count))
+        (
+            s,
+            format!(
+                "Average confidence: {:.2} across {} solutions",
+                avg_conf, count
+            ),
+        )
     };
 
     Ok(HealthFactor {
@@ -213,7 +220,15 @@ fn compute_blocked_task_ratio(conn: &Connection) -> Result<HealthFactor> {
     } else {
         let non_blocked_ratio = (total_tasks - blocked_tasks) as f64 / total_tasks as f64;
         let s = (non_blocked_ratio * 100.0).round() as u32;
-        (s, format!("{}/{} tasks not blocked ({:.0}%)", total_tasks - blocked_tasks, total_tasks, non_blocked_ratio * 100.0))
+        (
+            s,
+            format!(
+                "{}/{} tasks not blocked ({:.0}%)",
+                total_tasks - blocked_tasks,
+                total_tasks,
+                non_blocked_ratio * 100.0
+            ),
+        )
     };
 
     Ok(HealthFactor {
@@ -243,7 +258,15 @@ fn compute_learning_utilization(conn: &Connection) -> Result<HealthFactor> {
     } else {
         let ratio = referenced_learnings as f64 / total_learnings as f64;
         let s = (ratio * 100.0).round() as u32;
-        (s, format!("{}/{} learnings referenced ({:.0}%)", referenced_learnings, total_learnings, ratio * 100.0))
+        (
+            s,
+            format!(
+                "{}/{} learnings referenced ({:.0}%)",
+                referenced_learnings,
+                total_learnings,
+                ratio * 100.0
+            ),
+        )
     };
 
     Ok(HealthFactor {
@@ -273,7 +296,15 @@ fn compute_pattern_resolution_rate(conn: &Connection) -> Result<HealthFactor> {
     } else {
         let ratio = resolved_failures as f64 / total_failures as f64;
         let s = (ratio * 100.0).round() as u32;
-        (s, format!("{}/{} failures resolved ({:.0}%)", resolved_failures, total_failures, ratio * 100.0))
+        (
+            s,
+            format!(
+                "{}/{} failures resolved ({:.0}%)",
+                resolved_failures,
+                total_failures,
+                ratio * 100.0
+            ),
+        )
     };
 
     Ok(HealthFactor {
@@ -288,9 +319,7 @@ fn compute_pattern_resolution_rate(conn: &Connection) -> Result<HealthFactor> {
 fn compute_trend(conn: &Connection) -> Result<Trend> {
     // Current success rate from last 20 iterations
     let current_rate: f64 = {
-        let mut stmt = conn.prepare(
-            "SELECT status FROM iterations ORDER BY id DESC LIMIT 20",
-        )?;
+        let mut stmt = conn.prepare("SELECT status FROM iterations ORDER BY id DESC LIMIT 20")?;
         let statuses: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
             .filter_map(|r| r.ok())
@@ -375,7 +404,11 @@ mod tests {
         assert_eq!(health.factors.len(), 6);
 
         for factor in &health.factors {
-            assert_eq!(factor.score, 50, "Factor {} should be 50 for empty project", factor.name);
+            assert_eq!(
+                factor.score, 50,
+                "Factor {} should be 50 for empty project",
+                factor.name
+            );
         }
     }
 
@@ -437,20 +470,40 @@ mod tests {
         // learning_utilization: 100 * 0.10 = 10
         // pattern_resolution_rate: 100 * 0.15 = 15
         // total = 91.75 -> 92
-        assert!(health.score >= 90, "Perfect project should score >= 90, got {}", health.score);
+        assert!(
+            health.score >= 90,
+            "Perfect project should score >= 90, got {}",
+            health.score
+        );
         assert_eq!(health.factors.len(), 6);
 
         // Verify individual factors
-        let success_rate = health.factors.iter().find(|f| f.name == "success_rate").unwrap();
+        let success_rate = health
+            .factors
+            .iter()
+            .find(|f| f.name == "success_rate")
+            .unwrap();
         assert_eq!(success_rate.score, 100);
 
-        let blocked = health.factors.iter().find(|f| f.name == "blocked_task_ratio").unwrap();
+        let blocked = health
+            .factors
+            .iter()
+            .find(|f| f.name == "blocked_task_ratio")
+            .unwrap();
         assert_eq!(blocked.score, 100);
 
-        let learning = health.factors.iter().find(|f| f.name == "learning_utilization").unwrap();
+        let learning = health
+            .factors
+            .iter()
+            .find(|f| f.name == "learning_utilization")
+            .unwrap();
         assert_eq!(learning.score, 100);
 
-        let resolution = health.factors.iter().find(|f| f.name == "pattern_resolution_rate").unwrap();
+        let resolution = health
+            .factors
+            .iter()
+            .find(|f| f.name == "pattern_resolution_rate")
+            .unwrap();
         assert_eq!(resolution.score, 100);
     }
 
@@ -529,16 +582,32 @@ mod tests {
         // learning_utilization: 0 * 0.10 = 0
         // pattern_resolution_rate: 0 * 0.15 = 0
         // total ~= 14
-        assert!(health.score < 40, "Failing project should score < 40, got {}", health.score);
+        assert!(
+            health.score < 40,
+            "Failing project should score < 40, got {}",
+            health.score
+        );
         assert_eq!(health.factors.len(), 6);
 
-        let success_rate = health.factors.iter().find(|f| f.name == "success_rate").unwrap();
+        let success_rate = health
+            .factors
+            .iter()
+            .find(|f| f.name == "success_rate")
+            .unwrap();
         assert_eq!(success_rate.score, 0);
 
-        let learning = health.factors.iter().find(|f| f.name == "learning_utilization").unwrap();
+        let learning = health
+            .factors
+            .iter()
+            .find(|f| f.name == "learning_utilization")
+            .unwrap();
         assert_eq!(learning.score, 0);
 
-        let resolution = health.factors.iter().find(|f| f.name == "pattern_resolution_rate").unwrap();
+        let resolution = health
+            .factors
+            .iter()
+            .find(|f| f.name == "pattern_resolution_rate")
+            .unwrap();
         assert_eq!(resolution.score, 0);
     }
 
@@ -584,7 +653,11 @@ mod tests {
 
         let health = compute_health(&conn).unwrap();
 
-        let success_rate = health.factors.iter().find(|f| f.name == "success_rate").unwrap();
+        let success_rate = health
+            .factors
+            .iter()
+            .find(|f| f.name == "success_rate")
+            .unwrap();
         assert_eq!(success_rate.score, 75);
     }
 
@@ -618,7 +691,11 @@ mod tests {
 
         let health = compute_health(&conn).unwrap();
 
-        let trend_factor = health.factors.iter().find(|f| f.name == "success_trend").unwrap();
+        let trend_factor = health
+            .factors
+            .iter()
+            .find(|f| f.name == "success_trend")
+            .unwrap();
         // ORDER BY id DESC: IDs 20..11 are recent (completed), IDs 10..1 are previous (failed)
         // recent 100%, previous 0%, delta = +1.0, score = 100
         assert_eq!(trend_factor.score, 100);
@@ -629,14 +706,12 @@ mod tests {
         let health = HealthScore {
             score: 75,
             trend: Trend::Improving,
-            factors: vec![
-                HealthFactor {
-                    name: "test_factor".to_string(),
-                    score: 80,
-                    weight: 1.0,
-                    detail: "test detail".to_string(),
-                },
-            ],
+            factors: vec![HealthFactor {
+                name: "test_factor".to_string(),
+                score: 80,
+                weight: 1.0,
+                detail: "test detail".to_string(),
+            }],
         };
 
         let json = serde_json::to_string(&health).unwrap();

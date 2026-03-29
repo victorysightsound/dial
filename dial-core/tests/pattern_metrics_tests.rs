@@ -39,11 +39,15 @@ async fn test_pattern_metrics_full_cycle() {
     let engine = Engine::open(config).await.unwrap();
 
     // Seed: add a task
-    engine.task_add("integration test task", 1, None).await.unwrap();
+    engine
+        .task_add("integration test task", 1, None)
+        .await
+        .unwrap();
 
     // Use the DB directly to seed iteration, pattern, failure, and provider_usage
     let conn = rusqlite::Connection::open(tmp.path().join(".dial/test.db")).unwrap();
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        .unwrap();
 
     // Create iteration
     conn.execute(

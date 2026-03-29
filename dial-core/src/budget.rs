@@ -43,7 +43,10 @@ impl ContextItem {
 /// Assemble context items within a token budget.
 /// Returns (included items, excluded items) — both sorted by priority.
 /// Items are added in priority order (lowest number first) until budget is exhausted.
-pub fn assemble_context(items: &[ContextItem], token_budget: usize) -> (Vec<&ContextItem>, Vec<&ContextItem>) {
+pub fn assemble_context(
+    items: &[ContextItem],
+    token_budget: usize,
+) -> (Vec<&ContextItem>, Vec<&ContextItem>) {
     let mut sorted: Vec<&ContextItem> = items.iter().collect();
     sorted.sort_by_key(|item| item.priority);
 
@@ -124,8 +127,8 @@ mod tests {
     #[test]
     fn test_assemble_context_exceeds_budget() {
         let items = vec![
-            ContextItem::new("high", &"x".repeat(40), 0),   // ~10 tokens
-            ContextItem::new("low", &"x".repeat(400), 10),  // ~100 tokens
+            ContextItem::new("high", &"x".repeat(40), 0), // ~10 tokens
+            ContextItem::new("low", &"x".repeat(400), 10), // ~100 tokens
         ];
 
         let (included, excluded) = assemble_context(&items, 20);
@@ -151,9 +154,7 @@ mod tests {
 
     #[test]
     fn test_assemble_context_zero_budget() {
-        let items = vec![
-            ContextItem::new("a", "content", 0),
-        ];
+        let items = vec![ContextItem::new("a", "content", 0)];
 
         let (included, excluded) = assemble_context(&items, 0);
         assert_eq!(included.len(), 0);

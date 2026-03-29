@@ -136,7 +136,8 @@ pub fn suggest_patterns_from_clustering(conn: &rusqlite::Connection) -> Vec<Sugg
     }
 
     // Extract significant words/phrases (> 4 chars) from each error
-    let mut word_counts: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let mut word_counts: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
 
     for (idx, text) in error_texts.iter().enumerate() {
         // Extract words > 4 chars that look like error identifiers
@@ -155,7 +156,8 @@ pub fn suggest_patterns_from_clustering(conn: &rusqlite::Connection) -> Vec<Sugg
     let mut suggestions = Vec::new();
     let mut seen_indices: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
 
-    let mut entries: Vec<_> = word_counts.into_iter()
+    let mut entries: Vec<_> = word_counts
+        .into_iter()
         .filter(|(_, indices)| indices.len() >= 3)
         .collect();
     entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
@@ -167,11 +169,16 @@ pub fn suggest_patterns_from_clustering(conn: &rusqlite::Connection) -> Vec<Sugg
         }
         seen_indices.insert(indices.clone());
 
-        let samples: Vec<String> = indices.iter()
+        let samples: Vec<String> = indices
+            .iter()
             .take(3)
             .map(|&i| {
                 let text = &error_texts[i];
-                if text.len() > 150 { format!("{}...", &text[..150]) } else { text.clone() }
+                if text.len() > 150 {
+                    format!("{}...", &text[..150])
+                } else {
+                    text.clone()
+                }
             })
             .collect();
 

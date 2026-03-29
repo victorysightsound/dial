@@ -145,8 +145,8 @@ impl Provider for AnthropicProvider {
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|e| DialError::CommandFailed(format!("Stream error: {}", e)))?;
+            let chunk =
+                chunk.map_err(|e| DialError::CommandFailed(format!("Stream error: {}", e)))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
             // Process SSE events from buffer

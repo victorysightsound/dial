@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::errors::Result;
+use rusqlite::Connection;
 
 /// Each migration has a version number and an apply function.
 /// Migrations are applied in order. Once applied, the version is recorded
@@ -40,7 +40,8 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 6,
-        description: "Add regex_pattern and status columns to failure_patterns for DB-driven detection",
+        description:
+            "Add regex_pattern and status columns to failure_patterns for DB-driven detection",
         apply: migrate_006_pattern_regex_and_status,
     },
     Migration {
@@ -65,7 +66,8 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 11,
-        description: "Add attempt/failure tracking to tasks and pattern/iteration linking to learnings",
+        description:
+            "Add attempt/failure tracking to tasks and pattern/iteration linking to learnings",
         apply: migrate_011_task_attempts_and_learning_links,
     },
 ];
@@ -77,7 +79,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             version INTEGER PRIMARY KEY,
             description TEXT NOT NULL,
             applied_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );"
+        );",
     )?;
 
     let current_version: i64 = conn
@@ -256,15 +258,17 @@ fn migrate_006_pattern_regex_and_status(conn: &Connection) -> Result<()> {
         ("TimeoutError", "(?i)TimeoutError"),
         ("TestFailure", "(?i)FAILED.*test_"),
         ("AssertionError", "(?i)AssertionError"),
-        ("RustCompileError", r"(?i)error\[E\d+\]|error: could not compile"),
+        (
+            "RustCompileError",
+            r"(?i)error\[E\d+\]|error: could not compile",
+        ),
         ("CargoBuildError", "(?i)cargo build.*failed"),
         ("NpmError", "(?i)npm ERR!"),
         ("TypeScriptError", r"(?i)tsc.*error TS\d+"),
     ];
 
-    let mut stmt = conn.prepare(
-        "UPDATE failure_patterns SET regex_pattern = ?2 WHERE pattern_key = ?1",
-    )?;
+    let mut stmt =
+        conn.prepare("UPDATE failure_patterns SET regex_pattern = ?2 WHERE pattern_key = ?1")?;
 
     for (key, regex) in &patterns {
         stmt.execute(rusqlite::params![key, regex])?;
@@ -300,7 +304,11 @@ fn migrate_005_seed_failure_patterns(conn: &Connection) -> Result<()> {
     // Uses INSERT OR IGNORE to avoid duplicates if patterns already exist.
     let patterns = [
         ("ImportError", "Import/module error in Python", "import"),
-        ("ModuleNotFoundError", "Module not found in Python", "import"),
+        (
+            "ModuleNotFoundError",
+            "Module not found in Python",
+            "import",
+        ),
         ("SyntaxError", "Syntax error", "syntax"),
         ("IndentationError", "Indentation error in Python", "syntax"),
         ("NameError", "Name not defined error", "runtime"),
@@ -382,9 +390,7 @@ fn migrate_008_iterations_approval_status(conn: &Connection) -> Result<()> {
 }
 
 fn migrate_010_prd_section_id(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "ALTER TABLE tasks ADD COLUMN prd_section_id TEXT;",
-    )?;
+    conn.execute_batch("ALTER TABLE tasks ADD COLUMN prd_section_id TEXT;")?;
     Ok(())
 }
 
@@ -409,7 +415,8 @@ mod tests {
 
     fn setup_test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .unwrap();
         conn.execute_batch(schema::SCHEMA).unwrap();
         conn
     }
@@ -436,9 +443,14 @@ mod tests {
     #[test]
     fn test_migration_versions_are_sequential() {
         for (i, migration) in MIGRATIONS.iter().enumerate() {
-            assert_eq!(migration.version, (i + 1) as i64,
+            assert_eq!(
+                migration.version,
+                (i + 1) as i64,
                 "Migration at index {} has version {} but expected {}",
-                i, migration.version, i + 1);
+                i,
+                migration.version,
+                i + 1
+            );
         }
     }
 

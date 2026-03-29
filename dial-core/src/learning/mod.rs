@@ -3,7 +3,9 @@ use crate::errors::{DialError, Result};
 use crate::output::{blue, bold, dim, yellow};
 use rusqlite::Connection;
 
-pub const LEARNING_CATEGORIES: &[&str] = &["build", "test", "setup", "gotcha", "pattern", "tool", "other"];
+pub const LEARNING_CATEGORIES: &[&str] = &[
+    "build", "test", "setup", "gotcha", "pattern", "tool", "other",
+];
 
 pub fn add_learning(description: &str, category: Option<&str>) -> Result<i64> {
     add_learning_linked(description, category, None, None)
@@ -30,7 +32,13 @@ pub fn add_learning_with_conn(
     let category = match category {
         Some(c) if LEARNING_CATEGORIES.contains(&c) => Some(c),
         Some(c) => {
-            println!("{}", yellow(&format!("Warning: Unknown category '{}'. Using 'other'.", c)));
+            println!(
+                "{}",
+                yellow(&format!(
+                    "Warning: Unknown category '{}'. Using 'other'.",
+                    c
+                ))
+            );
             Some("other")
         }
         None => None,
@@ -54,20 +62,34 @@ pub fn list_learnings(category: Option<&str>) -> Result<()> {
              FROM learnings WHERE category = ?1
              ORDER BY discovered_at DESC",
         )?;
-        let result = stmt.query_map([cat], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        let result = stmt
+            .query_map([cat], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         result
     } else {
         let mut stmt = conn.prepare(
             "SELECT id, category, description, discovered_at, times_referenced
              FROM learnings ORDER BY discovered_at DESC",
         )?;
-        let result = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        let result = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         result
     };
 
@@ -98,7 +120,10 @@ pub fn list_learnings(category: Option<&str>) -> Result<()> {
 
         println!("\n  #{} {} {}", id, blue(&cat_str), ref_str);
         println!("     {}", description);
-        println!("{}", dim(&format!("     Discovered: {}", &discovered_at[..10])));
+        println!(
+            "{}",
+            dim(&format!("     Discovered: {}", &discovered_at[..10]))
+        );
     }
 
     Ok(())
@@ -214,11 +239,23 @@ pub fn list_learnings_for_pattern(pattern_id: i64) -> Result<()> {
     let learnings = learnings_for_pattern(&conn, pattern_id)?;
 
     if learnings.is_empty() {
-        println!("{}", dim(&format!("No learnings linked to pattern '{}' (#{})", pattern_key, pattern_id)));
+        println!(
+            "{}",
+            dim(&format!(
+                "No learnings linked to pattern '{}' (#{})",
+                pattern_key, pattern_id
+            ))
+        );
         return Ok(());
     }
 
-    println!("{}", bold(&format!("Learnings for pattern '{}' (#{})", pattern_key, pattern_id)));
+    println!(
+        "{}",
+        bold(&format!(
+            "Learnings for pattern '{}' (#{})",
+            pattern_key, pattern_id
+        ))
+    );
     println!("{}", "=".repeat(60));
 
     for learning in &learnings {
@@ -279,7 +316,8 @@ mod tests {
     #[test]
     fn test_add_learning_with_conn_no_links() {
         let conn = setup_test_db();
-        let id = add_learning_with_conn(&conn, "test learning", Some("pattern"), None, None).unwrap();
+        let id =
+            add_learning_with_conn(&conn, "test learning", Some("pattern"), None, None).unwrap();
         assert!(id > 0);
 
         let (cat, desc, pid, iid): (Option<String>, String, Option<i64>, Option<i64>) = conn
@@ -361,8 +399,10 @@ mod tests {
         let pattern_b = conn.last_insert_rowid();
 
         // Add learnings: 2 linked to pattern A, 1 to pattern B, 1 unlinked
-        add_learning_with_conn(&conn, "learning A1", Some("pattern"), Some(pattern_a), None).unwrap();
-        add_learning_with_conn(&conn, "learning A2", Some("gotcha"), Some(pattern_a), None).unwrap();
+        add_learning_with_conn(&conn, "learning A1", Some("pattern"), Some(pattern_a), None)
+            .unwrap();
+        add_learning_with_conn(&conn, "learning A2", Some("gotcha"), Some(pattern_a), None)
+            .unwrap();
         add_learning_with_conn(&conn, "learning B1", Some("build"), Some(pattern_b), None).unwrap();
         add_learning_with_conn(&conn, "unlinked learning", Some("other"), None, None).unwrap();
 

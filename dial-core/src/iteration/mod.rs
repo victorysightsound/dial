@@ -7,8 +7,8 @@ use crate::db::{get_db, get_dial_dir, with_transaction};
 use crate::errors::{DialError, Result};
 use crate::failure::record_failure;
 use crate::git::{
-    checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled,
-    git_commit, git_diff, git_diff_stat, git_has_changes, git_is_repo, git_revert_to,
+    checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled, git_commit,
+    git_diff, git_diff_stat, git_has_changes, git_is_repo, git_revert_to,
 };
 use crate::output::{bold, dim, green, print_success, red, yellow};
 use crate::task::models::Task;
@@ -17,10 +17,15 @@ use chrono::Local;
 use rusqlite::Connection;
 use std::fs;
 
-pub use context::{gather_context, gather_context_budgeted, gather_context_items, gather_context_items_pure, generate_subagent_prompt};
+pub use context::{
+    gather_context, gather_context_budgeted, gather_context_items, gather_context_items_pure,
+    generate_subagent_prompt,
+};
 pub use orchestrator::auto_run;
 pub use signal::{read_signal_file, write_signal_file, SignalFile, SubagentSignal};
-pub use validation::{run_validation, run_validation_with_details, PipelineStepResult, ValidationResult};
+pub use validation::{
+    run_validation, run_validation_with_details, PipelineStepResult, ValidationResult,
+};
 
 pub fn create_iteration(conn: &Connection, task_id: i64, attempt_number: i32) -> Result<i64> {
     let now = Local::now().to_rfc3339();
@@ -155,13 +160,19 @@ pub fn iterate_once() -> Result<(bool, String)> {
         let checkpoint_id = format!("{}", iteration_id);
         match checkpoint_create(&checkpoint_id) {
             Ok(true) => {
-                println!("{}", dim(&format!("Checkpoint created (iteration #{})", iteration_id)));
+                println!(
+                    "{}",
+                    dim(&format!("Checkpoint created (iteration #{})", iteration_id))
+                );
             }
             Ok(false) => {
                 // Working tree clean — no checkpoint needed
             }
             Err(e) => {
-                println!("{}", yellow(&format!("Warning: checkpoint creation failed: {}", e)));
+                println!(
+                    "{}",
+                    yellow(&format!("Warning: checkpoint creation failed: {}", e))
+                );
             }
         }
     }
@@ -169,7 +180,10 @@ pub fn iterate_once() -> Result<(bool, String)> {
     // Gather context
     let context = gather_context(&conn, &task)?;
     if !context.is_empty() {
-        println!("{}", dim("\nContext gathered. Relevant specs and solutions loaded."));
+        println!(
+            "{}",
+            dim("\nContext gathered. Relevant specs and solutions loaded.")
+        );
     }
 
     // Store context for the agent
@@ -178,9 +192,18 @@ pub fn iterate_once() -> Result<(bool, String)> {
     fs::write(&context_file, context_content)?;
     println!("Context written to: {}", context_file.display());
 
-    println!("{}", yellow("\n>>> Agent should now implement the task <<<"));
-    println!("{}", yellow(">>> Run 'dial validate' when ready to validate <<<"));
-    println!("{}", yellow(">>> Or 'dial complete' to mark complete without validation <<<\n"));
+    println!(
+        "{}",
+        yellow("\n>>> Agent should now implement the task <<<")
+    );
+    println!(
+        "{}",
+        yellow(">>> Run 'dial validate' when ready to validate <<<")
+    );
+    println!(
+        "{}",
+        yellow(">>> Or 'dial complete' to mark complete without validation <<<\n")
+    );
 
     Ok((true, "awaiting_work".to_string()))
 }
@@ -223,7 +246,10 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
         }
     };
 
-    println!("Validating iteration #{} for task #{}", iteration_id, task_id);
+    println!(
+        "Validating iteration #{} for task #{}",
+        iteration_id, task_id
+    );
 
     // Run validation with detailed step results
     let validation = run_validation_with_details(&conn, iteration_id)?;
@@ -250,13 +276,22 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             match checkpoint_drop() {
                 Ok(true) => println!("{}", dim("Checkpoint dropped (validation passed)")),
                 Ok(false) => {} // no stash to drop
-                Err(e) => println!("{}", yellow(&format!("Warning: checkpoint drop failed: {}", e))),
+                Err(e) => println!(
+                    "{}",
+                    yellow(&format!("Warning: checkpoint drop failed: {}", e))
+                ),
             }
         }
 
         // Complete iteration + task + auto-unblock atomically
         with_transaction(&conn, |conn| {
-            complete_iteration(conn, iteration_id, "completed", commit_hash.as_deref(), None)?;
+            complete_iteration(
+                conn,
+                iteration_id,
+                "completed",
+                commit_hash.as_deref(),
+                None,
+            )?;
 
             let now = Local::now().to_rfc3339();
             conn.execute(
@@ -268,18 +303,41 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             Ok(())
         })?;
 
-        println!("{}", green(&format!("\nIteration #{} completed successfully!", iteration_id)));
-        println!("{}", green(&format!("Task #{} marked as completed.", task_id)));
+        println!(
+            "{}",
+            green(&format!(
+                "\nIteration #{} completed successfully!",
+                iteration_id
+            ))
+        );
+        println!(
+            "{}",
+            green(&format!("Task #{} marked as completed.", task_id))
+        );
 
         // Prompt for learning capture after success
         println!();
         println!("{}", bold("📝 Learning Capture"));
-        println!("{}", dim("Did you learn something during this task? Record it now:"));
-        println!("{}", yellow("  dial learn \"what you learned\" -c <category>"));
-        println!("{}", dim("Categories: build, test, setup, gotcha, pattern, tool, other"));
+        println!(
+            "{}",
+            dim("Did you learn something during this task? Record it now:")
+        );
+        println!(
+            "{}",
+            yellow("  dial learn \"what you learned\" -c <category>")
+        );
+        println!(
+            "{}",
+            dim("Categories: build, test, setup, gotcha, pattern, tool, other")
+        );
         println!();
 
-        Ok(ValidateResult { success: true, step_results, task_id: Some(task_id), suggested_solutions: Vec::new() })
+        Ok(ValidateResult {
+            success: true,
+            step_results,
+            task_id: Some(task_id),
+            suggested_solutions: Vec::new(),
+        })
     } else {
         // Capture diff before restoring checkpoint (so we can include in retry context)
         let (failed_diff, failed_diff_stat) = if git_is_repo() {
@@ -296,12 +354,16 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             match checkpoint_restore() {
                 Ok(true) => println!("{}", yellow("Checkpoint restored (rolling back changes)")),
                 Ok(false) => {} // no checkpoint to restore
-                Err(e) => println!("{}", yellow(&format!("Warning: checkpoint restore failed: {}", e))),
+                Err(e) => println!(
+                    "{}",
+                    yellow(&format!("Warning: checkpoint restore failed: {}", e))
+                ),
             }
         }
 
         // Record failure (already wrapped in its own transaction internally)
-        let (failure_id, _pattern_id, suggested_solutions) = record_failure(&conn, iteration_id, &error_output, None, None)?;
+        let (failure_id, _pattern_id, suggested_solutions) =
+            record_failure(&conn, iteration_id, &error_output, None, None)?;
         println!("{}", red(&format!("Recorded failure #{}", failure_id)));
 
         // Show auto-suggested solutions
@@ -343,7 +405,10 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             )?;
 
             if fail_count >= MAX_FIX_ATTEMPTS as i64 {
-                println!("{}", red(&format!("\nMax attempts ({}) reached.", MAX_FIX_ATTEMPTS)));
+                println!(
+                    "{}",
+                    red(&format!("\nMax attempts ({}) reached.", MAX_FIX_ATTEMPTS))
+                );
 
                 // Find last successful commit
                 let last_good_commit: Option<String> = conn
@@ -358,7 +423,10 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
 
                 if let Some(hash) = last_good_commit {
                     if git_is_repo() {
-                        println!("{}", yellow(&format!("Reverting to last good commit: {}", &hash[..8])));
+                        println!(
+                            "{}",
+                            yellow(&format!("Reverting to last good commit: {}", &hash[..8]))
+                        );
                         git_revert_to(&hash)?;
                     }
                 }
@@ -373,7 +441,13 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
                     [task_id],
                 )?;
                 let remaining = MAX_FIX_ATTEMPTS as i64 - fail_count;
-                println!("{}", yellow(&format!("\nTask reset to pending. {} attempts remaining.", remaining)));
+                println!(
+                    "{}",
+                    yellow(&format!(
+                        "\nTask reset to pending. {} attempts remaining.",
+                        remaining
+                    ))
+                );
             }
 
             Ok(())
@@ -385,7 +459,12 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             .map(|(sol_id, desc, conf)| (failure_id, *sol_id, desc.clone(), *conf))
             .collect();
 
-        Ok(ValidateResult { success: false, step_results, task_id: Some(task_id), suggested_solutions: suggested_for_event })
+        Ok(ValidateResult {
+            success: false,
+            step_results,
+            task_id: Some(task_id),
+            suggested_solutions: suggested_for_event,
+        })
     }
 }
 
@@ -414,7 +493,10 @@ pub fn run_loop(max_iterations: Option<u32>) -> Result<()> {
         // Check iteration limit
         if let Some(max) = max_iterations {
             if iteration_count >= max {
-                println!("{}", yellow(&format!("\nReached max iterations ({}). Stopping.", max)));
+                println!(
+                    "{}",
+                    yellow(&format!("\nReached max iterations ({}). Stopping.", max))
+                );
                 break;
             }
         }
@@ -430,7 +512,10 @@ pub fn run_loop(max_iterations: Option<u32>) -> Result<()> {
         }
 
         if result == "awaiting_work" {
-            println!("{}", dim("\nWaiting for work. Run 'dial validate' after implementing."));
+            println!(
+                "{}",
+                dim("\nWaiting for work. Run 'dial validate' after implementing.")
+            );
             break;
         }
 
@@ -545,7 +630,10 @@ pub fn reset_current() -> Result<()> {
 pub fn stop_loop() -> Result<()> {
     let stop_file = get_dial_dir().join("stop");
     fs::write(&stop_file, "")?;
-    println!("{}", yellow("Stop flag created. DIAL will stop after current iteration."));
+    println!(
+        "{}",
+        yellow("Stop flag created. DIAL will stop after current iteration.")
+    );
     Ok(())
 }
 
@@ -604,7 +692,10 @@ pub fn show_context() -> Result<()> {
     // Also write to file
     let context_file = get_dial_dir().join("current_context.md");
     fs::write(&context_file, &full_context)?;
-    println!("\n{}", dim(&format!("Context written to: {}", context_file.display())));
+    println!(
+        "\n{}",
+        dim(&format!("Context written to: {}", context_file.display()))
+    );
 
     Ok(())
 }
@@ -640,8 +731,14 @@ pub fn orchestrate() -> Result<()> {
     println!("{}", bold("DIAL Orchestrator Mode"));
     println!("{}", bold(&"=".repeat(70)));
     println!();
-    println!("{}", dim("Copy the prompt below to spawn a fresh sub-agent for this task."));
-    println!("{}", dim("After the sub-agent completes, run `dial validate` to commit."));
+    println!(
+        "{}",
+        dim("Copy the prompt below to spawn a fresh sub-agent for this task.")
+    );
+    println!(
+        "{}",
+        dim("After the sub-agent completes, run `dial validate` to commit.")
+    );
     println!();
     println!("{}", bold("--- SUB-AGENT PROMPT START ---"));
     println!();
@@ -652,14 +749,26 @@ pub fn orchestrate() -> Result<()> {
     // Write prompt to file for easy access
     let prompt_file = get_dial_dir().join("subagent_prompt.md");
     fs::write(&prompt_file, &prompt)?;
-    println!("{}", dim(&format!("Prompt also saved to: {}", prompt_file.display())));
+    println!(
+        "{}",
+        dim(&format!("Prompt also saved to: {}", prompt_file.display()))
+    );
 
     // Platform hints
     println!();
     println!("{}", bold("Platform Commands:"));
-    println!("  {}", dim("Claude Code: claude -p \"$(cat .dial/subagent_prompt.md)\""));
-    println!("  {}", dim("Codex CLI:   codex --task \"$(cat .dial/subagent_prompt.md)\""));
-    println!("  {}", dim("Gemini:      Copy prompt to new Gemini session"));
+    println!(
+        "  {}",
+        dim("Claude Code: claude -p \"$(cat .dial/subagent_prompt.md)\"")
+    );
+    println!(
+        "  {}",
+        dim("Codex CLI:   codex --task \"$(cat .dial/subagent_prompt.md)\"")
+    );
+    println!(
+        "  {}",
+        dim("Gemini:      Copy prompt to new Gemini session")
+    );
     println!();
 
     Ok(())

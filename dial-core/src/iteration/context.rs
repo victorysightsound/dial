@@ -78,13 +78,20 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
     }
 
     // Get relevant spec sections — prefer prd.db, fall back to spec_sections
-    let prd_conn = if prd::prd_db_exists() { prd::get_prd_db().ok() } else { None };
+    let prd_conn = if prd::prd_db_exists() {
+        prd::get_prd_db().ok()
+    } else {
+        None
+    };
 
     if let Some(ref prd_db) = prd_conn {
         // PRD: linked section via prd_section_id
         if let Some(ref prd_sid) = task.prd_section_id {
             if let Ok(Some(section)) = prd::prd_get_section(prd_db, prd_sid) {
-                context.push(format!("## Relevant Specification ({})\n\n{}", section.title, section.content));
+                context.push(format!(
+                    "## Relevant Specification ({})\n\n{}",
+                    section.title, section.content
+                ));
             }
         }
 
@@ -98,16 +105,17 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
                     } else {
                         &section.content
                     };
-                    context.push(format!("### {} ({})\n{}", section.title, section.section_id, preview));
+                    context.push(format!(
+                        "### {} ({})\n{}",
+                        section.title, section.section_id, preview
+                    ));
                 }
             }
         }
     } else {
         // Fallback: spec_sections in phase DB
         if let Some(spec_id) = task.spec_section_id {
-            let mut stmt = conn.prepare(
-                "SELECT content FROM spec_sections WHERE id = ?1",
-            )?;
+            let mut stmt = conn.prepare("SELECT content FROM spec_sections WHERE id = ?1")?;
 
             if let Ok(content) = stmt.query_row([spec_id], |row| row.get::<_, String>(0)) {
                 context.push(format!("## Relevant Specification\n\n{}", content));
@@ -172,14 +180,19 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
     )?;
 
     let known_fixes: Vec<(String, f64, String)> = stmt
-        .query_map([TRUST_THRESHOLD], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .query_map([TRUST_THRESHOLD], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
     if !known_fixes.is_empty() {
         context.push("## Known Fixes for Recent Failures\n".to_string());
         for (description, confidence, _pattern_key) in known_fixes {
-            context.push(format!("- KNOWN FIX (confidence: {:.2}): {}", confidence, description));
+            context.push(format!(
+                "- KNOWN FIX (confidence: {:.2}): {}",
+                confidence, description
+            ));
         }
     }
 
@@ -313,15 +326,24 @@ pub fn gather_context_items_pure(conn: &Connection, task: &Task) -> Result<Vec<C
     gather_context_items_impl(conn, task, false)
 }
 
-fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: bool) -> Result<Vec<ContextItem>> {
+fn gather_context_items_impl(
+    conn: &Connection,
+    task: &Task,
+    track_references: bool,
+) -> Result<Vec<ContextItem>> {
     let mut items = Vec::new();
 
     // Signs (highest priority)
-    let signs_content = SIGNS.iter()
+    let signs_content = SIGNS
+        .iter()
         .map(|s| format!("- **{}**", s))
         .collect::<Vec<_>>()
         .join("\n");
-    items.push(ContextItem::new("Signs (Critical Rules)", &signs_content, PRIORITY_SIGNS));
+    items.push(ContextItem::new(
+        "Signs (Critical Rules)",
+        &signs_content,
+        PRIORITY_SIGNS,
+    ));
 
     // For retry attempts: include previous failed attempt's diff
     {
@@ -352,7 +374,11 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
     }
 
     // Task-linked and FTS spec sections — prefer prd.db, fall back to spec_sections
-    let prd_conn = if prd::prd_db_exists() { prd::get_prd_db().ok() } else { None };
+    let prd_conn = if prd::prd_db_exists() {
+        prd::get_prd_db().ok()
+    } else {
+        None
+    };
 
     if let Some(ref prd_db) = prd_conn {
         // PRD: linked section via prd_section_id
@@ -384,12 +410,14 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
     } else {
         // Fallback: spec_sections in phase DB
         if let Some(spec_id) = task.spec_section_id {
-            let mut stmt = conn.prepare(
-                "SELECT content FROM spec_sections WHERE id = ?1",
-            )?;
+            let mut stmt = conn.prepare("SELECT content FROM spec_sections WHERE id = ?1")?;
 
             if let Ok(content) = stmt.query_row([spec_id], |row| row.get::<_, String>(0)) {
-                items.push(ContextItem::new("Task Specification", &content, PRIORITY_TASK_SPEC));
+                items.push(ContextItem::new(
+                    "Task Specification",
+                    &content,
+                    PRIORITY_TASK_SPEC,
+                ));
             }
         }
 
@@ -407,7 +435,11 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
             .collect();
 
         for (heading, content) in related_specs {
-            let preview = if content.len() > 500 { &content[..500] } else { &content };
+            let preview = if content.len() > 500 {
+                &content[..500]
+            } else {
+                &content
+            };
             items.push(ContextItem::new(
                 &format!("Spec: {}", heading),
                 preview,
@@ -427,16 +459,25 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
     )?;
 
     let known_fixes: Vec<(String, f64, String)> = stmt
-        .query_map([TRUST_THRESHOLD], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .query_map([TRUST_THRESHOLD], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
     if !known_fixes.is_empty() {
-        let content = known_fixes.iter()
-            .map(|(desc, confidence, _)| format!("- KNOWN FIX (confidence: {:.2}): {}", confidence, desc))
+        let content = known_fixes
+            .iter()
+            .map(|(desc, confidence, _)| {
+                format!("- KNOWN FIX (confidence: {:.2}): {}", confidence, desc)
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        items.push(ContextItem::new("Known Fixes for Recent Failures", &content, PRIORITY_SUGGESTED_SOLUTIONS));
+        items.push(ContextItem::new(
+            "Known Fixes for Recent Failures",
+            &content,
+            PRIORITY_SUGGESTED_SOLUTIONS,
+        ));
     }
 
     // Trusted solutions
@@ -454,11 +495,16 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
         .collect();
 
     if !solutions.is_empty() {
-        let content = solutions.iter()
+        let content = solutions
+            .iter()
             .map(|(desc, key)| format!("- **{}**: {}", key, desc))
             .collect::<Vec<_>>()
             .join("\n");
-        items.push(ContextItem::new("Trusted Solutions", &content, PRIORITY_TRUSTED_SOLUTIONS));
+        items.push(ContextItem::new(
+            "Trusted Solutions",
+            &content,
+            PRIORITY_TRUSTED_SOLUTIONS,
+        ));
     }
 
     // Similar completed tasks
@@ -466,9 +512,7 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
     if !similar.is_empty() {
         let content = similar
             .iter()
-            .map(|(t, approach)| {
-                format!("SIMILAR COMPLETED TASK: {}\n{}", t.description, approach)
-            })
+            .map(|(t, approach)| format!("SIMILAR COMPLETED TASK: {}\n{}", t.description, approach))
             .collect::<Vec<_>>()
             .join("\n\n");
         items.push(ContextItem::new(
@@ -493,14 +537,23 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
         .collect();
 
     if !failures.is_empty() {
-        let content = failures.iter()
+        let content = failures
+            .iter()
             .map(|(error_text, key)| {
-                let preview = if error_text.len() > 200 { &error_text[..200] } else { error_text };
+                let preview = if error_text.len() > 200 {
+                    &error_text[..200]
+                } else {
+                    error_text
+                };
                 format!("- **{}**: {}", key, preview)
             })
             .collect::<Vec<_>>()
             .join("\n");
-        items.push(ContextItem::new("Recent Failures", &content, PRIORITY_FAILURES));
+        items.push(ContextItem::new(
+            "Recent Failures",
+            &content,
+            PRIORITY_FAILURES,
+        ));
 
         // Pattern-linked learnings
         let mut pattern_stmt = conn.prepare(
@@ -537,7 +590,11 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
 
         if !pattern_learnings_lines.is_empty() {
             let content = pattern_learnings_lines.join("\n");
-            items.push(ContextItem::new("Pattern-Linked Learnings", &content, PRIORITY_PATTERN_LEARNINGS));
+            items.push(ContextItem::new(
+                "Pattern-Linked Learnings",
+                &content,
+                PRIORITY_PATTERN_LEARNINGS,
+            ));
         }
     }
 
@@ -555,17 +612,25 @@ fn gather_context_items_impl(conn: &Connection, task: &Task, track_references: b
         .collect();
 
     if !learnings.is_empty() {
-        let content = learnings.iter()
+        let content = learnings
+            .iter()
             .map(|(id, category, description)| {
                 if track_references {
                     let _ = increment_learning_reference(conn, *id);
                 }
-                let cat_str = category.as_ref().map(|c| format!("[{}]", c)).unwrap_or_default();
+                let cat_str = category
+                    .as_ref()
+                    .map(|c| format!("[{}]", c))
+                    .unwrap_or_default();
                 format!("- {} {}", cat_str, description)
             })
             .collect::<Vec<_>>()
             .join("\n");
-        items.push(ContextItem::new("Project Learnings", &content, PRIORITY_LEARNINGS));
+        items.push(ContextItem::new(
+            "Project Learnings",
+            &content,
+            PRIORITY_LEARNINGS,
+        ));
     }
 
     Ok(items)
@@ -876,11 +941,13 @@ mod tests {
         let learning_id = conn.last_insert_rowid();
 
         // Verify initial reference count is 0
-        let initial_refs: i64 = conn.query_row(
-            "SELECT times_referenced FROM learnings WHERE id = ?1",
-            [learning_id],
-            |row| row.get(0),
-        ).unwrap();
+        let initial_refs: i64 = conn
+            .query_row(
+                "SELECT times_referenced FROM learnings WHERE id = ?1",
+                [learning_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(initial_refs, 0);
 
         let task = make_test_task(task_id);
@@ -890,11 +957,13 @@ mod tests {
         assert!(!items.is_empty(), "Should return context items");
 
         // Verify reference count is still 0
-        let after_refs: i64 = conn.query_row(
-            "SELECT times_referenced FROM learnings WHERE id = ?1",
-            [learning_id],
-            |row| row.get(0),
-        ).unwrap();
+        let after_refs: i64 = conn
+            .query_row(
+                "SELECT times_referenced FROM learnings WHERE id = ?1",
+                [learning_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(after_refs, 0, "Pure mode should not increment references");
     }
 
@@ -931,7 +1000,10 @@ mod tests {
     fn test_diff_truncation_preserved_in_extraction() {
         // Verify extraction works with a large diff (truncation happens at storage time)
         let long_diff = "x".repeat(3000);
-        let notes = format!("error\nFAILED_DIFF_STAT:\nstat line\nFAILED_DIFF:\n{}", long_diff);
+        let notes = format!(
+            "error\nFAILED_DIFF_STAT:\nstat line\nFAILED_DIFF:\n{}",
+            long_diff
+        );
         let result = extract_failed_diff_parts(&notes);
         assert!(result.is_some());
         let (_, _, diff) = result.unwrap();
@@ -991,7 +1063,8 @@ mod tests {
         let task_id = conn.last_insert_rowid();
 
         // Create a failed iteration with diff in notes
-        let notes = "test failure\nFAILED_DIFF_STAT:\n 2 files changed\nFAILED_DIFF:\n+added bad code";
+        let notes =
+            "test failure\nFAILED_DIFF_STAT:\n 2 files changed\nFAILED_DIFF:\n+added bad code";
         conn.execute(
             "INSERT INTO iterations (task_id, attempt_number, status, notes) VALUES (?1, 1, 'failed', ?2)",
             rusqlite::params![task_id, notes],
@@ -1091,11 +1164,13 @@ mod tests {
         let _items = gather_context_items(&conn, &task).unwrap();
 
         // Verify reference count was incremented
-        let after_refs: i64 = conn.query_row(
-            "SELECT times_referenced FROM learnings WHERE id = ?1",
-            [learning_id],
-            |row| row.get(0),
-        ).unwrap();
+        let after_refs: i64 = conn
+            .query_row(
+                "SELECT times_referenced FROM learnings WHERE id = ?1",
+                [learning_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(after_refs > 0, "Normal mode should increment references");
     }
 

@@ -30,11 +30,18 @@ impl PatternMetrics {
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"pattern_key":"{}","category":"{}","total_occurrences":{},"total_resolution_time_secs":{:.1},"avg_resolution_time_secs":{:.1},"total_tokens_consumed":{},"total_cost_usd":{:.4},"auto_resolved_count":{},"manual_resolved_count":{},"unresolved_count":{},"first_seen":"{}","last_seen":"{}"}}"#,
-            self.pattern_key, self.category, self.total_occurrences,
-            self.total_resolution_time_secs, self.avg_resolution_time_secs,
-            self.total_tokens_consumed, self.total_cost_usd,
-            self.auto_resolved_count, self.manual_resolved_count, self.unresolved_count,
-            self.first_seen, self.last_seen,
+            self.pattern_key,
+            self.category,
+            self.total_occurrences,
+            self.total_resolution_time_secs,
+            self.avg_resolution_time_secs,
+            self.total_tokens_consumed,
+            self.total_cost_usd,
+            self.auto_resolved_count,
+            self.manual_resolved_count,
+            self.unresolved_count,
+            self.first_seen,
+            self.last_seen,
         )
     }
 }
@@ -107,16 +114,23 @@ pub fn compute_pattern_metrics(conn: &Connection) -> Result<Vec<PatternMetrics>>
     Ok(metrics)
 }
 
-pub use patterns::{detect_failure_pattern, detect_failure_pattern_from_db, suggest_patterns_from_clustering, SuggestedPattern};
+pub use patterns::{
+    detect_failure_pattern, detect_failure_pattern_from_db, suggest_patterns_from_clustering,
+    SuggestedPattern,
+};
 pub use solutions::{
     apply_confidence_decay, apply_solution_failure, apply_solution_success,
     find_solutions_for_pattern, find_trusted_solutions, get_pending_solution_applications,
     get_solution_history, mark_solution_applications_success, record_solution,
-    record_solution_application, record_solution_with_source, validate_solution,
-    Solution, SolutionEvent,
+    record_solution_application, record_solution_with_source, validate_solution, Solution,
+    SolutionEvent,
 };
 
-pub fn get_or_create_failure_pattern(conn: &Connection, pattern_key: &str, category: &str) -> Result<i64> {
+pub fn get_or_create_failure_pattern(
+    conn: &Connection,
+    pattern_key: &str,
+    category: &str,
+) -> Result<i64> {
     let mut stmt = conn.prepare("SELECT id FROM failure_patterns WHERE pattern_key = ?1")?;
     let result: Option<i64> = stmt.query_row([pattern_key], |row| row.get(0)).ok();
 
@@ -135,7 +149,11 @@ pub fn get_or_create_failure_pattern(conn: &Connection, pattern_key: &str, categ
             conn.execute(
                 "INSERT INTO failure_patterns (pattern_key, description, category)
                  VALUES (?1, ?2, ?3)",
-                rusqlite::params![pattern_key, format!("Auto-detected {}", pattern_key), category],
+                rusqlite::params![
+                    pattern_key,
+                    format!("Auto-detected {}", pattern_key),
+                    category
+                ],
             )?;
             Ok(conn.last_insert_rowid())
         }
@@ -190,7 +208,15 @@ pub fn show_failures(unresolved_only: bool) -> Result<()> {
     };
 
     let mut stmt = conn.prepare(sql)?;
-    let rows: Vec<(i64, i64, String, Option<String>, Option<String>, Option<i64>, bool)> = stmt
+    let rows: Vec<(
+        i64,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        bool,
+    )> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -229,7 +255,9 @@ pub fn show_failures(unresolved_only: bool) -> Result<()> {
         println!("  Iteration: #{}", iteration_id);
 
         if let Some(fp) = file_path {
-            let line = line_number.map(|l| l.to_string()).unwrap_or_else(|| "?".to_string());
+            let line = line_number
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "?".to_string());
             println!("  File: {}:{}", fp, line);
         }
 
@@ -255,10 +283,19 @@ pub fn show_solutions(trusted_only: bool) -> Result<()> {
              WHERE s.confidence >= ?1
              ORDER BY s.confidence DESC",
         )?;
-        let result = stmt.query_map([TRUST_THRESHOLD], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        let result = stmt
+            .query_map([TRUST_THRESHOLD], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         result
     } else {
         let mut stmt = conn.prepare(
@@ -267,10 +304,19 @@ pub fn show_solutions(trusted_only: bool) -> Result<()> {
              INNER JOIN failure_patterns fp ON s.pattern_id = fp.id
              ORDER BY s.confidence DESC",
         )?;
-        let result = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        let result = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         result
     };
 
@@ -282,7 +328,9 @@ pub fn show_solutions(trusted_only: bool) -> Result<()> {
     println!("{}", bold("Solutions"));
     println!("{}", "=".repeat(60));
 
-    for (id, pattern_key, description, code_example, confidence, success_count, failure_count) in rows {
+    for (id, pattern_key, description, code_example, confidence, success_count, failure_count) in
+        rows
+    {
         let trusted = confidence >= TRUST_THRESHOLD;
         let trust_indicator = if trusted {
             green("TRUSTED")

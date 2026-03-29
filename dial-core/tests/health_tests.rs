@@ -43,7 +43,8 @@ async fn test_health_full_cycle() {
     engine.task_add("health test task", 1, None).await.unwrap();
 
     let conn = rusqlite::Connection::open(tmp.path().join(".dial/test.db")).unwrap();
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        .unwrap();
 
     // 15 completed + 5 failed iterations = 75% success rate
     for i in 1..=15 {
@@ -105,8 +106,16 @@ async fn test_health_full_cycle() {
     let health = engine.health().await.unwrap();
 
     // Verify score is reasonable for a mixed project
-    assert!(health.score > 30, "Score should be > 30 for a mixed project, got {}", health.score);
-    assert!(health.score < 90, "Score should be < 90 for a mixed project, got {}", health.score);
+    assert!(
+        health.score > 30,
+        "Score should be > 30 for a mixed project, got {}",
+        health.score
+    );
+    assert!(
+        health.score < 90,
+        "Score should be < 90 for a mixed project, got {}",
+        health.score
+    );
     assert_eq!(health.factors.len(), 6);
 
     // Verify individual factor names exist
@@ -119,19 +128,35 @@ async fn test_health_full_cycle() {
     assert!(factor_names.contains(&"pattern_resolution_rate"));
 
     // success_rate should be 75
-    let sr = health.factors.iter().find(|f| f.name == "success_rate").unwrap();
+    let sr = health
+        .factors
+        .iter()
+        .find(|f| f.name == "success_rate")
+        .unwrap();
     assert_eq!(sr.score, 75);
 
     // pattern_resolution_rate: 1/2 = 50
-    let pr = health.factors.iter().find(|f| f.name == "pattern_resolution_rate").unwrap();
+    let pr = health
+        .factors
+        .iter()
+        .find(|f| f.name == "pattern_resolution_rate")
+        .unwrap();
     assert_eq!(pr.score, 50);
 
     // learning_utilization: 1/2 = 50
-    let lu = health.factors.iter().find(|f| f.name == "learning_utilization").unwrap();
+    let lu = health
+        .factors
+        .iter()
+        .find(|f| f.name == "learning_utilization")
+        .unwrap();
     assert_eq!(lu.score, 50);
 
     // solution_confidence: 0.8 -> 80
-    let sc = health.factors.iter().find(|f| f.name == "solution_confidence").unwrap();
+    let sc = health
+        .factors
+        .iter()
+        .find(|f| f.name == "solution_confidence")
+        .unwrap();
     assert_eq!(sc.score, 80);
 
     // Verify JSON serialization works

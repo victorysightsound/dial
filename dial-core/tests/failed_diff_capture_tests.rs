@@ -4,12 +4,12 @@ use std::process::Command;
 use std::sync::Mutex;
 use tempfile::TempDir;
 
+use dial_core::budget::FAILED_DIFF_PRIORITY;
+use dial_core::db::schema;
 use dial_core::git::{git_diff, git_diff_stat, git_has_changes};
 use dial_core::iteration::context::{
     extract_failed_diff_parts, gather_context, gather_context_items,
 };
-use dial_core::budget::FAILED_DIFF_PRIORITY;
-use dial_core::db::schema;
 use dial_core::task::models::{Task, TaskStatus};
 use rusqlite::Connection;
 
@@ -94,7 +94,11 @@ fn test_git_diff_captures_unstaged_changes() {
     let (tmp, original_dir) = setup_git_repo();
 
     // Modify the tracked file
-    fs::write(tmp.path().join("README.md"), "# Modified project\nNew line\n").unwrap();
+    fs::write(
+        tmp.path().join("README.md"),
+        "# Modified project\nNew line\n",
+    )
+    .unwrap();
     assert!(git_has_changes());
 
     let diff = git_diff().unwrap();
@@ -239,9 +243,7 @@ fn test_full_fail_capture_retry_cycle() {
 
     // Test with gather_context_items (structured)
     let items = gather_context_items(&conn, &task).unwrap();
-    let diff_item = items
-        .iter()
-        .find(|i| i.label == "Previous Failed Attempt");
+    let diff_item = items.iter().find(|i| i.label == "Previous Failed Attempt");
     assert!(
         diff_item.is_some(),
         "Should have Previous Failed Attempt context item"
@@ -256,9 +258,8 @@ fn test_full_fail_capture_retry_cycle() {
 
     // Verify it uses the MOST RECENT failed iteration
     // Add a second failed iteration with different content
-    let notes2 = format!(
-        "second error\nFAILED_DIFF_STAT:\nsecond stat\nFAILED_DIFF:\nsecond diff content"
-    );
+    let notes2 =
+        format!("second error\nFAILED_DIFF_STAT:\nsecond stat\nFAILED_DIFF:\nsecond diff content");
     conn.execute(
         "INSERT INTO iterations (task_id, attempt_number, status, notes) VALUES (?1, 2, 'failed', ?2)",
         rusqlite::params![task_id, notes2],

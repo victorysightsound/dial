@@ -1,5 +1,5 @@
-use crate::config::config_get;
 use crate::command_safety::sanitize_shell_command;
+use crate::config::config_get;
 use crate::errors::Result;
 use crate::output::{dim, green, print_warning, red};
 use crate::DEFAULT_TIMEOUT_SECS;
@@ -17,7 +17,11 @@ pub fn run_command(cmd: &str, timeout_secs: Option<u64>) -> Result<CommandResult
     run_command_with_label("command", cmd, timeout_secs)
 }
 
-fn run_command_with_label(label: &str, cmd: &str, timeout_secs: Option<u64>) -> Result<CommandResult> {
+fn run_command_with_label(
+    label: &str,
+    cmd: &str,
+    timeout_secs: Option<u64>,
+) -> Result<CommandResult> {
     if cmd.is_empty() {
         return Ok(CommandResult {
             success: true,
@@ -132,7 +136,10 @@ pub fn run_validation(conn: &Connection, iteration_id: i64) -> Result<(bool, Str
 }
 
 /// Run validation and return detailed per-step results.
-pub fn run_validation_with_details(conn: &Connection, iteration_id: i64) -> Result<ValidationResult> {
+pub fn run_validation_with_details(
+    conn: &Connection,
+    iteration_id: i64,
+) -> Result<ValidationResult> {
     // Check for configured pipeline steps
     let pipeline_steps = load_pipeline_steps(conn)?;
 
@@ -202,7 +209,10 @@ fn run_pipeline_validation(
 
     println!(
         "{}",
-        dim(&format!("Running validation pipeline ({} steps)...", steps.len()))
+        dim(&format!(
+            "Running validation pipeline ({} steps)...",
+            steps.len()
+        ))
     );
 
     for step in steps {
@@ -220,9 +230,7 @@ fn run_pipeline_validation(
             continue;
         }
 
-        let timeout = step
-            .timeout_secs
-            .unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout = step.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
 
         println!(
             "{}",
@@ -242,7 +250,11 @@ fn run_pipeline_validation(
             None,
         )?;
 
-        let result = run_command_with_label(&format!("pipeline step '{}'", step.name), &step.command, Some(timeout))?;
+        let result = run_command_with_label(
+            &format!("pipeline step '{}'", step.name),
+            &step.command,
+            Some(timeout),
+        )?;
 
         let output_preview = truncate_str(&result.output, 500);
         let error_preview = truncate_str(&result.output, 1000);
@@ -323,7 +335,13 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<Validat
     // Run build
     if !build_cmd.is_empty() {
         println!("{}", dim(&format!("Running build: {}", build_cmd)));
-        let action_id = record_action(conn, iteration_id, "build", &format!("Build: {}", build_cmd), None)?;
+        let action_id = record_action(
+            conn,
+            iteration_id,
+            "build",
+            &format!("Build: {}", build_cmd),
+            None,
+        )?;
 
         let result = run_command_with_label("build command", &build_cmd, Some(build_timeout))?;
         let output_preview = truncate_str(&result.output, 500);
@@ -333,8 +351,16 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<Validat
             conn,
             action_id,
             result.success,
-            if result.success { Some(output_preview) } else { None },
-            if !result.success { Some(error_preview) } else { None },
+            if result.success {
+                Some(output_preview)
+            } else {
+                None
+            },
+            if !result.success {
+                Some(error_preview)
+            } else {
+                None
+            },
             Some(result.duration),
         )?;
 
@@ -374,7 +400,13 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<Validat
     // Run tests
     if !test_cmd.is_empty() {
         println!("{}", dim(&format!("Running tests: {}", test_cmd)));
-        let action_id = record_action(conn, iteration_id, "test", &format!("Test: {}", test_cmd), None)?;
+        let action_id = record_action(
+            conn,
+            iteration_id,
+            "test",
+            &format!("Test: {}", test_cmd),
+            None,
+        )?;
 
         let result = run_command_with_label("test command", &test_cmd, Some(test_timeout))?;
         let output_preview = truncate_str(&result.output, 500);
@@ -384,8 +416,16 @@ fn run_legacy_validation(conn: &Connection, iteration_id: i64) -> Result<Validat
             conn,
             action_id,
             result.success,
-            if result.success { Some(output_preview) } else { None },
-            if !result.success { Some(error_preview) } else { None },
+            if result.success {
+                Some(output_preview)
+            } else {
+                None
+            },
+            if !result.success {
+                Some(error_preview)
+            } else {
+                None
+            },
             Some(result.duration),
         )?;
 
@@ -433,7 +473,14 @@ mod tests {
     #[test]
     fn run_command_normalizes_unicode_dash_flags() {
         let result = run_command("cargo —version", Some(30)).unwrap();
-        assert!(result.success, "expected sanitized cargo command to succeed");
-        assert!(result.output.contains("cargo "), "unexpected output: {}", result.output);
+        assert!(
+            result.success,
+            "expected sanitized cargo command to succeed"
+        );
+        assert!(
+            result.output.contains("cargo "),
+            "unexpected output: {}",
+            result.output
+        );
     }
 }

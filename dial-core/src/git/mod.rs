@@ -31,7 +31,10 @@ pub fn checkpoint_create(id: &str) -> Result<bool> {
         Ok(true)
     } else {
         let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-        Err(DialError::GitError(format!("Failed to create checkpoint: {}", stderr)))
+        Err(DialError::GitError(format!(
+            "Failed to create checkpoint: {}",
+            stderr
+        )))
     }
 }
 
@@ -48,9 +51,7 @@ pub fn checkpoint_restore() -> Result<bool> {
     }
 
     // Check if there are any stashes
-    let list_result = Command::new("git")
-        .args(["stash", "list"])
-        .output()?;
+    let list_result = Command::new("git").args(["stash", "list"]).output()?;
 
     let stash_list = String::from_utf8_lossy(&list_result.stdout);
     if stash_list.trim().is_empty() {
@@ -58,16 +59,10 @@ pub fn checkpoint_restore() -> Result<bool> {
     }
 
     // First, clean any current changes so the pop doesn't conflict
-    let _ = Command::new("git")
-        .args(["checkout", "--", "."])
-        .output();
-    let _ = Command::new("git")
-        .args(["clean", "-fd"])
-        .output();
+    let _ = Command::new("git").args(["checkout", "--", "."]).output();
+    let _ = Command::new("git").args(["clean", "-fd"]).output();
 
-    let pop_result = Command::new("git")
-        .args(["stash", "pop"])
-        .output()?;
+    let pop_result = Command::new("git").args(["stash", "pop"]).output()?;
 
     if pop_result.status.success() {
         return Ok(true);
@@ -85,14 +80,10 @@ pub fn checkpoint_restore() -> Result<bool> {
     let _ = Command::new("git")
         .args(["reset", "--hard", "HEAD"])
         .output();
-    let _ = Command::new("git")
-        .args(["clean", "-fd"])
-        .output();
+    let _ = Command::new("git").args(["clean", "-fd"]).output();
 
     // The failed pop leaves the stash in place — drop it
-    let _ = Command::new("git")
-        .args(["stash", "drop"])
-        .output();
+    let _ = Command::new("git").args(["stash", "drop"]).output();
 
     Ok(true)
 }
@@ -104,24 +95,23 @@ pub fn checkpoint_drop() -> Result<bool> {
         return Err(DialError::NotGitRepo);
     }
 
-    let list_result = Command::new("git")
-        .args(["stash", "list"])
-        .output()?;
+    let list_result = Command::new("git").args(["stash", "list"]).output()?;
 
     let stash_list = String::from_utf8_lossy(&list_result.stdout);
     if stash_list.trim().is_empty() {
         return Ok(false);
     }
 
-    let drop_result = Command::new("git")
-        .args(["stash", "drop"])
-        .output()?;
+    let drop_result = Command::new("git").args(["stash", "drop"]).output()?;
 
     if drop_result.status.success() {
         Ok(true)
     } else {
         let stderr = String::from_utf8_lossy(&drop_result.stderr).to_string();
-        Err(DialError::GitError(format!("Failed to drop checkpoint: {}", stderr)))
+        Err(DialError::GitError(format!(
+            "Failed to drop checkpoint: {}",
+            stderr
+        )))
     }
 }
 
@@ -188,9 +178,7 @@ fn check_staged_for_secrets() -> Vec<String> {
 
 pub fn git_commit(message: &str) -> Result<Option<String>> {
     // Stage all changes
-    let add_result = Command::new("git")
-        .args(["add", "-A"])
-        .output()?;
+    let add_result = Command::new("git").args(["add", "-A"]).output()?;
 
     if !add_result.status.success() {
         return Err(DialError::GitError("Failed to stage changes".to_string()));
@@ -222,12 +210,12 @@ pub fn git_commit(message: &str) -> Result<Option<String>> {
     }
 
     // Get commit hash
-    let hash_result = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()?;
+    let hash_result = Command::new("git").args(["rev-parse", "HEAD"]).output()?;
 
     if hash_result.status.success() {
-        let hash = String::from_utf8_lossy(&hash_result.stdout).trim().to_string();
+        let hash = String::from_utf8_lossy(&hash_result.stdout)
+            .trim()
+            .to_string();
         Ok(Some(hash))
     } else {
         Ok(None)
@@ -253,18 +241,14 @@ pub fn git_get_last_commit() -> Option<String> {
 
 /// Return the current working tree diff (unstaged changes) as a String.
 pub fn git_diff() -> Result<String> {
-    let result = Command::new("git")
-        .args(["diff"])
-        .output()?;
+    let result = Command::new("git").args(["diff"]).output()?;
 
     Ok(String::from_utf8_lossy(&result.stdout).to_string())
 }
 
 /// Return the current working tree diff stat (unstaged changes summary) as a String.
 pub fn git_diff_stat() -> Result<String> {
-    let result = Command::new("git")
-        .args(["diff", "--stat"])
-        .output()?;
+    let result = Command::new("git").args(["diff", "--stat"]).output()?;
 
     Ok(String::from_utf8_lossy(&result.stdout).to_string())
 }
@@ -284,7 +268,10 @@ mod tests {
     fn test_git_diff_stat_returns_ok() {
         // In the project repo, git diff --stat should succeed
         let result = git_diff_stat();
-        assert!(result.is_ok(), "git_diff_stat() should return Ok in a git repo");
+        assert!(
+            result.is_ok(),
+            "git_diff_stat() should return Ok in a git repo"
+        );
     }
 
     #[test]

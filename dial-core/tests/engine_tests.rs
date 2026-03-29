@@ -1,7 +1,7 @@
-use dial_core::{Engine, EngineConfig, Event, EventHandler};
+use async_trait::async_trait;
 use dial_core::provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 use dial_core::task::models::TaskStatus;
-use async_trait::async_trait;
+use dial_core::{Engine, EngineConfig, Event, EventHandler};
 use std::env;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
@@ -72,7 +72,10 @@ async fn test_schema_version() {
     let (engine, _tmp, original_dir) = setup_engine().await;
 
     let version = engine.schema_version().await.unwrap();
-    assert!(version > 0, "Schema version should be positive after migrations");
+    assert!(
+        version > 0,
+        "Schema version should be positive after migrations"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -118,7 +121,10 @@ async fn test_config_set_normalizes_unicode_dash_commands() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    engine.config_set("build_cmd", "cargo —version").await.unwrap();
+    engine
+        .config_set("build_cmd", "cargo —version")
+        .await
+        .unwrap();
     let value = engine.config_get("build_cmd").await.unwrap();
     assert_eq!(value, Some("cargo --version".to_string()));
 
@@ -182,7 +188,10 @@ async fn test_task_block() {
     let (engine, _tmp, original_dir) = setup_engine().await;
 
     let id = engine.task_add("Task to block", 5, None).await.unwrap();
-    engine.task_block(id, "waiting on dependency").await.unwrap();
+    engine
+        .task_block(id, "waiting on dependency")
+        .await
+        .unwrap();
 
     let task = engine.task_get(id).await.unwrap();
     assert_eq!(task.status, TaskStatus::Blocked);
@@ -237,7 +246,10 @@ async fn test_learn_and_search() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let id = engine.learn("Always validate inputs", Some("pattern")).await.unwrap();
+    let id = engine
+        .learn("Always validate inputs", Some("pattern"))
+        .await
+        .unwrap();
     assert!(id > 0);
 
     let results = engine.learnings_search("validate inputs").await.unwrap();
@@ -251,7 +263,10 @@ async fn test_learn_delete() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let id = engine.learn("Temporary learning", Some("test")).await.unwrap();
+    let id = engine
+        .learn("Temporary learning", Some("test"))
+        .await
+        .unwrap();
     engine.learnings_delete(id).await.unwrap();
 
     let results = engine.learnings_search("temporary").await.unwrap();
@@ -460,7 +475,9 @@ struct RecordingHandler {
 
 impl RecordingHandler {
     fn new() -> Self {
-        Self { events: Mutex::new(Vec::new()) }
+        Self {
+            events: Mutex::new(Vec::new()),
+        }
     }
 
     fn events(&self) -> Vec<String> {
@@ -475,10 +492,16 @@ impl EventHandler for RecordingHandler {
             Event::TaskCompleted { id } => format!("task_completed:{}", id),
             Event::TaskBlocked { id, .. } => format!("task_blocked:{}", id),
             Event::TaskCancelled { id } => format!("task_cancelled:{}", id),
-            Event::TaskDependencyAdded { task_id, depends_on_id } => {
+            Event::TaskDependencyAdded {
+                task_id,
+                depends_on_id,
+            } => {
                 format!("dep_added:{}:{}", task_id, depends_on_id)
             }
-            Event::TaskDependencyRemoved { task_id, depends_on_id } => {
+            Event::TaskDependencyRemoved {
+                task_id,
+                depends_on_id,
+            } => {
                 format!("dep_removed:{}:{}", task_id, depends_on_id)
             }
             Event::ConfigSet { key, .. } => format!("config_set:{}", key),
@@ -486,7 +509,11 @@ impl EventHandler for RecordingHandler {
             Event::LearningDeleted { id } => format!("learning_deleted:{}", id),
             Event::StepPassed { name, .. } => format!("step_passed:{}", name),
             Event::StepFailed { name, required, .. } => {
-                format!("step_failed:{}:{}", name, if *required { "required" } else { "optional" })
+                format!(
+                    "step_failed:{}:{}",
+                    name,
+                    if *required { "required" } else { "optional" }
+                )
             }
             Event::StepSkipped { name, .. } => format!("step_skipped:{}", name),
             Event::StepStarted { name, .. } => format!("step_started:{}", name),
@@ -542,7 +569,10 @@ async fn test_multiple_event_handlers() {
     engine.on_event(handler1.clone());
     engine.on_event(handler2.clone());
 
-    engine.task_add("Multi handler test", 5, None).await.unwrap();
+    engine
+        .task_add("Multi handler test", 5, None)
+        .await
+        .unwrap();
 
     // Both handlers should receive the event
     assert_eq!(handler1.events().len(), 1);
@@ -584,7 +614,10 @@ async fn test_event_learning_lifecycle() {
     let handler = Arc::new(RecordingHandler::new());
     engine.on_event(handler.clone());
 
-    let id = engine.learn("Test learning", Some("pattern")).await.unwrap();
+    let id = engine
+        .learn("Test learning", Some("pattern"))
+        .await
+        .unwrap();
     engine.learnings_delete(id).await.unwrap();
 
     let events = handler.events();
@@ -727,9 +760,18 @@ async fn test_pipeline_add_and_list() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let id1 = engine.pipeline_add("build", "cargo build", 0, true, Some(300)).await.unwrap();
-    let id2 = engine.pipeline_add("test", "cargo test", 1, true, Some(600)).await.unwrap();
-    let id3 = engine.pipeline_add("lint", "cargo clippy", 2, false, None).await.unwrap();
+    let id1 = engine
+        .pipeline_add("build", "cargo build", 0, true, Some(300))
+        .await
+        .unwrap();
+    let id2 = engine
+        .pipeline_add("test", "cargo test", 1, true, Some(600))
+        .await
+        .unwrap();
+    let id3 = engine
+        .pipeline_add("lint", "cargo clippy", 2, false, None)
+        .await
+        .unwrap();
 
     assert!(id1 > 0);
     assert!(id2 > id1);
@@ -756,8 +798,14 @@ async fn test_pipeline_remove() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let id = engine.pipeline_add("build", "cargo build", 0, true, None).await.unwrap();
-    engine.pipeline_add("test", "cargo test", 1, true, None).await.unwrap();
+    let id = engine
+        .pipeline_add("build", "cargo build", 0, true, None)
+        .await
+        .unwrap();
+    engine
+        .pipeline_add("test", "cargo test", 1, true, None)
+        .await
+        .unwrap();
 
     engine.pipeline_remove(id).await.unwrap();
 
@@ -785,9 +833,18 @@ async fn test_pipeline_ordering() {
     let (engine, _tmp, original_dir) = setup_engine().await;
 
     // Add steps out of order by sort_order
-    engine.pipeline_add("third", "echo 3", 10, true, None).await.unwrap();
-    engine.pipeline_add("first", "echo 1", 0, true, None).await.unwrap();
-    engine.pipeline_add("second", "echo 2", 5, true, None).await.unwrap();
+    engine
+        .pipeline_add("third", "echo 3", 10, true, None)
+        .await
+        .unwrap();
+    engine
+        .pipeline_add("first", "echo 1", 0, true, None)
+        .await
+        .unwrap();
+    engine
+        .pipeline_add("second", "echo 2", 5, true, None)
+        .await
+        .unwrap();
 
     let steps = engine.pipeline_list().await.unwrap();
     assert_eq!(steps.len(), 3);
@@ -822,10 +879,16 @@ async fn test_pipeline_step_events_emitted() {
     engine.on_event(handler.clone());
 
     // Add pipeline steps that will succeed
-    engine.pipeline_add("echo_step", "echo hello", 0, true, None).await.unwrap();
+    engine
+        .pipeline_add("echo_step", "echo hello", 0, true, None)
+        .await
+        .unwrap();
 
     // We need an iteration in progress to validate
-    let _task_id = engine.task_add("Test pipeline events", 5, None).await.unwrap();
+    let _task_id = engine
+        .task_add("Test pipeline events", 5, None)
+        .await
+        .unwrap();
     engine.config_set("build_cmd", "").await.unwrap();
     engine.config_set("test_cmd", "").await.unwrap();
 
@@ -838,13 +901,13 @@ async fn test_pipeline_step_events_emitted() {
     // The validate may fail because we're not in a git repo, but step events
     // should still be emitted
     let events = handler.events();
-    let step_events: Vec<&String> = events.iter()
-        .filter(|e| e.starts_with("step_"))
-        .collect();
+    let step_events: Vec<&String> = events.iter().filter(|e| e.starts_with("step_")).collect();
 
     // At minimum, the echo_step should have a step event
-    assert!(!step_events.is_empty() || result.is_ok(),
-        "Either step events emitted or validation succeeded");
+    assert!(
+        !step_events.is_empty() || result.is_ok(),
+        "Either step events emitted or validation succeeded"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -856,13 +919,22 @@ async fn test_gather_context_budgeted_within_budget() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let _task_id = engine.task_add("Test budget gathering", 5, None).await.unwrap();
+    let _task_id = engine
+        .task_add("Test budget gathering", 5, None)
+        .await
+        .unwrap();
     let task = engine.task_get(_task_id).await.unwrap();
 
     // Large budget — everything fits
-    let (context, excluded) = engine.gather_context_budgeted(&task, 100_000).await.unwrap();
+    let (context, excluded) = engine
+        .gather_context_budgeted(&task, 100_000)
+        .await
+        .unwrap();
     assert!(!context.is_empty(), "Context should not be empty");
-    assert!(excluded.is_empty(), "Nothing should be excluded with large budget");
+    assert!(
+        excluded.is_empty(),
+        "Nothing should be excluded with large budget"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -876,12 +948,21 @@ async fn test_gather_context_budgeted_truncation() {
     let task = engine.task_get(_task_id).await.unwrap();
 
     // Add some learnings to create more context to be truncated
-    engine.learn("Learning one about patterns", Some("pattern")).await.unwrap();
-    engine.learn("Learning two about testing", Some("test")).await.unwrap();
+    engine
+        .learn("Learning one about patterns", Some("pattern"))
+        .await
+        .unwrap();
+    engine
+        .learn("Learning two about testing", Some("test"))
+        .await
+        .unwrap();
 
     // Very small budget — should exclude lower-priority items
     let (_context, excluded) = engine.gather_context_budgeted(&task, 5).await.unwrap();
-    assert!(!excluded.is_empty(), "Some items should be excluded with tiny budget");
+    assert!(
+        !excluded.is_empty(),
+        "Some items should be excluded with tiny budget"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -904,10 +985,12 @@ async fn test_gather_context_budgeted_emits_warnings() {
 
     if !excluded.is_empty() {
         let events = handler.events();
-        let warning_events: Vec<&String> = events.iter()
-            .filter(|e| e.starts_with("Warning"))
-            .collect();
-        assert!(!warning_events.is_empty(), "Truncation should emit warning events");
+        let warning_events: Vec<&String> =
+            events.iter().filter(|e| e.starts_with("Warning")).collect();
+        assert!(
+            !warning_events.is_empty(),
+            "Truncation should emit warning events"
+        );
     }
 
     env::set_current_dir(original_dir).unwrap();
@@ -918,12 +1001,18 @@ async fn test_gather_context_budgeted_priority_ordering() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let _task_id = engine.task_add("Test priority order", 5, None).await.unwrap();
+    let _task_id = engine
+        .task_add("Test priority order", 5, None)
+        .await
+        .unwrap();
     let task = engine.task_get(_task_id).await.unwrap();
 
     // Add learnings (low priority items)
     for i in 0..5 {
-        engine.learn(&format!("Learning {}", i), Some("test")).await.unwrap();
+        engine
+            .learn(&format!("Learning {}", i), Some("test"))
+            .await
+            .unwrap();
     }
 
     // With a moderate budget, signs (priority 0) should always be included.
@@ -931,14 +1020,18 @@ async fn test_gather_context_budgeted_priority_ordering() {
     let (context, excluded) = engine.gather_context_budgeted(&task, 200).await.unwrap();
 
     // Signs should always be in context
-    assert!(context.contains("Critical Rules") || context.contains("SIGNS"),
-        "Signs (highest priority) should be included");
+    assert!(
+        context.contains("Critical Rules") || context.contains("SIGNS"),
+        "Signs (highest priority) should be included"
+    );
 
     // If anything was excluded, it should be lower-priority items
     if !excluded.is_empty() {
         for label in &excluded {
-            assert!(!label.contains("Signs"),
-                "Signs should never be excluded - they have highest priority");
+            assert!(
+                !label.contains("Signs"),
+                "Signs should never be excluded - they have highest priority"
+            );
         }
     }
 
@@ -964,7 +1057,10 @@ async fn test_patterns_list_includes_seeded() {
     let (engine, _tmp, original_dir) = setup_engine().await;
 
     let patterns = engine.patterns_list().await.unwrap();
-    assert!(!patterns.is_empty(), "Seeded patterns should exist after migration");
+    assert!(
+        !patterns.is_empty(),
+        "Seeded patterns should exist after migration"
+    );
 
     // Check that some known patterns exist
     let keys: Vec<&str> = patterns.iter().map(|p| p.pattern_key.as_str()).collect();
@@ -980,13 +1076,16 @@ async fn test_patterns_add_and_list() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let id = engine.patterns_add(
-        "CustomError",
-        "Custom test error",
-        "custom",
-        "(?i)CustomError",
-        "suggested",
-    ).await.unwrap();
+    let id = engine
+        .patterns_add(
+            "CustomError",
+            "Custom test error",
+            "custom",
+            "(?i)CustomError",
+            "suggested",
+        )
+        .await
+        .unwrap();
     assert!(id > 0);
 
     let patterns = engine.patterns_list().await.unwrap();
@@ -1002,13 +1101,16 @@ async fn test_patterns_promotion_lifecycle() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let id = engine.patterns_add(
-        "PromoteTest",
-        "Test promotion",
-        "test",
-        "(?i)PromoteTest",
-        "suggested",
-    ).await.unwrap();
+    let id = engine
+        .patterns_add(
+            "PromoteTest",
+            "Test promotion",
+            "test",
+            "(?i)PromoteTest",
+            "suggested",
+        )
+        .await
+        .unwrap();
 
     // suggested -> confirmed
     let status = engine.patterns_promote(id).await.unwrap();
@@ -1032,9 +1134,14 @@ async fn test_patterns_db_regex_has_values() {
 
     let patterns = engine.patterns_list().await.unwrap();
     // Seeded patterns should have regex_pattern set
-    let rust_error = patterns.iter().find(|p| p.pattern_key == "RustCompileError");
+    let rust_error = patterns
+        .iter()
+        .find(|p| p.pattern_key == "RustCompileError");
     assert!(rust_error.is_some());
-    assert!(rust_error.unwrap().regex_pattern.is_some(), "Seeded patterns should have regex");
+    assert!(
+        rust_error.unwrap().regex_pattern.is_some(),
+        "Seeded patterns should have regex"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -1045,7 +1152,10 @@ async fn test_patterns_suggest_empty_with_no_unknown_errors() {
     let (engine, _tmp, original_dir) = setup_engine().await;
 
     let suggestions = engine.patterns_suggest().await.unwrap();
-    assert!(suggestions.is_empty(), "No suggestions without UnknownError failures");
+    assert!(
+        suggestions.is_empty(),
+        "No suggestions without UnknownError failures"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -1083,19 +1193,27 @@ async fn test_solution_provenance_source_tracking() {
     let conn = dial_core::get_db(None).unwrap();
 
     // Create a pattern and solution with source tracking
-    let pattern_id = dial_core::failure::get_or_create_failure_pattern(&conn, "TestPattern", "test").unwrap();
+    let pattern_id =
+        dial_core::failure::get_or_create_failure_pattern(&conn, "TestPattern", "test").unwrap();
     let solution_id = dial_core::failure::record_solution_with_source(
-        &conn, pattern_id, "Test solution", None, "human",
-    ).unwrap();
+        &conn,
+        pattern_id,
+        "Test solution",
+        None,
+        "human",
+    )
+    .unwrap();
 
     assert!(solution_id > 0);
 
     // Check source column
-    let source: String = conn.query_row(
-        "SELECT source FROM solutions WHERE id = ?1",
-        [solution_id],
-        |row| row.get(0),
-    ).unwrap();
+    let source: String = conn
+        .query_row(
+            "SELECT source FROM solutions WHERE id = ?1",
+            [solution_id],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(source, "human");
 
     // Check history was recorded
@@ -1113,26 +1231,43 @@ async fn test_solution_refresh_resets_decay() {
 
     let conn = dial_core::get_db(None).unwrap();
 
-    let pattern_id = dial_core::failure::get_or_create_failure_pattern(&conn, "RefreshTest", "test").unwrap();
+    let pattern_id =
+        dial_core::failure::get_or_create_failure_pattern(&conn, "RefreshTest", "test").unwrap();
     let solution_id = dial_core::failure::record_solution_with_source(
-        &conn, pattern_id, "Refresh test", None, "auto-learned",
-    ).unwrap();
+        &conn,
+        pattern_id,
+        "Refresh test",
+        None,
+        "auto-learned",
+    )
+    .unwrap();
 
     // Refresh the solution
     engine.solutions_refresh(solution_id).await.unwrap();
 
     // Check that last_validated_at is set
-    let validated: Option<String> = conn.query_row(
-        "SELECT last_validated_at FROM solutions WHERE id = ?1",
-        [solution_id],
-        |row| row.get(0),
-    ).unwrap();
-    assert!(validated.is_some(), "last_validated_at should be set after refresh");
+    let validated: Option<String> = conn
+        .query_row(
+            "SELECT last_validated_at FROM solutions WHERE id = ?1",
+            [solution_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        validated.is_some(),
+        "last_validated_at should be set after refresh"
+    );
 
     // Check history
     let events = engine.solutions_history(solution_id).await.unwrap();
-    let validated_events: Vec<_> = events.iter().filter(|e| e.event_type == "validated").collect();
-    assert!(!validated_events.is_empty(), "Validation event should be in history");
+    let validated_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "validated")
+        .collect();
+    assert!(
+        !validated_events.is_empty(),
+        "Validation event should be in history"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -1184,10 +1319,7 @@ async fn test_approval_mode_from_str() {
         dial_core::ApprovalMode::from_str("REVIEW"),
         Some(dial_core::ApprovalMode::Review),
     );
-    assert_eq!(
-        dial_core::ApprovalMode::from_str("unknown"),
-        None,
-    );
+    assert_eq!(dial_core::ApprovalMode::from_str("unknown"), None,);
 }
 
 #[tokio::test]
@@ -1196,7 +1328,10 @@ async fn test_approve_no_pending_iteration_fails() {
     let (engine, _tmp, original_dir) = setup_engine().await;
 
     let result = engine.approve().await;
-    assert!(result.is_err(), "approve() should fail when no iteration is awaiting approval");
+    assert!(
+        result.is_err(),
+        "approve() should fail when no iteration is awaiting approval"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -1207,7 +1342,10 @@ async fn test_reject_no_pending_iteration_fails() {
     let (engine, _tmp, original_dir) = setup_engine().await;
 
     let result = engine.reject("no reason").await;
-    assert!(result.is_err(), "reject() should fail when no iteration is awaiting approval");
+    assert!(
+        result.is_err(),
+        "reject() should fail when no iteration is awaiting approval"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -1217,10 +1355,17 @@ async fn test_reject_resets_task_to_pending() {
     let _lock = CWD_LOCK.lock().unwrap();
     let (engine, _tmp, original_dir) = setup_engine().await;
 
-    let task_id = engine.task_add("Rejection test task", 5, None).await.unwrap();
+    let task_id = engine
+        .task_add("Rejection test task", 5, None)
+        .await
+        .unwrap();
     let conn = dial_core::get_db(None).unwrap();
 
-    conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?1", [task_id]).unwrap();
+    conn.execute(
+        "UPDATE tasks SET status = 'in_progress' WHERE id = ?1",
+        [task_id],
+    )
+    .unwrap();
 
     conn.execute(
         "INSERT INTO iterations (task_id, status, started_at, attempt_number) VALUES (?1, 'awaiting_approval', datetime('now'), 1)",
@@ -1232,11 +1377,13 @@ async fn test_reject_resets_task_to_pending() {
     let task = engine.task_get(task_id).await.unwrap();
     assert_eq!(task.status, TaskStatus::Pending);
 
-    let status: String = conn.query_row(
-        "SELECT status FROM iterations WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
-        [task_id],
-        |row| row.get(0),
-    ).unwrap();
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM iterations WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(status, "rejected");
 
     env::set_current_dir(original_dir).unwrap();
@@ -1256,22 +1403,32 @@ async fn test_approval_events_emitted() {
     impl EventHandler for ApprovalEventCapture {
         fn handle(&self, event: &Event) {
             match event {
-                Event::Rejected { iteration_id, reason } => {
-                    self.events.lock().unwrap().push(
-                        format!("rejected:{}:{}", iteration_id, reason),
-                    );
+                Event::Rejected {
+                    iteration_id,
+                    reason,
+                } => {
+                    self.events
+                        .lock()
+                        .unwrap()
+                        .push(format!("rejected:{}:{}", iteration_id, reason));
                 }
                 _ => {}
             }
         }
     }
 
-    engine.on_event(Arc::new(ApprovalEventCapture { events: events_clone }));
+    engine.on_event(Arc::new(ApprovalEventCapture {
+        events: events_clone,
+    }));
 
     let task_id = engine.task_add("Event test task", 5, None).await.unwrap();
     let conn = dial_core::get_db(None).unwrap();
 
-    conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?1", [task_id]).unwrap();
+    conn.execute(
+        "UPDATE tasks SET status = 'in_progress' WHERE id = ?1",
+        [task_id],
+    )
+    .unwrap();
     let iter_id: i64 = conn.query_row(
         "INSERT INTO iterations (task_id, status, started_at, attempt_number) VALUES (?1, 'awaiting_approval', datetime('now'), 1) RETURNING id",
         [task_id],
@@ -1295,7 +1452,10 @@ async fn test_diff_summary_returns_string() {
     let (engine, _tmp, original_dir) = setup_engine().await;
 
     let summary = engine.diff_summary().unwrap();
-    assert!(!summary.is_empty(), "diff_summary should return a non-empty string");
+    assert!(
+        !summary.is_empty(),
+        "diff_summary should return a non-empty string"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -1343,7 +1503,11 @@ async fn test_record_metric_and_stats() {
 
     // Create iterations so FK constraints pass
     let conn = dial_core::get_db(None).unwrap();
-    conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?1", [task_id]).unwrap();
+    conn.execute(
+        "UPDATE tasks SET status = 'in_progress' WHERE id = ?1",
+        [task_id],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO iterations (id, task_id, status, started_at) VALUES (1, ?1, 'completed', datetime('now'))",
         [task_id],
@@ -1354,14 +1518,18 @@ async fn test_record_metric_and_stats() {
     ).unwrap();
 
     // Record metric snapshots
-    engine.record_metric(1, task_id, true, 10.5, 1000, 500, 0.05).unwrap();
-    engine.record_metric(2, task_id, false, 5.0, 200, 100, 0.01).unwrap();
+    engine
+        .record_metric(1, task_id, true, 10.5, 1000, 500, 0.05)
+        .unwrap();
+    engine
+        .record_metric(2, task_id, false, 5.0, 200, 100, 0.01)
+        .unwrap();
 
     // Verify metrics were recorded
     let conn = dial_core::get_db(None).unwrap();
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM metrics", [], |row| row.get(0),
-    ).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM metrics", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(count, 2);
 
     env::set_current_dir(original_dir).unwrap();
@@ -1415,28 +1583,49 @@ async fn test_full_task_lifecycle() {
     let (mut engine, _tmp, original_dir) = setup_engine().await;
 
     // 1. Configure
-    engine.config_set("build_cmd", "echo build_ok").await.unwrap();
+    engine
+        .config_set("build_cmd", "echo build_ok")
+        .await
+        .unwrap();
     engine.config_set("test_cmd", "echo test_ok").await.unwrap();
 
     // 2. Add tasks with dependencies
-    let t1 = engine.task_add("Create module structure", 8, None).await.unwrap();
-    let t2 = engine.task_add("Implement core logic", 7, None).await.unwrap();
+    let t1 = engine
+        .task_add("Create module structure", 8, None)
+        .await
+        .unwrap();
+    let t2 = engine
+        .task_add("Implement core logic", 7, None)
+        .await
+        .unwrap();
     let t3 = engine.task_add("Write tests", 5, None).await.unwrap();
     engine.task_depends(t2, t1).await.unwrap();
     engine.task_depends(t3, t2).await.unwrap();
 
     // 3. First task should be t1 (highest priority with no deps)
-    let next = engine.task_next().await.unwrap().expect("should have next task");
+    let next = engine
+        .task_next()
+        .await
+        .unwrap()
+        .expect("should have next task");
     assert_eq!(next.id, t1);
 
     // 4. Complete t1, next should be t2
     engine.task_done(t1).await.unwrap();
-    let next = engine.task_next().await.unwrap().expect("should have next task");
+    let next = engine
+        .task_next()
+        .await
+        .unwrap()
+        .expect("should have next task");
     assert_eq!(next.id, t2);
 
     // 5. Complete t2, next should be t3
     engine.task_done(t2).await.unwrap();
-    let next = engine.task_next().await.unwrap().expect("should have next task");
+    let next = engine
+        .task_next()
+        .await
+        .unwrap()
+        .expect("should have next task");
     assert_eq!(next.id, t3);
 
     // 6. Complete t3, queue should be empty
@@ -1445,7 +1634,10 @@ async fn test_full_task_lifecycle() {
     assert!(result.is_none(), "No more tasks");
 
     // 7. Add a learning
-    let learn_id = engine.learn("Dependency ordering works correctly", Some("pattern")).await.unwrap();
+    let learn_id = engine
+        .learn("Dependency ordering works correctly", Some("pattern"))
+        .await
+        .unwrap();
     assert!(learn_id > 0);
 
     // 8. Check stats
@@ -1478,17 +1670,24 @@ async fn test_crash_recovery_detects_dangling_iterations() {
     let conn = dial_core::get_db(None).unwrap();
 
     // Simulate a crash by leaving an iteration in_progress
-    conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?1", [task_id]).unwrap();
+    conn.execute(
+        "UPDATE tasks SET status = 'in_progress' WHERE id = ?1",
+        [task_id],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO iterations (task_id, status, started_at) VALUES (?1, 'in_progress', datetime('now'))",
         [task_id],
     ).unwrap();
 
     // Check for dangling iterations
-    let dangling: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM iterations WHERE status = 'in_progress'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let dangling: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM iterations WHERE status = 'in_progress'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(dangling, 1, "Should detect dangling iteration");
 
     env::set_current_dir(original_dir).unwrap();

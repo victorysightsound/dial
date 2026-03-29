@@ -49,10 +49,16 @@ pub(crate) fn build_wizard_orientation(
     ];
 
     if let Some(path) = from_doc {
-        lines.push(format!("Using existing document as source material: {}", path));
+        lines.push(format!(
+            "Using existing document as source material: {}",
+            path
+        ));
     }
 
-    lines.push(format!("You can stop at any time and resume with `{}`.", resume_cmd));
+    lines.push(format!(
+        "You can stop at any time and resume with `{}`.",
+        resume_cmd
+    ));
 
     WizardOrientation {
         title: title.to_string(),
@@ -60,11 +66,7 @@ pub(crate) fn build_wizard_orientation(
     }
 }
 
-pub(crate) fn print_wizard_orientation(
-    kind: WizardRunKind,
-    backend: &str,
-    from_doc: Option<&str>,
-) {
+pub(crate) fn print_wizard_orientation(kind: WizardRunKind, backend: &str, from_doc: Option<&str>) {
     let orientation = build_wizard_orientation(kind, backend, from_doc);
     println!("\n{}", output::bold(&orientation.title));
     println!("{}", "=".repeat(60));
@@ -630,36 +632,26 @@ mod tests {
         let orientation = build_wizard_orientation(WizardRunKind::Full, "codex", None);
 
         assert_eq!(orientation.title, "Starting DIAL project wizard");
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("Wizard backend: codex"))
-        );
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("9 guided phases"))
-        );
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("structured prompts"))
-        );
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("dial new --resume"))
-        );
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("will not edit your source code"))
-        );
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("Wizard backend: codex")));
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("9 guided phases")));
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("structured prompts")));
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("dial new --resume")));
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("will not edit your source code")));
     }
 
     #[test]
@@ -671,30 +663,22 @@ mod tests {
         );
 
         assert_eq!(orientation.title, "Starting DIAL PRD wizard");
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("5 guided phases"))
-        );
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("PRD generation only"))
-        );
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("docs/existing-prd.md"))
-        );
-        assert!(
-            orientation
-                .lines
-                .iter()
-                .any(|line| line.contains("dial spec wizard --resume"))
-        );
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("5 guided phases")));
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("PRD generation only")));
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("docs/existing-prd.md")));
+        assert!(orientation
+            .lines
+            .iter()
+            .any(|line| line.contains("dial spec wizard --resume")));
     }
 
     #[test]
@@ -702,7 +686,9 @@ mod tests {
         for phase in 1..=9 {
             let presentation = wizard_phase_presentation(phase, 9, "Example");
             assert!(
-                presentation.banner.contains(&format!("Phase {} of 9", phase)),
+                presentation
+                    .banner
+                    .contains(&format!("Phase {} of 9", phase)),
                 "missing banner for phase {}",
                 phase
             );

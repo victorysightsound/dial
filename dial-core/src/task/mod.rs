@@ -96,9 +96,7 @@ pub fn task_next() -> Result<Option<Task>> {
          ORDER BY priority, id LIMIT 1",
     )?;
 
-    let task = stmt
-        .query_row([], |row| Task::from_row(row))
-        .ok();
+    let task = stmt.query_row([], |row| Task::from_row(row)).ok();
 
     match &task {
         Some(t) => {
@@ -140,9 +138,8 @@ pub fn task_done(task_id: i64) -> Result<()> {
 
 /// Check dependents of a completed task and unblock any whose dependencies are all satisfied.
 pub fn auto_unblock_dependents(conn: &rusqlite::Connection, completed_task_id: i64) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1"
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1")?;
     let dependents: Vec<i64> = stmt
         .query_map([completed_task_id], |row| row.get(0))?
         .filter_map(|r| r.ok())
@@ -150,11 +147,11 @@ pub fn auto_unblock_dependents(conn: &rusqlite::Connection, completed_task_id: i
 
     for dep_id in dependents {
         // Check if this dependent is blocked and all its deps are now completed
-        let status: String = conn.query_row(
-            "SELECT status FROM tasks WHERE id = ?1",
-            [dep_id],
-            |row| row.get(0),
-        ).map_err(|_| DialError::TaskNotFound(dep_id))?;
+        let status: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = ?1", [dep_id], |row| {
+                row.get(0)
+            })
+            .map_err(|_| DialError::TaskNotFound(dep_id))?;
 
         if status == "blocked" {
             let unsatisfied: i64 = conn.query_row(
@@ -219,7 +216,9 @@ pub fn task_search(query: &str) -> Result<()> {
     )?;
 
     let rows: Vec<(i64, String, String, i32)> = stmt
-        .query_map([query], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+        .query_map([query], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     if rows.is_empty() {
@@ -260,10 +259,16 @@ pub fn task_depends(task_id: i64, depends_on_id: i64) -> Result<()> {
 
     // Verify both tasks exist
     let _t1 = conn
-        .query_row("SELECT id FROM tasks WHERE id = ?1", [task_id], |row| row.get::<_, i64>(0))
+        .query_row("SELECT id FROM tasks WHERE id = ?1", [task_id], |row| {
+            row.get::<_, i64>(0)
+        })
         .map_err(|_| DialError::TaskNotFound(task_id))?;
     let _t2 = conn
-        .query_row("SELECT id FROM tasks WHERE id = ?1", [depends_on_id], |row| row.get::<_, i64>(0))
+        .query_row(
+            "SELECT id FROM tasks WHERE id = ?1",
+            [depends_on_id],
+            |row| row.get::<_, i64>(0),
+        )
         .map_err(|_| DialError::TaskNotFound(depends_on_id))?;
 
     // Check for cycles: would adding this edge create a path from depends_on_id back to task_id?
@@ -292,9 +297,8 @@ pub fn task_undepend(task_id: i64, depends_on_id: i64) -> Result<()> {
 /// Get all tasks that task_id depends on (its prerequisites).
 pub fn task_get_dependencies(task_id: i64) -> Result<Vec<i64>> {
     let conn = get_db(None)?;
-    let mut stmt = conn.prepare(
-        "SELECT depends_on_id FROM task_dependencies WHERE task_id = ?1"
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT depends_on_id FROM task_dependencies WHERE task_id = ?1")?;
     let deps: Vec<i64> = stmt
         .query_map([task_id], |row| row.get(0))?
         .filter_map(|r| r.ok())
@@ -305,9 +309,8 @@ pub fn task_get_dependencies(task_id: i64) -> Result<Vec<i64>> {
 /// Get all tasks that depend on task_id (its dependents).
 pub fn task_get_dependents(task_id: i64) -> Result<Vec<i64>> {
     let conn = get_db(None)?;
-    let mut stmt = conn.prepare(
-        "SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1"
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1")?;
     let deps: Vec<i64> = stmt
         .query_map([task_id], |row| row.get(0))?
         .filter_map(|r| r.ok())
@@ -365,9 +368,7 @@ pub fn task_deps_satisfied(task_id: i64) -> Result<bool> {
 
 /// Strip common stop words from a description to produce a cleaner FTS query.
 fn strip_stop_words(description: &str) -> String {
-    const STOP_WORDS: &[&str] = &[
-        "the", "a", "an", "is", "for", "to", "of", "in", "and", "or",
-    ];
+    const STOP_WORDS: &[&str] = &["the", "a", "an", "is", "for", "to", "of", "in", "and", "or"];
     description
         .split_whitespace()
         .filter(|word| !STOP_WORDS.contains(&word.to_lowercase().as_str()))
@@ -399,7 +400,9 @@ pub fn find_similar_completed_tasks(
     )?;
 
     let tasks: Vec<Task> = stmt
-        .query_map(rusqlite::params![query, limit as i64], |row| Task::from_row(row))?
+        .query_map(rusqlite::params![query, limit as i64], |row| {
+            Task::from_row(row)
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -464,7 +467,10 @@ pub fn get_chronic_failures(threshold: i64) -> Result<Vec<ChronicFailureInfo>> {
 }
 
 /// Return tasks where total_failures >= threshold (using an existing connection).
-pub fn get_chronic_failures_with_conn(conn: &Connection, threshold: i64) -> Result<Vec<ChronicFailureInfo>> {
+pub fn get_chronic_failures_with_conn(
+    conn: &Connection,
+    threshold: i64,
+) -> Result<Vec<ChronicFailureInfo>> {
     let mut stmt = conn.prepare(
         "SELECT id, description, COALESCE(total_failures, 0), COALESCE(total_attempts, 0), last_failure_at
          FROM tasks
@@ -489,7 +495,11 @@ pub fn get_chronic_failures_with_conn(conn: &Connection, threshold: i64) -> Resu
 
 /// Check if adding an edge (task_id -> depends_on_id) would create a cycle.
 /// A cycle exists if there's already a path from depends_on_id to task_id.
-fn would_create_cycle(conn: &rusqlite::Connection, task_id: i64, depends_on_id: i64) -> Result<bool> {
+fn would_create_cycle(
+    conn: &rusqlite::Connection,
+    task_id: i64,
+    depends_on_id: i64,
+) -> Result<bool> {
     // BFS from depends_on_id following dependency edges to see if we reach task_id
     let mut visited = std::collections::HashSet::new();
     let mut queue = std::collections::VecDeque::new();
@@ -503,9 +513,8 @@ fn would_create_cycle(conn: &rusqlite::Connection, task_id: i64, depends_on_id: 
             continue;
         }
         // Get what `current` depends on
-        let mut stmt = conn.prepare(
-            "SELECT depends_on_id FROM task_dependencies WHERE task_id = ?1"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT depends_on_id FROM task_dependencies WHERE task_id = ?1")?;
         let deps: Vec<i64> = stmt
             .query_map([current], |row| row.get(0))?
             .filter_map(|r| r.ok())
@@ -523,12 +532,13 @@ fn would_create_cycle(conn: &rusqlite::Connection, task_id: i64, depends_on_id: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema;
     use crate::db::migrations;
+    use crate::db::schema;
 
     fn setup_test_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .unwrap();
         conn.execute_batch(schema::SCHEMA).unwrap();
         migrations::run_migrations(&conn).unwrap();
         conn
@@ -540,33 +550,40 @@ mod tests {
         conn.execute(
             "INSERT INTO tasks (description, priority) VALUES ('test task', 5)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let task_id = conn.last_insert_rowid();
 
         // Initial value should be 0
-        let val: i64 = conn.query_row(
-            "SELECT COALESCE(total_attempts, 0) FROM tasks WHERE id = ?1",
-            [task_id],
-            |row| row.get(0),
-        ).unwrap();
+        let val: i64 = conn
+            .query_row(
+                "SELECT COALESCE(total_attempts, 0) FROM tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(val, 0);
 
         // Increment once
         increment_total_attempts(&conn, task_id).unwrap();
-        let val: i64 = conn.query_row(
-            "SELECT total_attempts FROM tasks WHERE id = ?1",
-            [task_id],
-            |row| row.get(0),
-        ).unwrap();
+        let val: i64 = conn
+            .query_row(
+                "SELECT total_attempts FROM tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(val, 1);
 
         // Increment again
         increment_total_attempts(&conn, task_id).unwrap();
-        let val: i64 = conn.query_row(
-            "SELECT total_attempts FROM tasks WHERE id = ?1",
-            [task_id],
-            |row| row.get(0),
-        ).unwrap();
+        let val: i64 = conn
+            .query_row(
+                "SELECT total_attempts FROM tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(val, 2);
     }
 
@@ -576,42 +593,51 @@ mod tests {
         conn.execute(
             "INSERT INTO tasks (description, priority) VALUES ('failing task', 5)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let task_id = conn.last_insert_rowid();
 
         // Initial value should be 0
-        let val: i64 = conn.query_row(
-            "SELECT COALESCE(total_failures, 0) FROM tasks WHERE id = ?1",
-            [task_id],
-            |row| row.get(0),
-        ).unwrap();
+        let val: i64 = conn
+            .query_row(
+                "SELECT COALESCE(total_failures, 0) FROM tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(val, 0);
 
         // Increment once
         increment_total_failures(&conn, task_id).unwrap();
-        let val: i64 = conn.query_row(
-            "SELECT total_failures FROM tasks WHERE id = ?1",
-            [task_id],
-            |row| row.get(0),
-        ).unwrap();
+        let val: i64 = conn
+            .query_row(
+                "SELECT total_failures FROM tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(val, 1);
 
         // last_failure_at should be set
-        let last: Option<String> = conn.query_row(
-            "SELECT last_failure_at FROM tasks WHERE id = ?1",
-            [task_id],
-            |row| row.get(0),
-        ).unwrap();
+        let last: Option<String> = conn
+            .query_row(
+                "SELECT last_failure_at FROM tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(last.is_some());
 
         // Increment multiple times
         increment_total_failures(&conn, task_id).unwrap();
         increment_total_failures(&conn, task_id).unwrap();
-        let val: i64 = conn.query_row(
-            "SELECT total_failures FROM tasks WHERE id = ?1",
-            [task_id],
-            |row| row.get(0),
-        ).unwrap();
+        let val: i64 = conn
+            .query_row(
+                "SELECT total_failures FROM tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(val, 3);
     }
 
@@ -621,7 +647,8 @@ mod tests {
         conn.execute(
             "INSERT INTO tasks (description, priority) VALUES ('healthy task', 5)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let results = get_chronic_failures_with_conn(&conn, 10).unwrap();
         assert!(results.is_empty());
@@ -635,13 +662,15 @@ mod tests {
         conn.execute(
             "INSERT INTO tasks (description, priority) VALUES ('chronic task', 5)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let chronic_id = conn.last_insert_rowid();
 
         conn.execute(
             "INSERT INTO tasks (description, priority) VALUES ('ok task', 5)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let ok_id = conn.last_insert_rowid();
 
         // Give chronic task 5 failures, ok task 2
@@ -684,10 +713,7 @@ mod tests {
 
     #[test]
     fn test_strip_stop_words_case_insensitive() {
-        assert_eq!(
-            strip_stop_words("The AND Or IS"),
-            ""
-        );
+        assert_eq!(strip_stop_words("The AND Or IS"), "");
     }
 
     #[test]
@@ -748,7 +774,10 @@ mod tests {
     fn test_find_similar_completed_tasks_only_stop_words() {
         let conn = setup_test_db();
         let results = find_similar_completed_tasks(&conn, "the a an is", 3).unwrap();
-        assert!(results.is_empty(), "All-stop-words query should return empty");
+        assert!(
+            results.is_empty(),
+            "All-stop-words query should return empty"
+        );
     }
 
     #[test]
@@ -800,13 +829,15 @@ mod tests {
         conn.execute(
             "INSERT INTO tasks (description, priority) VALUES ('task A', 5)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let a_id = conn.last_insert_rowid();
 
         conn.execute(
             "INSERT INTO tasks (description, priority) VALUES ('task B', 5)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let b_id = conn.last_insert_rowid();
 
         // B has more failures than A

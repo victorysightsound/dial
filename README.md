@@ -118,6 +118,8 @@ The wizard can run through `codex`, `claude`, `copilot`, `gemini`, or an OpenAI-
 dial new --template mvp --wizard-backend copilot
 ```
 
+The wizard is guided by default. You do not need to craft a special AI prompt for each phase; DIAL sends structured prompts internally and explains what it is doing as it moves through the flow.
+
 Current release verification covers fresh macOS wizard runs with Codex and Copilot plus native Windows wizard runs with Copilot.
 
 | Phase | Name | What Happens |
@@ -132,11 +134,15 @@ Current release verification covers fresh macOS wizard runs with Codex and Copil
 | 8 | **Iteration Mode** | AI recommends how to run: autonomous, review every N tasks, or review each |
 | 9 | **Launch** | Prints summary of everything configured, ready for `dial auto-run` |
 
+Some later phases can be quiet for a bit, especially with CLI-backed providers on Windows. That is normal. The wizard will keep reporting where it is in the flow, and you can safely stop and resume later.
+
 After the wizard completes, start building:
 
 ```bash
 dial auto-run --cli claude
 ```
+
+`dial auto-run` is always a separate explicit step. The wizard never starts autonomous implementation on its own.
 
 Supported auto-run CLIs are `claude`, `codex`, `copilot`, and `gemini`.
 

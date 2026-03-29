@@ -16,7 +16,9 @@ pub fn get_dial_dir() -> PathBuf {
 pub fn get_db_path(phase: Option<&str>) -> PathBuf {
     let dial_dir = get_dial_dir();
     let phase = phase.unwrap_or_else(|| {
-        get_current_phase().unwrap_or_else(|_| DEFAULT_PHASE.to_string()).leak()
+        get_current_phase()
+            .unwrap_or_else(|_| DEFAULT_PHASE.to_string())
+            .leak()
     });
     dial_dir.join(format!("{}.db", phase))
 }
@@ -77,7 +79,11 @@ pub fn get_db(phase: Option<&str>) -> Result<Connection> {
     Ok(conn)
 }
 
-pub fn init_db(phase: &str, import_solutions_from: Option<&str>, setup_agents: bool) -> Result<bool> {
+pub fn init_db(
+    phase: &str,
+    import_solutions_from: Option<&str>,
+    setup_agents: bool,
+) -> Result<bool> {
     let dial_dir = get_dial_dir();
     fs::create_dir_all(&dial_dir)?;
 
@@ -139,7 +145,11 @@ pub fn init_db(phase: &str, import_solutions_from: Option<&str>, setup_agents: b
     Ok(true)
 }
 
-fn import_trusted_solutions(conn: &Connection, dial_dir: &PathBuf, source_phase: &str) -> Result<()> {
+fn import_trusted_solutions(
+    conn: &Connection,
+    dial_dir: &PathBuf,
+    source_phase: &str,
+) -> Result<()> {
     let source_db_path = dial_dir.join(format!("{}.db", source_phase));
     if !source_db_path.exists() {
         return Err(DialError::PhaseNotFound(source_phase.to_string()));
@@ -158,12 +168,12 @@ fn import_trusted_solutions(conn: &Connection, dial_dir: &PathBuf, source_phase:
     let patterns: Vec<_> = stmt
         .query_map([crate::TRUST_THRESHOLD], |row| {
             Ok((
-                row.get::<_, i64>(0)?,  // id
-                row.get::<_, String>(1)?, // pattern_key
-                row.get::<_, String>(2)?, // description
+                row.get::<_, i64>(0)?,            // id
+                row.get::<_, String>(1)?,         // pattern_key
+                row.get::<_, String>(2)?,         // description
                 row.get::<_, Option<String>>(3)?, // category
-                row.get::<_, i64>(4)?, // occurrence_count
-                row.get::<_, String>(5)?, // first_seen_at
+                row.get::<_, i64>(4)?,            // occurrence_count
+                row.get::<_, String>(5)?,         // first_seen_at
                 row.get::<_, Option<String>>(6)?, // last_seen_at
             ))
         })?
@@ -171,7 +181,16 @@ fn import_trusted_solutions(conn: &Connection, dial_dir: &PathBuf, source_phase:
 
     let mut pattern_id_map = std::collections::HashMap::new();
 
-    for (old_id, pattern_key, description, category, occurrence_count, first_seen_at, last_seen_at) in &patterns {
+    for (
+        old_id,
+        pattern_key,
+        description,
+        category,
+        occurrence_count,
+        first_seen_at,
+        last_seen_at,
+    ) in &patterns
+    {
         conn.execute(
             "INSERT INTO failure_patterns (pattern_key, description, category, occurrence_count, first_seen_at, last_seen_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -182,27 +201,35 @@ fn import_trusted_solutions(conn: &Connection, dial_dir: &PathBuf, source_phase:
     }
 
     // Copy solutions
-    let mut stmt = source_conn.prepare(
-        "SELECT * FROM solutions WHERE confidence >= ?1",
-    )?;
+    let mut stmt = source_conn.prepare("SELECT * FROM solutions WHERE confidence >= ?1")?;
 
     let solutions: Vec<_> = stmt
         .query_map([crate::TRUST_THRESHOLD], |row| {
             Ok((
-                row.get::<_, i64>(1)?,  // pattern_id
-                row.get::<_, String>(2)?, // description
+                row.get::<_, i64>(1)?,            // pattern_id
+                row.get::<_, String>(2)?,         // description
                 row.get::<_, Option<String>>(3)?, // code_example
-                row.get::<_, f64>(4)?, // confidence
-                row.get::<_, i64>(5)?, // success_count
-                row.get::<_, i64>(6)?, // failure_count
-                row.get::<_, String>(7)?, // created_at
+                row.get::<_, f64>(4)?,            // confidence
+                row.get::<_, i64>(5)?,            // success_count
+                row.get::<_, i64>(6)?,            // failure_count
+                row.get::<_, String>(7)?,         // created_at
                 row.get::<_, Option<String>>(8)?, // last_used_at
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let mut count = 0;
-    for (pattern_id, description, code_example, confidence, success_count, failure_count, created_at, last_used_at) in solutions {
+    for (
+        pattern_id,
+        description,
+        code_example,
+        confidence,
+        success_count,
+        failure_count,
+        created_at,
+        last_used_at,
+    ) in solutions
+    {
         if let Some(&new_pattern_id) = pattern_id_map.get(&pattern_id) {
             conn.execute(
                 "INSERT INTO solutions (pattern_id, description, code_example, confidence, success_count, failure_count, created_at, last_used_at)
@@ -307,7 +334,10 @@ pub fn setup_agents_md(skip_if_exists: bool) -> Result<bool> {
                 project_name, DIAL_AGENTS_SECTION
             );
             fs::write(&path, content)?;
-            crate::output::print_success(&format!("Created {} with DIAL instructions.", path.display()));
+            crate::output::print_success(&format!(
+                "Created {} with DIAL instructions.",
+                path.display()
+            ));
             return Ok(true);
         }
     };
@@ -324,8 +354,7 @@ pub fn setup_agents_md(skip_if_exists: bool) -> Result<bool> {
             return Ok(true);
         }
         // Remove existing DIAL section
-        let re = regex::Regex::new(r"\n---\n\n## DIAL.*?(?=\n---\n|\n## [^D]|\z)")
-            .unwrap();
+        let re = regex::Regex::new(r"\n---\n\n## DIAL.*?(?=\n---\n|\n## [^D]|\z)").unwrap();
         let existing_content = re.replace(&existing_content, "").to_string();
         let new_content = format!("{}{}", existing_content.trim_end(), DIAL_AGENTS_SECTION);
         fs::write(&agents_path, new_content)?;
@@ -335,7 +364,10 @@ pub fn setup_agents_md(skip_if_exists: bool) -> Result<bool> {
         fs::write(&agents_path, new_content)?;
     }
 
-    crate::output::print_success(&format!("Added DIAL instructions to {}", agents_path.display()));
+    crate::output::print_success(&format!(
+        "Added DIAL instructions to {}",
+        agents_path.display()
+    ));
     Ok(true)
 }
 
@@ -347,10 +379,8 @@ mod tests {
     /// Create an in-memory SQLite connection with a simple test table.
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL);")
+            .unwrap();
         conn
     }
 
@@ -400,9 +430,7 @@ mod tests {
     fn with_transaction_propagates_original_error() {
         let conn = test_conn();
 
-        let result: Result<()> = with_transaction(&conn, |_c| {
-            Err(DialError::TaskNotFound(999))
-        });
+        let result: Result<()> = with_transaction(&conn, |_c| Err(DialError::TaskNotFound(999)));
 
         match result {
             Err(DialError::TaskNotFound(id)) => assert_eq!(id, 999),

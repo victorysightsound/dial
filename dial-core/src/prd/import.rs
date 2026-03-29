@@ -1,7 +1,10 @@
 use crate::db::with_transaction;
 use crate::errors::{DialError, Result};
-use crate::prd::{get_or_init_prd_db, prd_delete_all_sections, prd_insert_section, prd_meta_set, prd_record_source};
 use crate::prd::parser::parse_markdown_file;
+use crate::prd::{
+    get_or_init_prd_db, prd_delete_all_sections, prd_insert_section, prd_meta_set,
+    prd_record_source,
+};
 use rusqlite::Connection;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -28,16 +31,14 @@ pub fn prd_import(specs_dir: &str) -> Result<ImportResult> {
     let md_files: Vec<_> = WalkDir::new(specs_path)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "md")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
         .collect();
 
     if md_files.is_empty() {
-        return Ok(ImportResult { files: 0, sections: 0 });
+        return Ok(ImportResult {
+            files: 0,
+            sections: 0,
+        });
     }
 
     // Parse all files before starting the transaction so parse failures
@@ -48,12 +49,10 @@ pub fn prd_import(specs_dir: &str) -> Result<ImportResult> {
         let sections = parse_markdown_file(md_path)?;
         let metadata = std::fs::metadata(md_path).ok();
         let file_size = metadata.as_ref().map(|m| m.len() as i64);
-        let modified = metadata
-            .and_then(|m| m.modified().ok())
-            .map(|t| {
-                let datetime: chrono::DateTime<chrono::Utc> = t.into();
-                datetime.format("%Y-%m-%dT%H:%M:%S").to_string()
-            });
+        let modified = metadata.and_then(|m| m.modified().ok()).map(|t| {
+            let datetime: chrono::DateTime<chrono::Utc> = t.into();
+            datetime.format("%Y-%m-%dT%H:%M:%S").to_string()
+        });
         parsed_files.push((md_path.to_path_buf(), sections, file_size, modified));
     }
 
@@ -67,7 +66,8 @@ pub fn prd_import(specs_dir: &str) -> Result<ImportResult> {
         let mut top_level_offset = 0u32;
 
         for (md_path, sections, file_size, modified) in &parsed_files {
-            let count = import_sections_to_db(conn, sections, global_sort_offset, top_level_offset)?;
+            let count =
+                import_sections_to_db(conn, sections, global_sort_offset, top_level_offset)?;
             total_sections += count;
             global_sort_offset += count as i32;
             let h1_count = sections.iter().filter(|s| s.level == 1).count() as u32;
@@ -81,7 +81,11 @@ pub fn prd_import(specs_dir: &str) -> Result<ImportResult> {
             )?;
         }
 
-        prd_meta_set(conn, "last_import", &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string())?;
+        prd_meta_set(
+            conn,
+            "last_import",
+            &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+        )?;
 
         Ok(total_sections)
     })?;
@@ -95,7 +99,9 @@ pub fn prd_import(specs_dir: &str) -> Result<ImportResult> {
 /// Import a single markdown file into prd.db.
 pub fn prd_import_file(file_path: &Path) -> Result<usize> {
     if !file_path.exists() {
-        return Err(DialError::SpecsDirNotFound(file_path.to_string_lossy().to_string()));
+        return Err(DialError::SpecsDirNotFound(
+            file_path.to_string_lossy().to_string(),
+        ));
     }
 
     let conn = get_or_init_prd_db()?;
@@ -105,12 +111,7 @@ pub fn prd_import_file(file_path: &Path) -> Result<usize> {
     let metadata = std::fs::metadata(file_path).ok();
     let file_size = metadata.as_ref().map(|m| m.len() as i64);
 
-    prd_record_source(
-        &conn,
-        &file_path.to_string_lossy(),
-        file_size,
-        None,
-    )?;
+    prd_record_source(&conn, &file_path.to_string_lossy(), file_size, None)?;
 
     Ok(count)
 }
@@ -130,7 +131,13 @@ pub fn migrate_spec_sections_to_prd() -> Result<usize> {
 
     let rows: Vec<(i64, String, String, i32, String)> = stmt
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -212,7 +219,10 @@ fn import_sections_to_db(
     let mut count = 0;
     for section in sections {
         let section_id = offset_section_id(&section.section_id, top_level_offset);
-        let parent_id = section.parent_id.as_ref().map(|p| offset_section_id(p, top_level_offset));
+        let parent_id = section
+            .parent_id
+            .as_ref()
+            .map(|p| offset_section_id(p, top_level_offset));
         prd_insert_section(
             conn,
             &section_id,

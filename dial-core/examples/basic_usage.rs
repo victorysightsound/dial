@@ -40,7 +40,9 @@ async fn main() -> dial_core::Result<()> {
     }
 
     // Record a learning
-    engine.learn("Always validate before committing", Some("pattern")).await?;
+    engine
+        .learn("Always validate before committing", Some("pattern"))
+        .await?;
 
     println!("Done! Check .dial/ for the database.");
     Ok(())

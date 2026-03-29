@@ -57,6 +57,12 @@ dial new [--template NAME] [--from PATH] [--resume] [--phase NAME] [--wizard-bac
 | `--wizard-backend` | auto-resolved | Wizard backend: `codex`, `claude`, `copilot`, `gemini`, or `openai-compatible` |
 | `--wizard-model` | (none) | Optional model override for the selected wizard backend |
 
+The wizard is guided by default:
+- DIAL explains what each phase is doing in plain English
+- DIAL sends structured prompts to the backend for each phase, so you do not need to manually prompt the AI well during the wizard
+- `dial new` does not edit your source code or start `dial auto-run`
+- quiet periods can be normal on larger phases; the wizard remains resumable throughout
+
 **Phases:**
 
 | # | Name | What Happens |
@@ -126,6 +132,8 @@ dial spec prd 1.2
 dial spec prd-search "authentication"
 dial spec term add "API" "Application Programming Interface" -c technical
 ```
+
+`dial spec wizard` uses the same guided presentation style as `dial new`, but it stops after PRD generation. It does not configure iteration settings and does not begin autonomous execution.
 
 ## Task Management
 

@@ -115,9 +115,7 @@ pub fn parse_markdown(content: &str) -> Vec<ParsedSection> {
             // Determine parent_id (the section_id of the nearest ancestor level)
             let parent_id = if level > 1 {
                 // Search backwards for nearest parent level
-                (0..level - 1)
-                    .rev()
-                    .find_map(|i| level_ids[i].clone())
+                (0..level - 1).rev().find_map(|i| level_ids[i].clone())
             } else {
                 None
             };

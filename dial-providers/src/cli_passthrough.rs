@@ -147,7 +147,8 @@ impl CliPassthrough {
 
         for extension in path_exts {
             if !ordered.iter().any(|value| {
-                value.to_string_lossy()
+                value
+                    .to_string_lossy()
                     .eq_ignore_ascii_case(&extension.to_string_lossy())
             }) {
                 ordered.push(extension.clone());
@@ -189,7 +190,10 @@ impl CliPassthrough {
         None
     }
 
-    fn resolve_windows_candidate(path: &Path, path_exts: &[OsString]) -> Option<ResolvedCliCommand> {
+    fn resolve_windows_candidate(
+        path: &Path,
+        path_exts: &[OsString],
+    ) -> Option<ResolvedCliCommand> {
         if path.extension().is_some() {
             return path
                 .is_file()
@@ -342,7 +346,11 @@ impl CliPassthrough {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
-        let filename = format!("dial-codex-schema-{}-{}.json", std::process::id(), timestamp);
+        let filename = format!(
+            "dial-codex-schema-{}-{}.json",
+            std::process::id(),
+            timestamp
+        );
         let path = std::env::temp_dir().join(filename);
         fs::write(&path, schema).ok()?;
         Some(path.to_string_lossy().to_string())
@@ -375,29 +383,26 @@ impl Provider for CliPassthrough {
 
         let timeout = request.timeout_secs.unwrap_or(600);
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout),
-            {
-                let mut process = command.tokio_command();
-                process.args(&args).current_dir(&request.work_dir);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(timeout), {
+            let mut process = command.tokio_command();
+            process.args(&args).current_dir(&request.work_dir);
+            if uses_stdin_prompt {
+                process.stdin(Stdio::piped());
+            }
+            async move {
                 if uses_stdin_prompt {
-                    process.stdin(Stdio::piped());
-                }
-                async move {
-                    if uses_stdin_prompt {
-                        let mut child = process.spawn()?;
-                        if let Some(mut stdin) = child.stdin.take() {
-                            if let Some(prompt) = stdin_prompt.as_deref() {
-                                stdin.write_all(prompt.as_bytes()).await?;
-                            }
+                    let mut child = process.spawn()?;
+                    if let Some(mut stdin) = child.stdin.take() {
+                        if let Some(prompt) = stdin_prompt.as_deref() {
+                            stdin.write_all(prompt.as_bytes()).await?;
                         }
-                        child.wait_with_output().await
-                    } else {
-                        process.output().await
                     }
+                    child.wait_with_output().await
+                } else {
+                    process.output().await
                 }
-            },
-        )
+            }
+        })
         .await
         .map_err(|_| dial_core::errors::DialError::CommandTimeout(timeout))?
         .map_err(|e| dial_core::errors::DialError::CommandFailed(e.to_string()))?;

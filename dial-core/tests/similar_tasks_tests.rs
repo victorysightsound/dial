@@ -30,7 +30,8 @@ async fn test_similar_completed_tasks_integration() {
         "INSERT INTO tasks (id, description, priority, status, completed_at)
          VALUES (1, 'implement user authentication', 5, 'completed', '2025-01-01T00:00:00Z')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     conn.execute(
         "INSERT INTO iterations (task_id, status, notes, commit_hash, ended_at)
@@ -43,10 +44,12 @@ async fn test_similar_completed_tasks_integration() {
         "INSERT INTO tasks (id, description, priority, status)
          VALUES (2, 'implement user authentication roles', 5, 'pending')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Search for similar tasks — FTS5 implicit AND requires all terms present
-    let results = dial_core::task::find_similar_completed_tasks(&conn, "user authentication", 3).unwrap();
+    let results =
+        dial_core::task::find_similar_completed_tasks(&conn, "user authentication", 3).unwrap();
 
     assert_eq!(results.len(), 1, "Should find exactly one completed task");
     assert_eq!(results[0].0.id, 1);
@@ -68,7 +71,8 @@ async fn test_similar_tasks_context_assembly() {
         "INSERT INTO tasks (id, description, priority, status, completed_at)
          VALUES (1, 'build REST API endpoint', 5, 'completed', '2025-01-01T00:00:00Z')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     conn.execute(
         "INSERT INTO iterations (task_id, status, notes, commit_hash, ended_at)
@@ -95,7 +99,8 @@ async fn test_similar_tasks_context_assembly() {
     };
 
     // Gather context — should include similar completed task
-    let context = dial_core::iteration::context::gather_context_without_signs(&conn, &task).unwrap();
+    let context =
+        dial_core::iteration::context::gather_context_without_signs(&conn, &task).unwrap();
 
     assert!(
         context.contains("Similar Completed Tasks"),
@@ -126,7 +131,8 @@ async fn test_similar_tasks_budgeted_context() {
         "INSERT INTO tasks (id, description, priority, status, completed_at)
          VALUES (1, 'setup CI pipeline', 5, 'completed', '2025-01-01T00:00:00Z')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     conn.execute(
         "INSERT INTO iterations (task_id, status, notes, commit_hash, ended_at)
@@ -152,12 +158,23 @@ async fn test_similar_tasks_budgeted_context() {
     };
 
     let items = dial_core::iteration::context::gather_context_items(&conn, &task).unwrap();
-    let has_similar = items.iter().any(|item| item.label == "Similar Completed Tasks");
-    assert!(has_similar, "Context items should include Similar Completed Tasks");
+    let has_similar = items
+        .iter()
+        .any(|item| item.label == "Similar Completed Tasks");
+    assert!(
+        has_similar,
+        "Context items should include Similar Completed Tasks"
+    );
 
     // Verify priority is 25
-    let similar_item = items.iter().find(|item| item.label == "Similar Completed Tasks").unwrap();
-    assert_eq!(similar_item.priority, 25, "Similar tasks should have priority 25");
+    let similar_item = items
+        .iter()
+        .find(|item| item.label == "Similar Completed Tasks")
+        .unwrap();
+    assert_eq!(
+        similar_item.priority, 25,
+        "Similar tasks should have priority 25"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }

@@ -7,10 +7,18 @@ async fn main() -> dial_core::Result<()> {
     let engine = Engine::init("validator-demo", None, false).await?;
 
     // Add validation pipeline steps (ordered by sort_order)
-    engine.pipeline_add("format", "cargo fmt --check", 0, false, Some(30)).await?;
-    engine.pipeline_add("clippy", "cargo clippy -- -D warnings", 1, false, Some(120)).await?;
-    engine.pipeline_add("build", "cargo build --workspace", 2, true, Some(300)).await?;
-    engine.pipeline_add("test", "cargo test --workspace", 3, true, Some(600)).await?;
+    engine
+        .pipeline_add("format", "cargo fmt --check", 0, false, Some(30))
+        .await?;
+    engine
+        .pipeline_add("clippy", "cargo clippy -- -D warnings", 1, false, Some(120))
+        .await?;
+    engine
+        .pipeline_add("build", "cargo build --workspace", 2, true, Some(300))
+        .await?;
+    engine
+        .pipeline_add("test", "cargo test --workspace", 3, true, Some(600))
+        .await?;
 
     // List the pipeline
     let steps = engine.pipeline_list().await?;
@@ -20,7 +28,11 @@ async fn main() -> dial_core::Result<()> {
             "  [{}] {} ({}): {}{}",
             step.sort_order,
             step.name,
-            if step.required { "required" } else { "optional" },
+            if step.required {
+                "required"
+            } else {
+                "optional"
+            },
             step.command,
             step.timeout_secs
                 .map(|t| format!(" ({}s timeout)", t))

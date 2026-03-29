@@ -5,8 +5,8 @@ use std::sync::Mutex;
 use tempfile::TempDir;
 
 use dial_core::git::{
-    checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled,
-    git_has_changes, git_is_repo,
+    checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled, git_has_changes,
+    git_is_repo,
 };
 use dial_core::Engine;
 
@@ -57,7 +57,10 @@ fn test_checkpoint_create_stashes_dirty_tree() {
     assert!(result.unwrap(), "Should return true when stash is created");
 
     // Working tree should be clean after stash
-    assert!(!git_has_changes(), "Working tree should be clean after checkpoint");
+    assert!(
+        !git_has_changes(),
+        "Working tree should be clean after checkpoint"
+    );
 
     // Verify the stash exists with the expected message
     let stash_list = Command::new("git")
@@ -198,7 +201,10 @@ fn test_checkpoint_drop_removes_stash() {
         .output()
         .unwrap();
     let list_str = String::from_utf8_lossy(&stash_list.stdout);
-    assert!(list_str.trim().is_empty(), "Stash list should be empty after drop");
+    assert!(
+        list_str.trim().is_empty(),
+        "Stash list should be empty after drop"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -225,7 +231,10 @@ fn test_checkpoints_enabled_defaults_true() {
     let tmp = TempDir::new().unwrap();
     env::set_current_dir(tmp.path()).unwrap();
 
-    assert!(checkpoints_enabled(), "Checkpoints should be enabled by default");
+    assert!(
+        checkpoints_enabled(),
+        "Checkpoints should be enabled by default"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -246,7 +255,11 @@ fn test_checkpoint_full_cycle_create_restore() {
         .unwrap();
 
     // Agent makes changes
-    fs::write(tmp.path().join("main.rs"), "fn main() { println!(\"hello\"); }\n").unwrap();
+    fs::write(
+        tmp.path().join("main.rs"),
+        "fn main() { println!(\"hello\"); }\n",
+    )
+    .unwrap();
     fs::write(tmp.path().join("lib.rs"), "pub fn helper() {}\n").unwrap();
 
     // Create checkpoint of agent's work
@@ -289,7 +302,9 @@ fn test_checkpoint_full_cycle_create_drop() {
         .args(["stash", "list"])
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&stash_list.stdout).trim().is_empty());
+    assert!(String::from_utf8_lossy(&stash_list.stdout)
+        .trim()
+        .is_empty());
 
     env::set_current_dir(original_dir).unwrap();
 }
@@ -363,7 +378,10 @@ async fn test_integration_iterate_fail_restore_retry_cycle() {
     assert_eq!(cp_config, Some("true".to_string()));
 
     // Add a task
-    let task_id = engine.task_add("Implement feature X", 5, None).await.unwrap();
+    let task_id = engine
+        .task_add("Implement feature X", 5, None)
+        .await
+        .unwrap();
     assert!(task_id > 0);
 
     // Commit the DIAL init files so the tree is clean
@@ -379,7 +397,11 @@ async fn test_integration_iterate_fail_restore_retry_cycle() {
     assert!(!created, "Clean tree should not create a stash");
 
     // --- Agent attempt 1: writes some code ---
-    fs::write(tmp.path().join("feature_x.rs"), "fn feature_x() { panic!(\"broken\"); }\n").unwrap();
+    fs::write(
+        tmp.path().join("feature_x.rs"),
+        "fn feature_x() { panic!(\"broken\"); }\n",
+    )
+    .unwrap();
     fs::write(tmp.path().join("tests.rs"), "// broken tests\n").unwrap();
 
     // Now there are changes — checkpoint them before "validation"
@@ -388,7 +410,11 @@ async fn test_integration_iterate_fail_restore_retry_cycle() {
     assert!(!git_has_changes(), "Tree should be clean after checkpoint");
 
     // Simulate the agent making more (bad) changes after checkpoint
-    fs::write(tmp.path().join("feature_x.rs"), "fn feature_x() { /* even worse */ }\n").unwrap();
+    fs::write(
+        tmp.path().join("feature_x.rs"),
+        "fn feature_x() { /* even worse */ }\n",
+    )
+    .unwrap();
     fs::write(tmp.path().join("garbage.txt"), "junk file\n").unwrap();
 
     // --- Validation fails → restore checkpoint ---
@@ -397,15 +423,28 @@ async fn test_integration_iterate_fail_restore_retry_cycle() {
 
     // Verify: the pre-checkpoint state (attempt 1's work) is restored
     let content = fs::read_to_string(tmp.path().join("feature_x.rs")).unwrap();
-    assert_eq!(content, "fn feature_x() { panic!(\"broken\"); }\n",
-        "Should have attempt 1's original code, not the garbage");
-    assert!(tmp.path().join("tests.rs").exists(), "tests.rs from attempt 1 should exist");
+    assert_eq!(
+        content, "fn feature_x() { panic!(\"broken\"); }\n",
+        "Should have attempt 1's original code, not the garbage"
+    );
+    assert!(
+        tmp.path().join("tests.rs").exists(),
+        "tests.rs from attempt 1 should exist"
+    );
     // garbage.txt was created after the checkpoint, so it should be gone
     // (it was cleaned before the pop)
 
     // --- Agent attempt 2: writes better code ---
-    fs::write(tmp.path().join("feature_x.rs"), "fn feature_x() -> i32 { 42 }\n").unwrap();
-    fs::write(tmp.path().join("tests.rs"), "#[test] fn test_x() { assert_eq!(feature_x(), 42); }\n").unwrap();
+    fs::write(
+        tmp.path().join("feature_x.rs"),
+        "fn feature_x() -> i32 { 42 }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("tests.rs"),
+        "#[test] fn test_x() { assert_eq!(feature_x(), 42); }\n",
+    )
+    .unwrap();
 
     // Checkpoint before validation attempt 2
     let created = checkpoint_create(&format!("{}-attempt2", task_id)).unwrap();

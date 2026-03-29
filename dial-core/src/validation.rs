@@ -1,5 +1,5 @@
-use crate::errors::{DialError, Result};
 use crate::engine::PipelineStepConfig;
+use crate::errors::{DialError, Result};
 use async_trait::async_trait;
 use std::time::Duration;
 
@@ -140,17 +140,15 @@ impl ValidationStep for CommandStep {
         let result = if let Some(timeout) = self.timeout_secs {
             match tokio::time::timeout(Duration::from_secs(timeout), child.wait_with_output()).await
             {
-                Ok(output_result) => output_result
-                    .map_err(|e| DialError::CommandFailed(e.to_string()))?,
+                Ok(output_result) => {
+                    output_result.map_err(|e| DialError::CommandFailed(e.to_string()))?
+                }
                 Err(_) => {
                     let duration = start.elapsed().as_secs_f64();
                     return Ok(StepResult {
                         step_name: self.name.clone(),
                         passed: false,
-                        output: format!(
-                            "Command timed out after {} seconds",
-                            timeout
-                        ),
+                        output: format!("Command timed out after {} seconds", timeout),
                         duration_secs: duration,
                     });
                 }
@@ -241,7 +239,10 @@ mod tests {
     async fn test_pipeline_fail_fast_on_required() {
         let mut pipeline = ValidationPipeline::new();
         pipeline.add_step(Box::new(CommandStep::new("fail", "exit 1")));
-        pipeline.add_step(Box::new(CommandStep::new("never-runs", "echo should-not-run")));
+        pipeline.add_step(Box::new(CommandStep::new(
+            "never-runs",
+            "echo should-not-run",
+        )));
 
         let results = pipeline.run().await.unwrap();
         assert_eq!(results.len(), 1);
@@ -251,7 +252,9 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_continues_on_optional_failure() {
         let mut pipeline = ValidationPipeline::new();
-        pipeline.add_step(Box::new(CommandStep::new("optional-fail", "exit 1").optional()));
+        pipeline.add_step(Box::new(
+            CommandStep::new("optional-fail", "exit 1").optional(),
+        ));
         pipeline.add_step(Box::new(CommandStep::new("should-run", "echo ran")));
 
         let results = pipeline.run().await.unwrap();
@@ -263,8 +266,18 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_all_passed() {
         let results = vec![
-            StepResult { step_name: "a".to_string(), passed: true, output: String::new(), duration_secs: 0.0 },
-            StepResult { step_name: "b".to_string(), passed: true, output: String::new(), duration_secs: 0.0 },
+            StepResult {
+                step_name: "a".to_string(),
+                passed: true,
+                output: String::new(),
+                duration_secs: 0.0,
+            },
+            StepResult {
+                step_name: "b".to_string(),
+                passed: true,
+                output: String::new(),
+                duration_secs: 0.0,
+            },
         ];
         assert!(ValidationPipeline::all_passed(&results));
     }
@@ -272,8 +285,18 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_not_all_passed() {
         let results = vec![
-            StepResult { step_name: "a".to_string(), passed: true, output: String::new(), duration_secs: 0.0 },
-            StepResult { step_name: "b".to_string(), passed: false, output: "err".to_string(), duration_secs: 0.0 },
+            StepResult {
+                step_name: "a".to_string(),
+                passed: true,
+                output: String::new(),
+                duration_secs: 0.0,
+            },
+            StepResult {
+                step_name: "b".to_string(),
+                passed: false,
+                output: "err".to_string(),
+                duration_secs: 0.0,
+            },
         ];
         assert!(!ValidationPipeline::all_passed(&results));
     }
@@ -281,8 +304,18 @@ mod tests {
     #[tokio::test]
     async fn test_error_output() {
         let results = vec![
-            StepResult { step_name: "build".to_string(), passed: true, output: "ok".to_string(), duration_secs: 0.0 },
-            StepResult { step_name: "test".to_string(), passed: false, output: "test failure".to_string(), duration_secs: 0.0 },
+            StepResult {
+                step_name: "build".to_string(),
+                passed: true,
+                output: "ok".to_string(),
+                duration_secs: 0.0,
+            },
+            StepResult {
+                step_name: "test".to_string(),
+                passed: false,
+                output: "test failure".to_string(),
+                duration_secs: 0.0,
+            },
         ];
         let output = ValidationPipeline::error_output(&results);
         assert!(output.contains("[test] test failure"));

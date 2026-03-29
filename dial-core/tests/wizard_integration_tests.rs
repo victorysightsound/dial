@@ -800,6 +800,13 @@ async fn test_new_project_emits_phase_progress_events_for_full_wizard() {
             _ => None,
         })
         .collect();
+    let total_phases: Vec<u8> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::WizardPhaseStarted { total_phases, .. } => Some(*total_phases),
+            _ => None,
+        })
+        .collect();
     let completed: Vec<u8> = events
         .iter()
         .filter_map(|event| match event {
@@ -809,6 +816,7 @@ async fn test_new_project_emits_phase_progress_events_for_full_wizard() {
         .collect();
 
     assert_eq!(started, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(total_phases, vec![9; 9]);
     assert_eq!(completed, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
     assert!(
         matches!(events.last(), Some(Event::WizardCompleted { .. })),
@@ -817,8 +825,64 @@ async fn test_new_project_emits_phase_progress_events_for_full_wizard() {
     assert!(
         events
             .iter()
+            .any(|event| matches!(event, Event::WizardCheckpoint { phase: 5, .. })),
+        "full wizard should emit a planning checkpoint after phase 5"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::WizardCompleted {
+                full_flow: true,
+                ..
+            }
+        )),
+        "full wizard completion event should be marked as full_flow"
+    );
+    assert!(
+        events
+            .iter()
             .any(|event| matches!(event, Event::LaunchReady { .. })),
         "wizard should emit LaunchReady before completion"
+    );
+}
+
+#[tokio::test]
+async fn test_prd_wizard_marks_completion_as_prd_only_without_checkpoint() {
+    let _lock = lock();
+    let (mut engine, _tmp, _guard) = setup_engine().await;
+    let provider = Arc::new(SequentialMockProvider::new(
+        all_provider_responses().into_iter().take(5).collect(),
+    ));
+    let recorder = Arc::new(RecordingHandler::default());
+
+    engine.set_provider(provider.clone());
+    engine.on_event(recorder.clone());
+
+    engine.prd_wizard("spec", None, false).await.unwrap();
+
+    let events = recorder.snapshot();
+
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, Event::WizardCheckpoint { .. })),
+        "PRD-only wizard should not emit the phase 5 planning checkpoint"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::WizardCompleted {
+                full_flow: false,
+                ..
+            }
+        )),
+        "PRD-only wizard should mark completion as non-full-flow"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, Event::LaunchReady { .. })),
+        "PRD-only wizard should not emit LaunchReady"
     );
 }
 

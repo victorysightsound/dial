@@ -109,7 +109,14 @@ pub fn record_solution_with_source(
     let id = conn.last_insert_rowid();
 
     // Record creation in history
-    record_solution_event(conn, id, "created", None, None, Some(&format!("source: {}", source)))?;
+    record_solution_event(
+        conn,
+        id,
+        "created",
+        None,
+        None,
+        Some(&format!("source: {}", source)),
+    )?;
 
     Ok(id)
 }
@@ -176,8 +183,15 @@ pub fn apply_confidence_decay(
                 )?;
 
                 record_solution_event(
-                    conn, id, "decay", Some(old_confidence), Some(new_confidence),
-                    Some(&format!("{} days since validation, {} periods of {:.2} decay", days_since, periods, decay_per_period)),
+                    conn,
+                    id,
+                    "decay",
+                    Some(old_confidence),
+                    Some(new_confidence),
+                    Some(&format!(
+                        "{} days since validation, {} periods of {:.2} decay",
+                        days_since, periods, decay_per_period
+                    )),
                 )?;
 
                 count += 1;
@@ -201,7 +215,10 @@ pub fn validate_solution(conn: &Connection, solution_id: i64) -> Result<()> {
 
 /// Find solutions for a pattern that are above the trust threshold.
 /// Returns tuples of (solution_id, description, confidence) for use in auto-suggestions.
-pub fn find_solutions_for_pattern(conn: &Connection, pattern_id: i64) -> Result<Vec<(i64, String, f64)>> {
+pub fn find_solutions_for_pattern(
+    conn: &Connection,
+    pattern_id: i64,
+) -> Result<Vec<(i64, String, f64)>> {
     let mut stmt = conn.prepare(
         "SELECT id, description, confidence
          FROM solutions
@@ -310,16 +327,18 @@ pub struct SolutionEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
     use crate::db::schema;
+    use rusqlite::Connection;
 
     /// Set up an in-memory DB with schema + migration columns for testing.
     fn setup_test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .unwrap();
         conn.execute_batch(schema::SCHEMA).unwrap();
         // Apply migration 7 columns needed for solutions
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             ALTER TABLE solutions ADD COLUMN source TEXT NOT NULL DEFAULT 'auto-learned';
             ALTER TABLE solutions ADD COLUMN last_validated_at TEXT;
             ALTER TABLE solutions ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
@@ -333,12 +352,17 @@ mod tests {
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (solution_id) REFERENCES solutions(id)
             );
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         // Apply migration 8 columns for failure_patterns
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             ALTER TABLE failure_patterns ADD COLUMN regex_pattern TEXT;
             ALTER TABLE failure_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'suggested';
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         conn
     }
 
@@ -347,13 +371,15 @@ mod tests {
         conn.execute(
             "INSERT INTO tasks (description, status) VALUES ('test task', 'in_progress')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let task_id = conn.last_insert_rowid();
 
         conn.execute(
             "INSERT INTO iterations (task_id, attempt_number) VALUES (?1, 1)",
             [task_id],
-        ).unwrap();
+        )
+        .unwrap();
         let iteration_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -392,7 +418,10 @@ mod tests {
         ).unwrap();
 
         let solutions = find_solutions_for_pattern(&conn, pattern_id).unwrap();
-        assert!(solutions.is_empty(), "Should not return solutions below threshold");
+        assert!(
+            solutions.is_empty(),
+            "Should not return solutions below threshold"
+        );
     }
 
     #[test]
@@ -440,18 +469,22 @@ mod tests {
         conn.execute(
             "INSERT INTO solutions (pattern_id, description, confidence) VALUES (?1, 'a fix', 0.8)",
             [pattern_id],
-        ).unwrap();
+        )
+        .unwrap();
         let solution_id = conn.last_insert_rowid();
 
-        let app_id = record_solution_application(&conn, solution_id, failure_id, iteration_id).unwrap();
+        let app_id =
+            record_solution_application(&conn, solution_id, failure_id, iteration_id).unwrap();
         assert!(app_id > 0);
 
         // Verify the row exists with success=NULL
-        let success: Option<i64> = conn.query_row(
-            "SELECT success FROM solution_applications WHERE id = ?1",
-            [app_id],
-            |row| row.get(0),
-        ).unwrap();
+        let success: Option<i64> = conn
+            .query_row(
+                "SELECT success FROM solution_applications WHERE id = ?1",
+                [app_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(success.is_none(), "success should be NULL initially");
     }
 
@@ -463,7 +496,8 @@ mod tests {
         conn.execute(
             "INSERT INTO solutions (pattern_id, description, confidence) VALUES (?1, 'fix A', 0.8)",
             [pattern_id],
-        ).unwrap();
+        )
+        .unwrap();
         let sol_id = conn.last_insert_rowid();
 
         record_solution_application(&conn, sol_id, failure_id, iteration_id).unwrap();
@@ -481,17 +515,20 @@ mod tests {
         conn.execute(
             "INSERT INTO solutions (pattern_id, description, confidence) VALUES (?1, 'fix X', 0.7)",
             [pattern_id],
-        ).unwrap();
+        )
+        .unwrap();
         let sol_id = conn.last_insert_rowid();
 
         record_solution_application(&conn, sol_id, failure_id, iteration_id).unwrap();
 
         // Verify initial confidence
-        let initial_conf: f64 = conn.query_row(
-            "SELECT confidence FROM solutions WHERE id = ?1",
-            [sol_id],
-            |row| row.get(0),
-        ).unwrap();
+        let initial_conf: f64 = conn
+            .query_row(
+                "SELECT confidence FROM solutions WHERE id = ?1",
+                [sol_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!((initial_conf - 0.7).abs() < 0.001);
 
         // Mark success — should increment confidence by TRUST_INCREMENT
@@ -500,19 +537,23 @@ mod tests {
         assert_eq!(boosted[0], sol_id);
 
         // Verify confidence was incremented
-        let new_conf: f64 = conn.query_row(
-            "SELECT confidence FROM solutions WHERE id = ?1",
-            [sol_id],
-            |row| row.get(0),
-        ).unwrap();
+        let new_conf: f64 = conn
+            .query_row(
+                "SELECT confidence FROM solutions WHERE id = ?1",
+                [sol_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!((new_conf - (0.7 + TRUST_INCREMENT)).abs() < 0.001);
 
         // Verify application marked as success=1
-        let success: i64 = conn.query_row(
-            "SELECT success FROM solution_applications WHERE solution_id = ?1",
-            [sol_id],
-            |row| row.get(0),
-        ).unwrap();
+        let success: i64 = conn
+            .query_row(
+                "SELECT success FROM solution_applications WHERE solution_id = ?1",
+                [sol_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(success, 1);
 
         // Pending should now be empty
@@ -568,19 +609,23 @@ mod tests {
         assert_eq!(boosted, vec![sol_id]);
 
         // Verify confidence increased from 0.8 to 0.8 + TRUST_INCREMENT
-        let final_conf: f64 = conn.query_row(
-            "SELECT confidence FROM solutions WHERE id = ?1",
-            [sol_id],
-            |row| row.get(0),
-        ).unwrap();
+        let final_conf: f64 = conn
+            .query_row(
+                "SELECT confidence FROM solutions WHERE id = ?1",
+                [sol_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!((final_conf - (0.8 + TRUST_INCREMENT)).abs() < 0.001);
 
         // success_count should be incremented
-        let success_count: i64 = conn.query_row(
-            "SELECT success_count FROM solutions WHERE id = ?1",
-            [sol_id],
-            |row| row.get(0),
-        ).unwrap();
+        let success_count: i64 = conn
+            .query_row(
+                "SELECT success_count FROM solutions WHERE id = ?1",
+                [sol_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(success_count, 1);
     }
 }

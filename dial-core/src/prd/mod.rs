@@ -63,7 +63,8 @@ pub fn get_prd_db() -> Result<Connection> {
     let path = get_prd_db_path();
     if !path.exists() {
         return Err(DialError::UserError(
-            "PRD database not found. Run 'dial spec import' or 'dial spec wizard' first.".to_string(),
+            "PRD database not found. Run 'dial spec import' or 'dial spec wizard' first."
+                .to_string(),
         ));
     }
     let conn = Connection::open(&path)?;
@@ -242,7 +243,13 @@ pub fn prd_add_term(
     conn.execute(
         "INSERT INTO terminology (canonical, variants, definition, category, first_used_in)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![canonical, variants_json, definition, category, first_used_in],
+        params![
+            canonical,
+            variants_json,
+            definition,
+            category,
+            first_used_in
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -314,7 +321,10 @@ pub fn prd_list_terms(conn: &Connection, category: Option<&str>) -> Result<Vec<P
 
 /// Delete a terminology entry by canonical name.
 pub fn prd_delete_term(conn: &Connection, canonical: &str) -> Result<()> {
-    conn.execute("DELETE FROM terminology WHERE canonical = ?1", params![canonical])?;
+    conn.execute(
+        "DELETE FROM terminology WHERE canonical = ?1",
+        params![canonical],
+    )?;
     Ok(())
 }
 

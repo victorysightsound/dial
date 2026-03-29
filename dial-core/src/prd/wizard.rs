@@ -209,22 +209,8 @@ const GENERATE_EXACT_PLACEHOLDER_PHRASES: &[&str] = &[
 ];
 
 const ANGLE_PLACEHOLDER_KEYWORDS: &[&str] = &[
-    "project",
-    "feature",
-    "workflow",
-    "service",
-    "entity",
-    "field",
-    "value",
-    "token",
-    "email",
-    "password",
-    "id",
-    "name",
-    "type",
-    "path",
-    "slug",
-    "section",
+    "project", "feature", "workflow", "service", "entity", "field", "value", "token", "email",
+    "password", "id", "name", "type", "path", "slug", "section",
 ];
 
 fn normalize_quality_text(text: &str) -> String {
@@ -4402,7 +4388,9 @@ mod tests {
 
         let issues = collect_phase_quality_issues(WizardPhase::Generate, &data);
         assert!(
-            issues.iter().any(|issue| issue.contains("placeholder language")),
+            issues
+                .iter()
+                .any(|issue| issue.contains("placeholder language")),
             "expected placeholder issue, got {issues:?}"
         );
     }

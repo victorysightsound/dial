@@ -5,10 +5,10 @@
 
 /// Token budget estimation and context assembly.
 pub mod budget;
-/// Key-value configuration storage.
-pub mod config;
 /// Shell command normalization and Unicode dash safeguards.
 pub mod command_safety;
+/// Key-value configuration storage.
+pub mod config;
 /// SQLite database initialization, migrations, and access.
 pub mod db;
 /// Central engine coordinating tasks, iterations, and validation.
@@ -44,11 +44,13 @@ pub mod validation;
 
 // Re-export commonly used items
 pub use db::{get_current_phase, get_db, get_dial_dir, init_db, with_transaction, DEFAULT_PHASE};
-pub use engine::{ApprovalMode, DryRunResult, Engine, EngineConfig, PatternInfo, PipelineStepConfig};
-pub use health::{HealthScore, Trend};
-pub use metrics::{MetricsReport, TrendPoint};
+pub use engine::{
+    ApprovalMode, DryRunResult, Engine, EngineConfig, PatternInfo, PipelineStepConfig,
+};
 pub use errors::{DialError, Result};
 pub use event::{Event, EventHandler};
+pub use health::{HealthScore, Trend};
+pub use metrics::{MetricsReport, TrendPoint};
 pub use provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 
 /// Current DIAL version.
