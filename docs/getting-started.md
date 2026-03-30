@@ -400,6 +400,11 @@ To stop gracefully: create a `.dial/stop` file or press Ctrl+C.
 
 `dial auto-run` is always a separate explicit command. The wizard never starts autonomous execution on its own.
 
+As the loop runs, DIAL also keeps human-readable artifacts in `.dial/`:
+- `progress.md`: recent iteration outcomes with changed files and learnings
+- `task-ledger.md`: task counts, current work, ready-next tasks, blocked tasks, and recent completions
+- `patterns.md`: stable codebase patterns and trusted solutions that feed back into future task context
+
 **Task sizing tip:** Each task runs in a single AI subprocess with a timeout (default 30 min). If a task is too large, the AI may time out or lose focus. Rule of thumb: a task should touch 1-3 files and do one focused thing. If you use `dial new`, Phase 6 automatically analyzes task sizing and splits oversized tasks for you.
 
 ### 6. Monitor Progress
@@ -407,6 +412,9 @@ To stop gracefully: create a `.dial/stop` file or press Ctrl+C.
 ```bash
 # Current status
 dial status
+
+# Human-readable task ledger + recent progress log
+dial progress
 
 # Full statistics
 dial stats
@@ -420,6 +428,8 @@ dial failures
 # View trusted solutions
 dial solutions -t
 ```
+
+`dial progress` is the fastest way to answer “what is DIAL doing and what just happened?” without reading the SQLite database directly.
 
 ## What Happens When Things Fail
 
@@ -447,6 +457,7 @@ dial learn "The config parser silently ignores unknown keys" -c gotcha
 ```
 
 These persist in the database and appear in context for future tasks, sorted by how frequently they've been useful.
+Stable learnings are also condensed into `.dial/patterns.md` and surfaced as a dedicated `Codebase Patterns` section in iteration context.
 
 ## Multi-Phase Projects
 

@@ -414,11 +414,14 @@ dial solutions decay                   # Apply confidence decay
 
 ### Metrics & Trends
 ```bash
+dial progress                          # Human-readable project journal
 dial stats                             # Summary dashboard
 dial stats --format json               # Machine-readable output
 dial stats --format csv                # Export for spreadsheets
 dial stats --trend 30                  # Daily trends over 30 days
 ```
+
+`dial progress` renders a readable task ledger plus the most recent iteration outcomes. DIAL also keeps matching artifact files in `.dial/` so you can inspect progress without querying the database directly.
 
 ### Project Health Score
 ```bash
@@ -488,7 +491,10 @@ your-project/
 │   ├── prd.db              # PRD database (sections, terminology, wizard state)
 │   ├── current_phase        # Active phase name
 │   ├── current_context.md   # Latest context (auto-generated)
-│   └── subagent_prompt.md   # Latest sub-agent prompt (auto-generated)
+│   ├── subagent_prompt.md   # Latest sub-agent prompt (auto-generated)
+│   ├── progress.md          # Human-readable iteration journal
+│   ├── patterns.md          # Stable codebase patterns and trusted solutions
+│   └── task-ledger.md       # Human-readable task queue summary
 ├── specs/                   # Original source documents (stay intact)
 │   └── PRD.md
 └── ... your project files

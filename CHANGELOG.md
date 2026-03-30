@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+Operator trust and inspectability improvements.
+
+### Human-Readable Progress Artifacts
+- adds `dial progress` as a human-readable project view for the task ledger and recent iteration outcomes
+- keeps `.dial/progress.md`, `.dial/task-ledger.md`, and `.dial/patterns.md` in sync as DIAL work progresses
+- records iteration outcomes with changed-file summaries and learnings so project state is inspectable without opening SQLite
+
+### Context Clarity
+- adds a `Codebase Patterns` context section sourced from stable learnings and trusted solutions
+- refreshes the pattern digest automatically when learnings change so future iterations see the latest reusable guidance
+
+### Reliability
+- runs migrations during fresh database initialization so new projects start with the complete schema on first use
+- fixes parallel test isolation for current-working-directory-sensitive artifact coverage
+
+No schema migrations needed.
+
+---
+
 ## 4.2.6 — 2026-03-30
 
 Built-in install management release.

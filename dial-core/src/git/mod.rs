@@ -627,11 +627,33 @@ pub fn git_diff() -> Result<String> {
     Ok(String::from_utf8_lossy(&result.stdout).to_string())
 }
 
-/// Return the current working tree diff stat (unstaged changes summary) as a String.
+/// Return a summary of working tree changes, including tracked diffs and untracked files.
 pub fn git_diff_stat() -> Result<String> {
-    let result = git_output_with_retry(&["diff", "--stat"])?;
+    let tracked = git_output_with_retry(&["diff", "--stat", "HEAD"])
+        .or_else(|_| git_output_with_retry(&["diff", "--stat"]))?;
+    let mut summary = String::from_utf8_lossy(&tracked.stdout).to_string();
 
-    Ok(String::from_utf8_lossy(&result.stdout).to_string())
+    let untracked = git_output_with_retry(&["ls-files", "--others", "--exclude-standard"])?;
+    let untracked_files: Vec<String> = String::from_utf8_lossy(&untracked.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+
+    if !untracked_files.is_empty() {
+        if !summary.is_empty() && !summary.ends_with('\n') {
+            summary.push('\n');
+        }
+        summary.push_str("Untracked files:\n");
+        for file in untracked_files {
+            summary.push_str("  ");
+            summary.push_str(&file);
+            summary.push('\n');
+        }
+    }
+
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -702,12 +724,25 @@ mod tests {
 
     #[test]
     fn test_git_diff_stat_returns_ok() {
-        // In the project repo, git diff --stat should succeed
+        // In the project repo, git diff summary should succeed
         let result = git_diff_stat();
         assert!(
             result.is_ok(),
             "git_diff_stat() should return Ok in a git repo"
         );
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn test_git_diff_stat_includes_untracked_files() {
+        let tmp = setup_git_repo();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        fs::write(tmp.path().join("new.txt"), "hello\n").unwrap();
+
+        let diff = git_diff_stat().unwrap();
+        assert!(diff.contains("Untracked files:"));
+        assert!(diff.contains("new.txt"));
     }
 
     #[test]

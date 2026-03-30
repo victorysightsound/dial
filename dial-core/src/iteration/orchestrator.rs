@@ -1,8 +1,11 @@
+use crate::artifacts::{
+    append_progress_log_entry, sync_operator_artifacts, ProgressLogEntry, ProgressOutcome,
+};
 use crate::config::config_get;
 use crate::db::{get_db, get_dial_dir};
 use crate::errors::{DialError, Result};
 use crate::failure::record_failure;
-use crate::git::{git_commit, git_has_changes, git_is_repo};
+use crate::git::{git_commit, git_diff_stat, git_has_changes, git_is_repo};
 use crate::learning::{add_learning_with_conn, auto_link_pattern_for_iteration};
 use crate::output::{bold, dim, green, red, yellow};
 use crate::task::auto_unblock_dependents;
@@ -503,6 +506,7 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 rusqlite::params![reason, task.id],
             )?;
 
+            let _ = sync_operator_artifacts(&conn);
             failed_count += 1;
             continue;
         }
@@ -533,6 +537,7 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 rusqlite::params![format!("Failed {} times", MAX_FIX_ATTEMPTS), task.id],
             )?;
 
+            let _ = sync_operator_artifacts(&conn);
             failed_count += 1;
             continue;
         }
@@ -541,6 +546,7 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
 
         // Create iteration record
         let iteration_id = create_iteration(&conn, task.id, attempt_number)?;
+        let _ = sync_operator_artifacts(&conn);
 
         // Generate sub-agent prompt
         let prompt = generate_autonomous_subagent_prompt(&conn, &task)?;
@@ -599,6 +605,22 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 rusqlite::params![msg, task.id],
             )?;
 
+            let _ = append_progress_log_entry(&ProgressLogEntry {
+                task_id: task.id,
+                task_description: task.description.clone(),
+                iteration_id,
+                attempt_number,
+                outcome: ProgressOutcome::Blocked,
+                summary: Some(msg.to_string()),
+                changed_files_summary: if git_is_repo() {
+                    Some(git_diff_stat().unwrap_or_default())
+                } else {
+                    None
+                },
+                commit_hash: None,
+                learnings: result.learnings.clone(),
+            });
+            let _ = sync_operator_artifacts(&conn);
             failed_count += 1;
             continue;
         }
@@ -617,6 +639,12 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
             let (success, error_output) = run_validation(&conn, iteration_id)?;
 
             if success {
+                let changed_files_summary = if git_is_repo() {
+                    Some(git_diff_stat().unwrap_or_default())
+                } else {
+                    None
+                };
+
                 // Commit changes
                 let commit_hash = if git_is_repo() && git_has_changes() {
                     let commit_msg = task.description.clone();
@@ -641,6 +669,7 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                                 "UPDATE tasks SET status = 'pending' WHERE id = ?1",
                                 [task.id],
                             )?;
+                            let _ = sync_operator_artifacts(&conn);
                             return Err(DialError::GitError(commit_error));
                         }
                     }
@@ -669,6 +698,18 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                     "{}",
                     green(&format!("Task #{} completed successfully!", task.id))
                 );
+                let _ = append_progress_log_entry(&ProgressLogEntry {
+                    task_id: task.id,
+                    task_description: task.description.clone(),
+                    iteration_id,
+                    attempt_number,
+                    outcome: ProgressOutcome::Completed,
+                    summary: Some(msg.to_string()),
+                    changed_files_summary,
+                    commit_hash: commit_hash.clone(),
+                    learnings: result.learnings.clone(),
+                });
+                let _ = sync_operator_artifacts(&conn);
                 completed_count += 1;
 
                 // Check iteration_mode for review pause
@@ -735,6 +776,22 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                     "{}",
                     yellow(&format!("Task reset. {} attempts remaining.", remaining))
                 );
+                let _ = append_progress_log_entry(&ProgressLogEntry {
+                    task_id: task.id,
+                    task_description: task.description.clone(),
+                    iteration_id,
+                    attempt_number,
+                    outcome: ProgressOutcome::Failed,
+                    summary: Some(error_output[..error_output.len().min(500)].to_string()),
+                    changed_files_summary: if git_is_repo() {
+                        Some(git_diff_stat().unwrap_or_default())
+                    } else {
+                        None
+                    },
+                    commit_hash: None,
+                    learnings: result.learnings.clone(),
+                });
+                let _ = sync_operator_artifacts(&conn);
             }
         } else {
             // No completion signal - treat as incomplete
@@ -761,6 +818,22 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 "{}",
                 yellow(&format!("Task reset. {} attempts remaining.", remaining))
             );
+            let _ = append_progress_log_entry(&ProgressLogEntry {
+                task_id: task.id,
+                task_description: task.description.clone(),
+                iteration_id,
+                attempt_number,
+                outcome: ProgressOutcome::NoSignal,
+                summary: Some("No completion signal".to_string()),
+                changed_files_summary: if git_is_repo() {
+                    Some(git_diff_stat().unwrap_or_default())
+                } else {
+                    None
+                },
+                commit_hash: None,
+                learnings: result.learnings.clone(),
+            });
+            let _ = sync_operator_artifacts(&conn);
         }
 
         println!();

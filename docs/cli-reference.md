@@ -299,7 +299,7 @@ dial iterate [--dry-run] [--format FORMAT]
 | `--dry-run` | false | Preview what would happen without executing |
 | `--format` | `text` | Output format for dry run: `text` or `json` |
 
-**Normal mode:** Picks the highest-priority unblocked task, creates an iteration record, gathers context (specs, solutions, failures, similar tasks, learnings), and writes context to `.dial/current_context.md`.
+**Normal mode:** Picks the highest-priority unblocked task, creates an iteration record, gathers context (specs, solutions, failures, similar tasks, codebase patterns, learnings), and writes context to `.dial/current_context.md`.
 
 **Dry run mode:** Shows the task that would be selected, context items included/excluded with token counts, prompt preview, and suggested solutions — without creating any database records.
 
@@ -408,6 +408,23 @@ Show current project status: phase, in-progress task, task counts, and recent it
 dial status
 ```
 
+### `dial progress`
+
+Show a human-readable project progress view with a task ledger and recent iteration outcomes.
+
+```bash
+dial progress [--limit N]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-n`, `--limit` | `10` | Number of recent progress-log entries to show |
+
+This command also refreshes the generated project artifacts in `.dial/`:
+- `.dial/task-ledger.md`
+- `.dial/progress.md`
+- `.dial/patterns.md`
+
 ### `dial stats`
 
 Comprehensive statistics dashboard.
@@ -515,6 +532,8 @@ dial learnings delete ID                             # Remove a learning
 |------|---------|-------------|
 | `-c`, `--category` | (none) | Filter by category |
 | `--pattern` | (none) | Filter by linked failure pattern key |
+
+Recording or deleting learnings also refreshes `.dial/patterns.md`, which DIAL uses as a compact codebase-pattern digest for future task context.
 
 ## Validation Pipeline
 

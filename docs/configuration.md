@@ -12,6 +12,9 @@ your-project/
 │   ├── current_phase            # Text file with the active phase name
 │   ├── current_context.md       # Auto-generated context (latest)
 │   ├── subagent_prompt.md       # Auto-generated prompt (latest)
+│   ├── progress.md              # Human-readable iteration journal
+│   ├── patterns.md              # Codebase pattern digest + trusted solutions
+│   ├── task-ledger.md           # Human-readable task queue summary
 │   ├── signal.json              # Subagent signal file (transient, auto-deleted)
 │   └── stop                     # Created by `dial stop` (temporary)
 ├── specs/                       # Specification files (you create these)
@@ -23,6 +26,18 @@ Agent-file modes:
 - `local` (default): create `AGENTS.md` and hide top-level agent files from normal `git status` via `.git/info/exclude`
 - `shared`: create `AGENTS.md` and leave it visible so the repository can commit it intentionally
 - `off`: skip agent instruction files entirely
+
+### Generated Artifacts
+
+These files are refreshed automatically as you work:
+
+| File | Purpose |
+|------|---------|
+| `.dial/current_context.md` | Latest assembled task context |
+| `.dial/subagent_prompt.md` | Latest prompt for a fresh subagent |
+| `.dial/progress.md` | Iteration journal with outcomes, changed files, and learnings |
+| `.dial/patterns.md` | Compact digest of stable codebase patterns and trusted solutions |
+| `.dial/task-ledger.md` | Human-readable task queue summary |
 
 ## Configuration Keys
 
@@ -354,10 +369,10 @@ Unrecognized errors are recorded as `UnknownError` in the `unknown` category.
 
 ## Git Integration
 
-DIAL auto-commits when validation passes. Commit messages use the task description directly:
+DIAL auto-commits when validation passes. Commit messages are normalized into short developer-style subjects based on the task description:
 
 ```
-<task description>
+Add API error handling
 ```
 
 DIAL checks `git status --porcelain` before committing and only commits if there are changes.

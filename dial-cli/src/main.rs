@@ -172,6 +172,13 @@ enum Commands {
     /// Show current status
     Status,
 
+    /// Show a human-readable project progress view
+    Progress {
+        /// Number of recent progress entries to show
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+    },
+
     /// Show iteration history
     History {
         /// Number of entries
@@ -914,6 +921,10 @@ async fn run_command(command: Commands) -> anyhow::Result<()> {
             show_status()?;
         }
 
+        Commands::Progress { limit } => {
+            show_progress(limit)?;
+        }
+
         Commands::History { limit } => {
             show_history(limit)?;
         }
@@ -1308,6 +1319,7 @@ fn show_status() -> Result<()> {
     let conn = get_db(None)?;
     let phase = get_current_phase()?;
     let project = config::config_get("project_name")?.unwrap_or_else(|| "unknown".to_string());
+    let _ = dial_core::artifacts::sync_task_ledger(&conn);
 
     println!(
         "{}",
@@ -1394,6 +1406,53 @@ fn show_status() -> Result<()> {
             );
         }
     }
+
+    Ok(())
+}
+
+fn show_progress(limit: usize) -> Result<()> {
+    let conn = get_db(None)?;
+    let phase = get_current_phase()?;
+    let project = config::config_get("project_name")?.unwrap_or_else(|| "unknown".to_string());
+
+    let _ = dial_core::artifacts::sync_operator_artifacts(&conn);
+
+    println!(
+        "{}",
+        output::bold(&format!("DIAL Progress: {} (phase: {})", project, phase))
+    );
+    println!("{}", "=".repeat(60));
+    println!();
+
+    println!("{}", dial_core::artifacts::render_task_ledger(&conn)?);
+
+    println!();
+    println!(
+        "{}",
+        output::bold(&format!("Recent Progress Entries (last {})", limit))
+    );
+    println!("{}", "=".repeat(60));
+
+    match dial_core::artifacts::tail_progress_log(limit)? {
+        Some(log) => println!("{}", log),
+        None => println!("{}", output::dim("No progress log recorded yet.")),
+    }
+
+    println!();
+    println!("{}", output::bold("Artifacts"));
+    println!("{}", "=".repeat(60));
+    println!(
+        "  Progress log: {}",
+        dial_core::artifacts::progress_log_path().display()
+    );
+    println!(
+        "  Patterns:     {}",
+        dial_core::artifacts::patterns_path().display()
+    );
+    println!(
+        "  Task ledger:  {}",
+        dial_core::artifacts::task_ledger_path().display()
+    );
 
     Ok(())
 }

@@ -125,6 +125,7 @@ pub fn init_db_with_agents_mode(
     let conn = Connection::open(&db_path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
     conn.execute_batch(schema::SCHEMA)?;
+    migrations::run_migrations(&conn)?;
 
     // Set default config
     let now = chrono::Local::now().to_rfc3339();

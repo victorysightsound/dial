@@ -50,6 +50,7 @@ pub fn add_learning_with_conn(
     )?;
 
     let learning_id = conn.last_insert_rowid();
+    let _ = crate::artifacts::sync_patterns_digest(conn);
     Ok(learning_id)
 }
 
@@ -189,6 +190,7 @@ pub fn delete_learning(learning_id: i64) -> Result<()> {
         return Err(DialError::LearningNotFound(learning_id));
     }
 
+    let _ = crate::artifacts::sync_patterns_digest(&conn);
     Ok(())
 }
 

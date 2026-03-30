@@ -1,3 +1,4 @@
+use crate::artifacts::render_patterns_context;
 use crate::budget::{self, ContextItem};
 use crate::errors::Result;
 use crate::learning::{increment_learning_reference, learnings_for_pattern};
@@ -361,6 +362,7 @@ pub const PRIORITY_SUGGESTED_SOLUTIONS: u32 = 15;
 pub const PRIORITY_TRUSTED_SOLUTIONS: u32 = 20;
 pub const PRIORITY_SIMILAR_TASKS: u32 = 25;
 pub const PRIORITY_FAILURES: u32 = 30;
+pub const PRIORITY_CODEBASE_PATTERNS: u32 = 32;
 pub const PRIORITY_PATTERN_LEARNINGS: u32 = 35;
 pub const PRIORITY_LEARNINGS: u32 = 40;
 
@@ -642,6 +644,14 @@ fn gather_context_items_impl(
                 PRIORITY_PATTERN_LEARNINGS,
             ));
         }
+    }
+
+    if let Some(content) = render_patterns_context(conn)? {
+        items.push(ContextItem::new(
+            "Codebase Patterns",
+            &content,
+            PRIORITY_CODEBASE_PATTERNS,
+        ));
     }
 
     // Learnings
@@ -1016,6 +1026,55 @@ mod tests {
             !context.contains("Pattern-Linked Learnings"),
             "Should not have pattern-linked learnings without failures"
         );
+    }
+
+    #[test]
+    fn test_codebase_patterns_context_item_included() {
+        let conn = setup_context_test_db();
+
+        conn.execute(
+            "INSERT INTO tasks (description, status) VALUES ('patterns task', 'in_progress')",
+            [],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO failure_patterns (pattern_key, description, category, occurrence_count)
+             VALUES ('CfgErr', 'Config issue', 'setup', 3)",
+            [],
+        )
+        .unwrap();
+        let pattern_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO learnings (category, description, times_referenced)
+             VALUES ('pattern', 'Prefer explicit config defaults', 4)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO solutions (pattern_id, description, confidence, success_count)
+             VALUES (?1, 'Regenerate config before retrying', 0.85, 2)",
+            [pattern_id],
+        )
+        .unwrap();
+
+        let task = make_test_task(task_id);
+        let items = gather_context_items(&conn, &task).unwrap();
+
+        let patterns_item = items.iter().find(|i| i.label == "Codebase Patterns");
+        assert!(
+            patterns_item.is_some(),
+            "Expected Codebase Patterns item in gathered context"
+        );
+
+        let item = patterns_item.unwrap();
+        assert_eq!(item.priority, PRIORITY_CODEBASE_PATTERNS);
+        assert!(item.content.contains("Reusable Patterns:"));
+        assert!(item.content.contains("Prefer explicit config defaults"));
+        assert!(item.content.contains("Trusted Solutions:"));
+        assert!(item.content.contains("Regenerate config before retrying"));
     }
 
     #[test]

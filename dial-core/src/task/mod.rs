@@ -14,6 +14,7 @@ pub fn task_add(description: &str, priority: i32, spec_section_id: Option<i64>) 
         rusqlite::params![description, priority, spec_section_id],
     )?;
     let task_id = conn.last_insert_rowid();
+    let _ = crate::artifacts::sync_task_ledger(&conn);
     Ok(task_id)
 }
 
@@ -133,7 +134,10 @@ pub fn task_done(task_id: i64) -> Result<()> {
         auto_unblock_dependents(conn, task_id)?;
 
         Ok(())
-    })
+    })?;
+
+    let _ = crate::artifacts::sync_task_ledger(&conn);
+    Ok(())
 }
 
 /// Check dependents of a completed task and unblock any whose dependencies are all satisfied.
@@ -186,6 +190,7 @@ pub fn task_block(task_id: i64, reason: &str) -> Result<()> {
         return Err(DialError::TaskNotFound(task_id));
     }
 
+    let _ = crate::artifacts::sync_task_ledger(&conn);
     Ok(())
 }
 
@@ -201,6 +206,7 @@ pub fn task_cancel(task_id: i64) -> Result<()> {
         return Err(DialError::TaskNotFound(task_id));
     }
 
+    let _ = crate::artifacts::sync_task_ledger(&conn);
     Ok(())
 }
 
@@ -281,6 +287,7 @@ pub fn task_depends(task_id: i64, depends_on_id: i64) -> Result<()> {
         rusqlite::params![task_id, depends_on_id],
     )?;
 
+    let _ = crate::artifacts::sync_task_ledger(&conn);
     Ok(())
 }
 
@@ -291,6 +298,7 @@ pub fn task_undepend(task_id: i64, depends_on_id: i64) -> Result<()> {
         "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
         rusqlite::params![task_id, depends_on_id],
     )?;
+    let _ = crate::artifacts::sync_task_ledger(&conn);
     Ok(())
 }
 

@@ -3,6 +3,10 @@ pub mod orchestrator;
 pub mod signal;
 pub mod validation;
 
+use crate::artifacts::{
+    append_progress_log_entry, sync_operator_artifacts, sync_patterns_digest, ProgressLogEntry,
+    ProgressOutcome,
+};
 use crate::db::{get_db, get_dial_dir, with_transaction};
 use crate::errors::{DialError, Result};
 use crate::failure::record_failure;
@@ -154,6 +158,7 @@ pub fn iterate_once() -> Result<(bool, String)> {
         create_iteration(conn, task.id, attempt_number)
     })?;
     println!("Attempt {} of {}", attempt_number, MAX_FIX_ATTEMPTS);
+    let _ = sync_operator_artifacts(&conn);
 
     // Create checkpoint before task execution (if enabled and in a git repo)
     if git_is_repo() && checkpoints_enabled() {
@@ -191,6 +196,7 @@ pub fn iterate_once() -> Result<(bool, String)> {
     let context_content = format!("# Task: {}\n\n{}", task.description, context);
     fs::write(&context_file, context_content)?;
     println!("Context written to: {}", context_file.display());
+    let _ = sync_patterns_digest(&conn);
 
     println!(
         "{}",
@@ -227,19 +233,19 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
     let conn = get_db(None)?;
 
     // Find current in-progress iteration
-    let iteration: Option<(i64, i64, String)> = conn
+    let iteration: Option<(i64, i64, String, i32)> = conn
         .query_row(
-            "SELECT i.id, i.task_id, t.description
+            "SELECT i.id, i.task_id, t.description, i.attempt_number
              FROM iterations i
              INNER JOIN tasks t ON i.task_id = t.id
              WHERE i.status = 'in_progress'
              ORDER BY i.id DESC LIMIT 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .ok();
 
-    let (iteration_id, task_id, task_description) = match iteration {
+    let (iteration_id, task_id, task_description, attempt_number) = match iteration {
         Some(i) => i,
         None => {
             return Err(DialError::NoIterationInProgress);
@@ -258,6 +264,12 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
     let step_results = validation.step_results;
 
     if success {
+        let changed_files_summary = if git_is_repo() {
+            Some(git_diff_stat().unwrap_or_default())
+        } else {
+            None
+        };
+
         // Commit changes (git operations happen outside the DB transaction)
         let commit_hash = if git_is_repo() && git_has_changes() {
             let message = task_description.to_string();
@@ -283,6 +295,7 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
                         )?;
                         Ok(())
                     })?;
+                    let _ = sync_operator_artifacts(&conn);
                     return Err(DialError::GitError(commit_error));
                 }
             }
@@ -333,6 +346,18 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             "{}",
             green(&format!("Task #{} marked as completed.", task_id))
         );
+        let _ = append_progress_log_entry(&ProgressLogEntry {
+            task_id,
+            task_description: task_description.clone(),
+            iteration_id,
+            attempt_number,
+            outcome: ProgressOutcome::Completed,
+            summary: Some("Validation passed".to_string()),
+            changed_files_summary,
+            commit_hash: commit_hash.clone(),
+            learnings: Vec::new(),
+        });
+        let _ = sync_operator_artifacts(&conn);
 
         // Prompt for learning capture after success
         println!();
@@ -414,6 +439,8 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             error_preview.to_string()
         };
 
+        let mut blocked_due_to_max = false;
+
         with_transaction(&conn, |conn| {
             complete_iteration(conn, iteration_id, "failed", None, Some(&notes_string))?;
 
@@ -424,6 +451,7 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             )?;
 
             if fail_count >= MAX_FIX_ATTEMPTS as i64 {
+                blocked_due_to_max = true;
                 println!(
                     "{}",
                     red(&format!("\nMax attempts ({}) reached.", MAX_FIX_ATTEMPTS))
@@ -471,6 +499,27 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
 
             Ok(())
         })?;
+
+        let _ = append_progress_log_entry(&ProgressLogEntry {
+            task_id,
+            task_description: task_description.clone(),
+            iteration_id,
+            attempt_number,
+            outcome: if blocked_due_to_max {
+                ProgressOutcome::Blocked
+            } else {
+                ProgressOutcome::Failed
+            },
+            summary: Some(error_preview.to_string()),
+            changed_files_summary: if failed_diff_stat.trim().is_empty() {
+                None
+            } else {
+                Some(failed_diff_stat.clone())
+            },
+            commit_hash: None,
+            learnings: Vec::new(),
+        });
+        let _ = sync_operator_artifacts(&conn);
 
         // Build suggested_solutions list for event emission by engine
         let suggested_for_event: Vec<(i64, i64, String, f64)> = suggested_solutions
@@ -703,6 +752,7 @@ pub fn show_context() -> Result<()> {
     println!("{}", bold(&"=".repeat(60)));
     println!();
 
+    let _ = sync_patterns_digest(&conn);
     let context = gather_context(&conn, &task)?;
     let full_context = format!("# Task: {}\n\n{}", task.description, context);
 
@@ -744,6 +794,7 @@ pub fn orchestrate() -> Result<()> {
     };
 
     // Generate the sub-agent prompt
+    let _ = sync_patterns_digest(&conn);
     let prompt = generate_subagent_prompt(&conn, &task)?;
 
     println!("{}", bold(&"=".repeat(70)));

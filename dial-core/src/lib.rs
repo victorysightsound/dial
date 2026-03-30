@@ -3,6 +3,8 @@
 //! Provides the engine, event system, provider abstraction, and persistence
 //! layer for autonomous AI development with persistent memory.
 
+/// Human-readable artifacts such as progress logs and pattern digests.
+pub mod artifacts;
 /// Token budget estimation and context assembly.
 pub mod budget;
 /// Shell command normalization and Unicode dash safeguards.
