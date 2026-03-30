@@ -6,7 +6,7 @@ A Rust library and CLI for autonomous AI-assisted software development.
 Persistent memory. Failure pattern detection. Structured task execution.
 Build entire projects iteratively without losing context or repeating mistakes.
 
-[Quick Start](#quick-start)&ensp;&middot;&ensp;[Project Wizard](#project-wizard)&ensp;&middot;&ensp;[Why Specs Matter](#why-specs-matter)&ensp;&middot;&ensp;[Templates](#templates)&ensp;&middot;&ensp;[Manual Workflow](#manual-workflow)&ensp;&middot;&ensp;[Library](#library-usage)&ensp;&middot;&ensp;[CLI Reference](docs/cli-reference.md)&ensp;&middot;&ensp;[AI Integration](docs/ai-integration.md)
+[Quick Start](#quick-start)&ensp;&middot;&ensp;[Getting Started](docs/getting-started.md)&ensp;&middot;&ensp;[Project Wizard](#project-wizard)&ensp;&middot;&ensp;[Why Specs Matter](#why-specs-matter)&ensp;&middot;&ensp;[Templates](#templates)&ensp;&middot;&ensp;[Manual Workflow](#manual-workflow)&ensp;&middot;&ensp;[Library](#library-usage)&ensp;&middot;&ensp;[CLI Reference](docs/cli-reference.md)&ensp;&middot;&ensp;[AI Integration](docs/ai-integration.md)
 
 ---
 
