@@ -19,6 +19,11 @@ your-project/
 └── AGENTS.md                    # AI agent instructions (optional; created when agents mode is local/shared)
 ```
 
+Agent-file modes:
+- `local` (default): create `AGENTS.md` and hide top-level agent files from normal `git status` via `.git/info/exclude`
+- `shared`: create `AGENTS.md` and leave it visible so the repository can commit it intentionally
+- `off`: skip agent instruction files entirely
+
 ## Configuration Keys
 
 Configuration is stored in the SQLite database as key-value pairs. Manage with `dial config set` and `dial config show`.

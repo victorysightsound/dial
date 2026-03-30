@@ -93,7 +93,10 @@ dial init --phase mvp
     ├── Set PRAGMA journal_mode=WAL, busy_timeout=5000
     ├── Insert default config (phase, project_name)
     ├── Write .dial/current_phase = "mvp"
-    └── Optionally append DIAL instructions to AGENTS.md
+    └── Handle agent instruction files according to agents mode
+        ├── local: create AGENTS.md and hide top-level agent files via .git/info/exclude
+        ├── shared: create AGENTS.md and leave it visible for intentional commits
+        └── off: skip agent instruction files
 ```
 
 ### Task Iteration

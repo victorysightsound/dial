@@ -2,6 +2,20 @@
 
 ## Version Timeline
 
+### v4.2.3 (March 2026) - Agent File Modes & Release Alignment
+
+Patch release focused on making agent instruction files predictable for end users and keeping release metadata aligned with shipped behavior:
+
+- Adds explicit `--agents local|shared|off` handling to both `dial init` and `dial new`
+- Makes `local` the default so DIAL creates `AGENTS.md` for local AI tooling while hiding `/AGENTS.md`, `/CLAUDE.md`, and `/GEMINI.md` through `.git/info/exclude`
+- Keeps `shared` available for repositories that want to commit agent instruction files intentionally
+- Keeps `off` available for users who do not want agent instruction files created at all
+- Excludes newly created top-level agent instruction files from validation and auto-run task commits unless they already exist in `HEAD`
+- Fixes the exported CLI/library version constant so the binary reports the actual shipped version
+- Verifies `local`, `shared`, and `off` behavior on both macOS and native Windows, plus a fresh local macOS 9-phase `dial new` wizard run
+
+No schema migrations needed.
+
 ### v4.2.2 (March 2026) - Guided Wizard Trust & Windows Auto-Run Hardening
 
 Patch release focused on making the guided wizard read like a guided operator and proving the full Windows autonomous loop in a seeded fixture repo:
@@ -208,10 +222,12 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 4.1.3 | + Documentation alignment | Yes | 364+ |
 | 4.2.0 | + Wizard backends, visibility & Mac hardening | Yes | 399 |
 | 4.2.1 | + Windows CLI hardening & wizard quality fixes | Yes | 416 |
+| 4.2.2 | + Guided wizard trust & Windows auto-run hardening | Yes | 416+ |
+| 4.2.3 | + Agent file modes & release alignment | Yes | 416+ |
 
 ## Performance
 
-| Metric | v2.0 | v4.2.1 |
+| Metric | v2.0 | v4.2.3 |
 |--------|------|------|
 | Startup | ~14ms | ~14ms |
 | Binary size | 4.0MB | ~5MB |

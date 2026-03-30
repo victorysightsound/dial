@@ -57,7 +57,7 @@ pub use metrics::{MetricsReport, TrendPoint};
 pub use provider::{Provider, ProviderRequest, ProviderResponse, TokenUsage};
 
 /// Current DIAL version.
-pub const VERSION: &str = "4.2.1";
+pub const VERSION: &str = "4.2.3";
 /// Maximum number of fix attempts before a task is abandoned.
 pub const MAX_FIX_ATTEMPTS: u32 = 3;
 /// Minimum confidence threshold for a solution to be considered trusted.

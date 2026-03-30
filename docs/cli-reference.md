@@ -114,7 +114,7 @@ Manage specifications and PRD sections.
 
 ```bash
 dial spec import --dir PATH                                       # Import markdown into prd.db
-dial spec wizard --template NAME [--resume] [--wizard-backend B]  # Run phases 1-5 only (PRD generation)
+dial spec wizard --template NAME [--from PATH] [--resume] [--wizard-backend B] [--wizard-model MODEL]  # Run phases 1-5 only (PRD generation)
 dial spec migrate                    # Migrate legacy spec_sections to prd.db
 
 dial spec list                       # List all PRD sections (hierarchical)

@@ -5,13 +5,14 @@ This guide walks through installing DIAL, setting up your first project, and run
 ## Prerequisites
 
 - **Git** (DIAL auto-commits on successful validation)
-- An AI coding tool (optional but recommended):
+- An AI coding tool (optional for manual mode, required for `dial new` and `dial auto-run`):
   - [Claude Code](https://claude.ai/download) (`claude` CLI) — supports auto-run
   - [Codex CLI](https://github.com/openai/codex) (`codex`) — supports auto-run
   - [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/coding-agent/customizing-the-development-environment-for-copilot-coding-agent) (`copilot`) — supports auto-run
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) — supports auto-run
   - [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) in VS Code — manual/orchestrated mode
   - [Cursor](https://cursor.sh), [Windsurf](https://codeium.com/windsurf), or any AI editor — manual/orchestrated mode
+- For wizard and auto-run flows, make sure the CLI you plan to use is installed, available on your PATH, and already authenticated before you begin.
 
 ## Installation
 
@@ -22,6 +23,16 @@ curl -fsSL https://raw.githubusercontent.com/victorysightsound/dial/main/install
 ```
 
 Downloads the correct prebuilt binary for your platform and installs it to `~/.local/bin/`. To upgrade, run the same command again.
+
+### Windows Install
+
+Download `dial-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/victorysightsound/dial/releases/latest), extract `dial.exe`, and add the containing directory to your PATH.
+
+You can verify the install from PowerShell or `cmd.exe` with:
+
+```powershell
+dial --version
+```
 
 ### Via Cargo
 
@@ -53,6 +64,8 @@ ln -sf "$(pwd)/target/release/dial" ~/bin/dial
 # Make sure ~/bin is in your PATH
 ```
 
+On Windows, the compiled binary is `target\\release\\dial.exe`.
+
 ### Verify Installation
 
 ```bash
@@ -69,7 +82,26 @@ If you have multiple supported AI CLIs installed, pass `--wizard-backend` on you
 dial new --template mvp --wizard-backend copilot
 ```
 
-Current verification covers fresh wizard runs on macOS and native Windows CLI environments, including native Windows Copilot.
+Current verification covers fresh wizard runs on macOS and native Windows CLI environments, including native Windows Copilot, native Windows existing-repo end-to-end runs with Codex, and agent-file mode validation on both macOS and Windows.
+
+The guided wizard is meant to reduce prompt burden, not increase it:
+- DIAL explains each phase in plain English
+- DIAL sends structured prompts to the backend for each phase
+- the wizard does not edit source code or start `dial auto-run`
+- you can stop and resume later with `dial new --resume`
+
+Common ways to start:
+
+```bash
+# New project from scratch
+mkdir my-project && cd my-project
+git init
+dial new --template mvp --wizard-backend codex
+
+# Existing repo with a design document
+cd existing-repo
+dial new --template spec --from docs/existing-prd.md --wizard-backend codex
+```
 
 ### 1. Initialize
 
@@ -92,6 +124,18 @@ This creates:
 - `.dial/` directory
 - `.dial/mvp.db` SQLite database
 - `.dial/current_phase` file set to "mvp"
+
+Agent file handling defaults to `local`:
+- `local`: create `AGENTS.md` and hide top-level agent files from `git status` using `.git/info/exclude`
+- `shared`: create `AGENTS.md` and leave it visible so your team can commit it intentionally
+- `off`: skip agent instruction files entirely
+
+Examples:
+
+```bash
+dial init --agents shared
+dial init --agents off
+```
 
 The `--phase` flag names this development phase. You can create multiple phases (e.g., `mvp`, `beta`, `v2`) with separate databases, and even import trusted solutions from previous phases:
 
@@ -201,6 +245,12 @@ dial task add "Implement 'list' command" -p 4 --spec 3
 
 DIAL parses markdown headers into sections and creates FTS5 full-text search indexes. When you work on a task, DIAL automatically surfaces relevant spec sections — even without explicit `--spec` links, it searches by task description.
 
+If you are working inside an existing repository, you can skip the manual spec import path and let the wizard refine your existing PRD or architecture document instead:
+
+```bash
+dial new --template spec --from docs/existing-prd.md --wizard-backend codex
+```
+
 ### 5. Run the Loop
 
 You have three ways to run DIAL:
@@ -255,6 +305,8 @@ This:
 8. Repeats until all tasks are done or the limit is reached
 
 To stop gracefully: create a `.dial/stop` file or press Ctrl+C.
+
+`dial auto-run` is always a separate explicit command. The wizard never starts autonomous execution on its own.
 
 **Task sizing tip:** Each task runs in a single AI subprocess with a timeout (default 30 min). If a task is too large, the AI may time out or lose focus. Rule of thumb: a task should touch 1-3 files and do one focused thing. If you use `dial new`, Phase 6 automatically analyzes task sizing and splits oversized tasks for you.
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.2.3 — 2026-03-30
+
+Agent file mode and release-alignment patch.
+
+### Agent File Handling
+- adds explicit `--agents local|shared|off` handling to both `dial init` and `dial new`
+- makes `local` the default so DIAL creates `AGENTS.md` for local AI tooling without polluting normal `git status`
+- uses `.git/info/exclude` for local mode so `/AGENTS.md`, `/CLAUDE.md`, and `/GEMINI.md` stay local-only by default
+- keeps `shared` available for teams that want to commit agent instruction files intentionally
+- keeps `off` available for users who do not want agent instruction files created at all
+- preserves `dial init --no-agents` as a compatibility alias for `--agents off`
+
+### Commit Hygiene
+- excludes newly created top-level agent instruction files from validation and auto-run task commits unless they already exist in `HEAD`
+- keeps tracked agent instruction files commitable when the user intentionally maintains them in the repository
+
+### Documentation & Release Accuracy
+- updates README, getting started, configuration, architecture, and CLI reference docs to explain the new agent-file modes and default behavior
+- fixes the exported CLI/library version constant so the binary reports the shipped version correctly
+
+### Verification
+- adds unit coverage for local/shared/off agent-file setup behavior
+- adds regression coverage for excluding new top-level agent files from task commits while preserving tracked agent file changes
+- validates native Windows `dial init` behavior for `local`, `shared`, and `off` on `gbi-video`
+- validates local macOS `dial init` behavior for `local`, `shared`, and `off`
+- validates a fresh local macOS `dial new --template mvp --wizard-backend codex --agents local` run through all 9 wizard phases
+
+No schema migrations needed.
+
+---
+
 ## 4.2.2 — 2026-03-29
 
 Guided wizard trust and observability release.

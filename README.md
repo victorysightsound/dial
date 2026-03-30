@@ -100,7 +100,7 @@ cargo build --release
 sudo cp target/release/dial /usr/local/bin/
 ```
 
-The binary is fully self-contained with no runtime dependencies.
+On Windows, the compiled binary is `target\\release\\dial.exe`. The binary is fully self-contained with no runtime dependencies.
 
 ## Project Wizard
 
@@ -120,7 +120,13 @@ dial new --template mvp --wizard-backend copilot
 
 The wizard is guided by default. You do not need to craft a special AI prompt for each phase; DIAL sends structured prompts internally and explains what it is doing as it moves through the flow.
 
-Current release verification covers fresh macOS wizard runs with Codex and Copilot, native Windows wizard runs with Codex and Copilot, and a seeded native Windows `dial auto-run --cli codex` end-to-end validation against the `mini-note-formatter` fixture scenario.
+Current release verification covers fresh macOS wizard runs with Codex and Copilot, native Windows wizard runs with Codex and Copilot, native Windows existing-repo `dial new` plus `dial auto-run --cli codex` end-to-end validation against the `mini-note-formatter` fixture scenario, and agent-file mode validation on both macOS and Windows.
+
+For wizard and auto-run use, make sure the selected backend CLI is installed, on your PATH, and already authenticated before you start.
+
+The wizard works in both of these common setups:
+- brand-new repo: start in an empty repo and let DIAL generate the PRD, tasks, build/test commands, and iteration mode
+- existing repo: run from the repo root and pass `--from` with an existing PRD, spec, or architecture doc so the wizard can refine what you already know about the codebase
 
 | Phase | Name | What Happens |
 |-------|------|-------------|
@@ -135,6 +141,8 @@ Current release verification covers fresh macOS wizard runs with Codex and Copil
 | 9 | **Launch** | Prints summary of everything configured, ready for `dial auto-run` |
 
 Some later phases can be quiet for a bit, especially with CLI-backed providers on Windows. That is normal. The wizard will keep reporting where it is in the flow, and you can safely stop and resume later.
+
+Agent file handling defaults to `local`: DIAL creates `AGENTS.md` for local AI tooling and hides it from `git status` with `.git/info/exclude`. Use `--agents shared` if you want to commit it intentionally, or `--agents off` to skip it.
 
 After the wizard completes, start building:
 
@@ -165,6 +173,8 @@ dial new --template spec --from docs/existing-prd.md
 ```
 
 The AI extracts information from your document alongside each phase's questions.
+
+If you are planning inside an existing code repository, run the wizard from that repository's root. The best results come from pairing the repo with a document that describes the intended behavior instead of expecting the wizard to infer the whole architecture from source alone.
 
 ### Iteration Modes
 
@@ -243,8 +253,6 @@ dial validate         # Build, test, commit
 # or
 dial auto-run --cli copilot --max 10   # Fully autonomous
 ```
-
-Agent file handling defaults to `local`: DIAL creates `AGENTS.md` for local AI tooling and hides it from `git status` with `.git/info/exclude`. Use `--agents shared` if you want to commit it intentionally, or `--agents off` to skip it.
 
 `dial spec wizard` runs phases 1-5 only (PRD generation). Use `dial new` for the full 9-phase flow.
 
