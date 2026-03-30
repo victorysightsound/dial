@@ -1,4 +1,5 @@
 mod cli_handler;
+mod self_manage;
 #[cfg(test)]
 mod test_support;
 mod wizard_backend;
@@ -257,6 +258,20 @@ enum Commands {
 
     /// Revert to last good commit
     Revert,
+
+    /// Upgrade the installed DIAL CLI
+    Upgrade {
+        /// Upgrade to a specific released version (default: latest)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Remove the installed DIAL CLI without touching project .dial data
+    Uninstall {
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 
     /// Reset current iteration
     Reset,
@@ -536,7 +551,7 @@ async fn main() {
     }
 }
 
-async fn run_command(command: Commands) -> Result<()> {
+async fn run_command(command: Commands) -> anyhow::Result<()> {
     // Init creates a new engine — handled separately
     if let Commands::Init {
         phase,
@@ -585,12 +600,25 @@ async fn run_command(command: Commands) -> Result<()> {
         return Ok(());
     }
 
+    if let Commands::Upgrade { version } = command {
+        self_manage::upgrade(version.as_deref()).await?;
+        return Ok(());
+    }
+
+    if let Commands::Uninstall { yes } = command {
+        self_manage::uninstall(yes).await?;
+        return Ok(());
+    }
+
     // All other commands require an initialized project
     let mut engine = Engine::open(EngineConfig::default()).await?;
     engine.on_event(Arc::new(cli_handler::CliEventHandler));
 
     match command {
-        Commands::Init { .. } | Commands::New { .. } => unreachable!(),
+        Commands::Init { .. }
+        | Commands::New { .. }
+        | Commands::Upgrade { .. }
+        | Commands::Uninstall { .. } => unreachable!(),
 
         Commands::Index { dir } => {
             println!("{}", output::yellow("Note: 'dial index' is deprecated. Use 'dial spec import --dir <path>' instead."));

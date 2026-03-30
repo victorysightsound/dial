@@ -132,6 +132,38 @@ dial --version
 
 If that command works, the global install is complete. You can now `cd` into any repository and run DIAL commands there.
 
+## Upgrade and Uninstall
+
+After DIAL is installed, you can manage the CLI itself with built-in commands:
+
+```bash
+dial upgrade
+dial uninstall
+```
+
+Useful variations:
+
+```bash
+# Upgrade to a specific released version
+dial upgrade --version 4.2.6
+
+# Skip the uninstall confirmation prompt
+dial uninstall --yes
+```
+
+How `dial upgrade` works:
+- Cargo install: runs the equivalent of `cargo install dial-cli --force`
+- npm install: runs the equivalent of `npm install -g @victorysightsound/dial-cli`
+- direct binary install: downloads the matching GitHub release asset for your platform and replaces the current binary
+
+How `dial uninstall` works:
+- removes the DIAL CLI from your machine
+- leaves project `.dial/` directories, databases, PRDs, and task history untouched
+
+Windows note:
+- `dial upgrade` and `dial uninstall` may open a second console window and finish there after the current `dial` process exits
+- this is expected and avoids Windows failing to replace or remove a running `dial.exe`
+
 ## Your First Project
 
 There are two ways to use DIAL: with just tasks (fastest start) or with the full project wizard (`dial new`) which guides you through spec creation, task generation, and build/test configuration. The wizard enforces spec specificity (Phase 4 rewrites vague requirements), right-sizes tasks (Phase 6 splits oversized tasks), and generates test tasks (Phase 7 pairs tests with features). You can always start with just tasks and add a spec later.

@@ -2,6 +2,17 @@
 
 ## Version Timeline
 
+### v4.2.6 (March 2026) - Built-In Install Management
+
+Patch release focused on letting DIAL manage its own lifecycle across supported install methods:
+
+- Adds `dial upgrade` for Cargo installs, npm installs, and direct binary installs
+- Adds `dial uninstall` so users can remove the CLI without touching project `.dial/` state
+- Adds a Windows follow-up console flow so self-updates and self-removal can complete after the running `dial.exe` exits
+- Documents the new upgrade and uninstall workflow across README, getting started, and CLI reference docs
+
+No schema migrations needed.
+
 ### v4.2.5 (March 2026) - Scoped npm Publish Correction
 
 Patch release focused on shipping the public npm package cleanly after npm rejected the original unscoped name:
@@ -248,10 +259,11 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 4.2.3 | + Agent file modes & release alignment | Yes | 416+ |
 | 4.2.4 | + npm distribution & install clarity | Yes | 416+ |
 | 4.2.5 | + scoped npm publish correction | Yes | 416+ |
+| 4.2.6 | + built-in install management | Yes | 416+ |
 
 ## Performance
 
-| Metric | v2.0 | v4.2.5 |
+| Metric | v2.0 | v4.2.6 |
 |--------|------|------|
 | Startup | ~14ms | ~14ms |
 | Binary size | 4.0MB | ~5MB |

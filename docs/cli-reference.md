@@ -10,6 +10,42 @@ dial --version
 dial --help
 ```
 
+### `dial upgrade`
+
+Upgrade the installed DIAL CLI.
+
+```bash
+dial upgrade [--version X.Y.Z]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--version` | latest release | Upgrade to a specific released version instead of the latest |
+
+Behavior:
+- Cargo install: runs the equivalent of `cargo install dial-cli --force`
+- npm install: runs the equivalent of `npm install -g @victorysightsound/dial-cli`
+- direct binary install: downloads the matching GitHub release asset and replaces the current binary
+
+On Windows, this command may open a second console window and finish there after the current `dial` process exits.
+
+### `dial uninstall`
+
+Remove the installed DIAL CLI without touching project `.dial/` data.
+
+```bash
+dial uninstall [--yes]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--yes` | false | Skip the confirmation prompt |
+
+Behavior:
+- removes the CLI install only
+- leaves all existing project `.dial/` directories and databases untouched
+- may open a second console window on Windows so the running `dial.exe` can be removed safely after exit
+
 ## Project Setup
 
 ### `dial init`

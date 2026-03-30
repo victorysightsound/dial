@@ -1,5 +1,26 @@
 # Changelog
 
+## 4.2.6 — 2026-03-30
+
+Built-in install management release.
+
+### Upgrade and Uninstall Commands
+- adds `dial upgrade` so DIAL can upgrade itself for Cargo installs, npm installs, and direct binary installs
+- adds `dial uninstall` so users can remove the CLI without touching project `.dial/` directories
+- keeps direct-binary upgrades aligned with GitHub releases by downloading the matching platform asset automatically
+
+### Windows Install Management
+- adds a Windows follow-up console flow for `dial upgrade` and `dial uninstall` so DIAL can replace or remove `dial.exe` after the current process exits
+- avoids the common Windows locked-executable failure mode when users try to self-update or self-remove the CLI
+
+### Documentation
+- documents the new self-managed upgrade and uninstall flow in the README, getting started guide, and CLI reference
+- keeps the install instructions aligned across Cargo, npm, direct binaries, macOS, Linux, and Windows
+
+No schema migrations needed.
+
+---
+
 ## 4.2.5 — 2026-03-30
 
 npm publish correction and release alignment patch.

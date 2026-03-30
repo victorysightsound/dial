@@ -251,7 +251,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "dial-cli"
-version = "4.2.5"
+version = "4.2.6"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -260,6 +260,7 @@ dependencies = [
  "dial-core",
  "dial-providers",
  "predicates",
+ "reqwest",
  "serde_json",
  "tempfile",
  "tokio",
@@ -267,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "dial-core"
-version = "4.2.5"
+version = "4.2.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -287,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "dial-providers"
-version = "4.2.5"
+version = "4.2.6"
 dependencies = [
  "async-trait",
  "dial-core",

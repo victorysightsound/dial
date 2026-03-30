@@ -29,20 +29,20 @@ test("resolveAssetSpec rejects unsupported targets", () => {
 });
 
 test("buildDownloadUrl uses release defaults", () => {
-  const url = buildDownloadUrl("4.2.5", "dial-x86_64-apple-darwin.tar.gz", {});
+  const url = buildDownloadUrl("4.2.6", "dial-x86_64-apple-darwin.tar.gz", {});
   assert.equal(
     url,
-    "https://github.com/victorysightsound/dial/releases/download/v4.2.5/dial-x86_64-apple-darwin.tar.gz",
+    "https://github.com/victorysightsound/dial/releases/download/v4.2.6/dial-x86_64-apple-darwin.tar.gz",
   );
 });
 
 test("buildDownloadUrl respects overrides", () => {
-  const url = buildDownloadUrl("4.2.5", "dial.zip", {
-    DIAL_NPM_BASE_URL: "https://example.com/releases/v4.2.5/",
+  const url = buildDownloadUrl("4.2.6", "dial.zip", {
+    DIAL_NPM_BASE_URL: "https://example.com/releases/v4.2.6/",
   });
-  assert.equal(url, "https://example.com/releases/v4.2.5/dial.zip");
+  assert.equal(url, "https://example.com/releases/v4.2.6/dial.zip");
 
-  const directUrl = buildDownloadUrl("4.2.5", "ignored.zip", {
+  const directUrl = buildDownloadUrl("4.2.6", "ignored.zip", {
     DIAL_NPM_BINARY_URL: "https://example.com/custom/dial.zip",
   });
   assert.equal(directUrl, "https://example.com/custom/dial.zip");

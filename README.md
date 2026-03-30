@@ -112,6 +112,24 @@ sudo cp target/release/dial /usr/local/bin/
 
 On Windows, the compiled binary is `target\\release\\dial.exe`. The binary is fully self-contained with no runtime dependencies.
 
+### Upgrade or Remove DIAL
+
+Once DIAL is installed, you can let DIAL manage the CLI install itself:
+
+```bash
+dial upgrade
+dial uninstall
+```
+
+`dial upgrade` detects how DIAL was installed:
+- Cargo install: runs the equivalent of `cargo install dial-cli --force`
+- npm install: runs the equivalent of `npm install -g @victorysightsound/dial-cli`
+- direct binary install: downloads the matching release asset and replaces the current binary
+
+`dial uninstall` removes the CLI itself but leaves every project's `.dial/` directory alone.
+
+On Windows, `dial upgrade` and `dial uninstall` may open a follow-up console window and finish there after the current `dial` process exits. That avoids the normal locked-`.exe` problem on Windows.
+
 ## Project Wizard
 
 The fastest way to start a project. One command walks you from zero to autonomous iteration through 9 AI-guided phases:
