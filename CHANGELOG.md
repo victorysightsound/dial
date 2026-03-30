@@ -1,11 +1,28 @@
 # Changelog
 
+## 4.2.5 — 2026-03-30
+
+npm publish correction and release alignment patch.
+
+### npm Distribution
+- publishes the npm package as `@victorysightsound/dial-cli` after npm rejected the unscoped `dial-cli` name as too similar to an existing package
+- keeps the global command name as `dial` while using the scoped package name for installation and upgrades
+- verifies the public package path end to end with authenticated npm publish, registry checks, and install documentation updates
+
+### Documentation Accuracy
+- updates README, getting started, and npm package docs to use the correct scoped install command
+- corrects the `4.2.4` release notes so they describe the npm distribution groundwork accurately instead of implying a successful public npm publish
+
+No schema migrations needed.
+
+---
+
 ## 4.2.4 — 2026-03-30
 
 Installation and distribution patch.
 
 ### npm Distribution
-- adds an npm package (`dial-cli`) that downloads the matching GitHub release binary for the current platform and exposes `dial` as the global command
+- adds npm distribution scaffolding in the repository so the package can download the matching GitHub release binary for the current platform and expose `dial` as the global command
 - validates the npm wrapper with package-level tests and a real packed tarball install that runs `dial --version`
 - adds optional npm publish automation to the tag release workflow when `NPM_TOKEN` is configured
 

@@ -1,6 +1,6 @@
 {
-  "name": "dial-cli",
-  "version": "4.2.4",
+  "name": "@victorysightsound/dial-cli",
+  "version": "4.2.5",
   "description": "Install the DIAL CLI as a global command via npm",
   "keywords": [
     "dial",
@@ -20,7 +20,7 @@
   },
   "type": "module",
   "bin": {
-    "dial": "./bin/dial.js"
+    "dial": "bin/dial.js"
   },
   "files": [
     "README.md",

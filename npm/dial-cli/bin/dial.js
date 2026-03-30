@@ -19,7 +19,7 @@ const binaryPath = installedBinaryPath(packageRoot, asset.binaryName);
 
 if (!fs.existsSync(binaryPath)) {
   console.error(
-    `dial-cli: missing platform binary at ${binaryPath}. Reinstall with 'npm install -g dial-cli'.`,
+    `dial-cli: missing platform binary at ${binaryPath}. Reinstall with 'npm install -g @victorysightsound/dial-cli'.`,
   );
   process.exit(1);
 }

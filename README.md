@@ -88,7 +88,7 @@ sudo mv dial /usr/local/bin/
 **npm** (requires Node.js 18+):
 
 ```bash
-npm install -g dial-cli
+npm install -g @victorysightsound/dial-cli
 ```
 
 This installs the global `dial` command and downloads the matching prebuilt binary for your platform from the GitHub release for the current npm package version.

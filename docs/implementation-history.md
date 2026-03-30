@@ -2,11 +2,22 @@
 
 ## Version Timeline
 
+### v4.2.5 (March 2026) - Scoped npm Publish Correction
+
+Patch release focused on shipping the public npm package cleanly after npm rejected the original unscoped name:
+
+- Publishes the npm package as `@victorysightsound/dial-cli` while keeping the installed command name as `dial`
+- Updates README, getting started, and package docs to use the correct scoped install command
+- Corrects the `4.2.4` release notes so they describe npm groundwork accurately rather than implying a completed public publish
+- Verifies the scoped npm package through authenticated publish and registry checks
+
+No schema migrations needed.
+
 ### v4.2.4 (March 2026) - npm Distribution & Install Clarity
 
 Patch release focused on making DIAL easier to install across platforms and adding npm as a supported distribution channel:
 
-- Adds an npm package (`dial-cli`) that downloads the matching GitHub release binary for the current platform and exposes `dial` as the global command
+- Adds npm distribution scaffolding so the package can download the matching GitHub release binary for the current platform and expose `dial` as the global command
 - Adds release-workflow support for npm publication when `NPM_TOKEN` is configured
 - Expands installation guidance across README and getting started so users understand global install scope, PATH behavior, Windows setup, and the difference between the global CLI install and per-project `.dial/` state
 - Validates the npm wrapper with package-level tests plus a real packed tarball install that successfully runs `dial --version`
@@ -236,10 +247,11 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 4.2.2 | + Guided wizard trust & Windows auto-run hardening | Yes | 416+ |
 | 4.2.3 | + Agent file modes & release alignment | Yes | 416+ |
 | 4.2.4 | + npm distribution & install clarity | Yes | 416+ |
+| 4.2.5 | + scoped npm publish correction | Yes | 416+ |
 
 ## Performance
 
-| Metric | v2.0 | v4.2.4 |
+| Metric | v2.0 | v4.2.5 |
 |--------|------|------|
 | Startup | ~14ms | ~14ms |
 | Binary size | 4.0MB | ~5MB |
