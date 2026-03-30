@@ -186,13 +186,25 @@ dial spec term add "API" "Application Programming Interface" -c technical
 Add a task to the queue.
 
 ```bash
-dial task add DESCRIPTION [-p PRIORITY] [--spec SECTION_ID]
+dial task add DESCRIPTION [-p PRIORITY] [--spec SECTION_ID] [--accept TEXT ...] [--browser-check]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-p`, `--priority` | `5` | Priority from 1 (highest) to 10 (lowest) |
 | `--spec` | (none) | Link to a spec section ID for automatic context |
+| `--accept` | (repeatable) | Add a concrete acceptance criterion for this task |
+| `--browser-check` | false | Require manual browser verification before completion |
+
+Example:
+
+```bash
+dial task add "Polish settings page save flow" \
+  -p 2 \
+  --accept "Settings page renders the new save button" \
+  --accept "Saving preserves the updated form state" \
+  --browser-check
+```
 
 ### `dial task list`
 
@@ -212,6 +224,16 @@ Show the next task that will be picked up by `dial iterate`. Does not modify any
 
 ```bash
 dial task next
+```
+
+If the next task has acceptance criteria or requires browser verification, `dial task next` shows that metadata in the preview.
+
+### `dial task show`
+
+Show detailed information for a task, including acceptance criteria, dependencies, and browser-verification state.
+
+```bash
+dial task show ID
 ```
 
 ### `dial task done`
@@ -272,6 +294,20 @@ Show dependency information for a task.
 dial task deps TASK_ID
 ```
 
+### `dial task verify-browser`
+
+Record manual browser verification for the current iteration of a task.
+
+```bash
+dial task verify-browser TASK_ID --page ROUTE_OR_SCREEN [--screenshot PATH] [--notes TEXT]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--page` | required | Route, page, or screen that was verified |
+| `--screenshot` | (none) | Optional screenshot path to include in the verification record |
+| `--notes` | (none) | Optional notes about what was checked |
+
 ### `dial task chronic`
 
 Show tasks that fail repeatedly across iterations.
@@ -311,11 +347,12 @@ Validate the current in-progress task by running the validation pipeline.
 dial validate
 ```
 
-**On success:**
+**When local validation passes:**
 - Drops checkpoint (restores clean git state marker)
-- Auto-commits all changes
-- Marks the iteration and task as completed
-- Auto-unblocks dependent tasks
+- If the task requires browser verification and no verification is recorded for the current iteration, pauses instead of completing
+- Otherwise auto-commits all changes
+- Otherwise marks the iteration and task as completed
+- Otherwise auto-unblocks dependent tasks
 - If a solution was suggested, increments its confidence
 
 **On failure:**
@@ -355,6 +392,7 @@ dial auto-run [--max N] [--cli NAME] [--dry-run]
 - `review_each` — pause after every task for approval
 
 When paused, resume with `dial approve` or stop with `dial reject`.
+If a task requires manual browser verification, auto-run stops after local validation and waits for `dial task verify-browser ...` before the task can be completed.
 
 ### `dial stop`
 
@@ -407,6 +445,8 @@ Show current project status: phase, in-progress task, task counts, and recent it
 ```bash
 dial status
 ```
+
+If the current iteration is paused for review or browser verification, `dial status` shows that state instead of looking like the loop went idle.
 
 ### `dial progress`
 

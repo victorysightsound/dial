@@ -335,6 +335,16 @@ dial task add "Implement 'add' command" -p 3 --spec 2
 dial task add "Implement 'list' command" -p 4 --spec 3
 ```
 
+You can also add explicit task-level acceptance criteria and require a manual browser check for UI work:
+
+```bash
+dial task add "Polish settings page save flow" \
+  -p 2 \
+  --accept "Settings page renders the new save button" \
+  --accept "Saving preserves the updated form state" \
+  --browser-check
+```
+
 DIAL parses markdown headers into sections and creates FTS5 full-text search indexes. When you work on a task, DIAL automatically surfaces relevant spec sections — even without explicit `--spec` links, it searches by task description.
 
 If you are working inside an existing repository, you can skip the manual spec import path and let the wizard refine your existing PRD or architecture document instead:
@@ -365,6 +375,16 @@ dial validate
 # On failure: records failure pattern, resets task for retry
 ```
 
+If the task requires manual browser verification, `dial validate` pauses after the local checks pass:
+
+```bash
+dial task show 5
+dial task verify-browser 5 --page /settings --notes "Checked save flow manually"
+dial validate
+```
+
+That second `dial validate` finishes the task normally. The verification record is saved in `.dial/browser-verifications/` and shows up in `dial task show` and `dial progress`.
+
 #### Option B: Semi-Automated with Context
 
 Use `dial context` or `dial orchestrate` to generate prompts for your AI tool:
@@ -392,9 +412,10 @@ This:
 3. Spawns a fresh AI subprocess
 4. Parses DIAL signals from the output
 5. Runs validation (build + test)
-6. Commits on success, retries on failure (max 3 attempts)
-7. Moves to the next task
-8. Repeats until all tasks are done or the limit is reached
+6. Pauses for manual verification if the task requires a browser check
+7. Commits on success, retries on failure (max 3 attempts)
+8. Moves to the next task
+9. Repeats until all tasks are done or the limit is reached
 
 To stop gracefully: create a `.dial/stop` file or press Ctrl+C.
 
@@ -404,6 +425,7 @@ As the loop runs, DIAL also keeps human-readable artifacts in `.dial/`:
 - `progress.md`: recent iteration outcomes with changed files and learnings
 - `task-ledger.md`: task counts, current work, ready-next tasks, blocked tasks, and recent completions
 - `patterns.md`: stable codebase patterns and trusted solutions that feed back into future task context
+- `browser-verifications/`: manual verification records for tasks that require a UI check
 
 **Task sizing tip:** Each task runs in a single AI subprocess with a timeout (default 30 min). If a task is too large, the AI may time out or lose focus. Rule of thumb: a task should touch 1-3 files and do one focused thing. If you use `dial new`, Phase 6 automatically analyzes task sizing and splits oversized tasks for you.
 

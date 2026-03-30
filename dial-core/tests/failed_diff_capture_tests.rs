@@ -57,6 +57,8 @@ fn setup_test_db() -> Connection {
         ALTER TABLE tasks ADD COLUMN total_attempts INTEGER DEFAULT 0;
         ALTER TABLE tasks ADD COLUMN total_failures INTEGER DEFAULT 0;
         ALTER TABLE tasks ADD COLUMN last_failure_at TEXT;
+        ALTER TABLE tasks ADD COLUMN acceptance_criteria_json TEXT;
+        ALTER TABLE tasks ADD COLUMN requires_browser_verification INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE failure_patterns ADD COLUMN regex_pattern TEXT;
         ALTER TABLE failure_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'trusted';
         ALTER TABLE solutions ADD COLUMN source TEXT NOT NULL DEFAULT 'auto-learned';
@@ -83,6 +85,8 @@ fn make_test_task(id: i64) -> Task {
         total_attempts: 0,
         total_failures: 0,
         last_failure_at: None,
+        acceptance_criteria: Vec::new(),
+        requires_browser_verification: false,
     }
 }
 

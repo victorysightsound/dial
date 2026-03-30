@@ -96,6 +96,8 @@ async fn test_similar_tasks_context_assembly() {
         total_attempts: 0,
         total_failures: 0,
         last_failure_at: None,
+        acceptance_criteria: Vec::new(),
+        requires_browser_verification: false,
     };
 
     // Gather context — should include similar completed task
@@ -155,6 +157,8 @@ async fn test_similar_tasks_budgeted_context() {
         total_attempts: 0,
         total_failures: 0,
         last_failure_at: None,
+        acceptance_criteria: Vec::new(),
+        requires_browser_verification: false,
     };
 
     let items = dial_core::iteration::context::gather_context_items(&conn, &task).unwrap();

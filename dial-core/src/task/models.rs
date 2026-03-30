@@ -51,6 +51,8 @@ pub struct Task {
     pub total_attempts: i64,
     pub total_failures: i64,
     pub last_failure_at: Option<String>,
+    pub acceptance_criteria: Vec<String>,
+    pub requires_browser_verification: bool,
 }
 
 impl Task {
@@ -62,6 +64,12 @@ impl Task {
         let total_attempts: i64 = row.get("total_attempts").unwrap_or(0);
         let total_failures: i64 = row.get("total_failures").unwrap_or(0);
         let last_failure_at: Option<String> = row.get("last_failure_at").unwrap_or(None);
+        let acceptance_criteria_json: Option<String> =
+            row.get("acceptance_criteria_json").unwrap_or(None);
+        let requires_browser_verification: bool = row
+            .get::<_, i64>("requires_browser_verification")
+            .map(|value| value != 0)
+            .unwrap_or(false);
         Ok(Task {
             id: row.get("id")?,
             description: row.get("description")?,
@@ -76,6 +84,28 @@ impl Task {
             total_attempts,
             total_failures,
             last_failure_at,
+            acceptance_criteria: parse_acceptance_criteria_json(acceptance_criteria_json),
+            requires_browser_verification,
         })
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserVerificationRecord {
+    pub task_id: i64,
+    pub iteration_id: i64,
+    pub page: String,
+    pub screenshot_path: Option<String>,
+    pub notes: Option<String>,
+    pub artifact_path: Option<String>,
+    pub verified_at: String,
+}
+
+pub fn parse_acceptance_criteria_json(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
 }

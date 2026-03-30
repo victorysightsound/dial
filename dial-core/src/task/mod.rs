@@ -1,17 +1,39 @@
 pub mod models;
 
-use crate::db::{get_db, with_transaction};
+use crate::db::{get_db, get_dial_dir, with_transaction};
 use crate::errors::{DialError, Result};
 use crate::output::{bold, dim, green, red, yellow};
 use chrono::Local;
-use models::Task;
+use models::{BrowserVerificationRecord, Task};
 use rusqlite::Connection;
+use serde_json::json;
+use std::collections::HashSet;
+use std::fs;
 
 pub fn task_add(description: &str, priority: i32, spec_section_id: Option<i64>) -> Result<i64> {
+    task_add_with_metadata(description, priority, spec_section_id, &[], false)
+}
+
+pub fn task_add_with_metadata(
+    description: &str,
+    priority: i32,
+    spec_section_id: Option<i64>,
+    acceptance_criteria: &[String],
+    requires_browser_verification: bool,
+) -> Result<i64> {
     let conn = get_db(None)?;
+    let acceptance_criteria_json = normalize_acceptance_criteria(acceptance_criteria)
+        .and_then(|criteria| serde_json::to_string(&criteria).ok());
     conn.execute(
-        "INSERT INTO tasks (description, priority, spec_section_id) VALUES (?1, ?2, ?3)",
-        rusqlite::params![description, priority, spec_section_id],
+        "INSERT INTO tasks (description, priority, spec_section_id, acceptance_criteria_json, requires_browser_verification)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            description,
+            priority,
+            spec_section_id,
+            acceptance_criteria_json,
+            if requires_browser_verification { 1 } else { 0 }
+        ],
     )?;
     let task_id = conn.last_insert_rowid();
     let _ = crate::artifacts::sync_task_ledger(&conn);
@@ -22,17 +44,31 @@ pub fn task_list(show_all: bool) -> Result<()> {
     let conn = get_db(None)?;
 
     let sql = if show_all {
-        "SELECT id, description, status, priority, blocked_by, created_at
+        "SELECT id, description, status, priority, blocked_by, created_at, requires_browser_verification, acceptance_criteria_json
          FROM tasks ORDER BY priority, id"
     } else {
-        "SELECT id, description, status, priority, blocked_by, created_at
+        "SELECT id, description, status, priority, blocked_by, created_at, requires_browser_verification, acceptance_criteria_json
          FROM tasks WHERE status NOT IN ('completed', 'cancelled')
          ORDER BY priority, id"
     };
 
     let mut stmt = conn.prepare(sql)?;
-    let rows: Vec<(i64, String, String, i32, Option<String>, String)> = stmt
+    let rows: Vec<(
+        i64,
+        String,
+        String,
+        i32,
+        Option<String>,
+        String,
+        bool,
+        usize,
+    )> = stmt
         .query_map([], |row| {
+            let requires_browser_verification = row
+                .get::<_, i64>(6)
+                .map(|value| value != 0)
+                .unwrap_or(false);
+            let acceptance_count = models::parse_acceptance_criteria_json(row.get(7).ok()).len();
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -40,6 +76,8 @@ pub fn task_list(show_all: bool) -> Result<()> {
                 row.get(3)?,
                 row.get(4)?,
                 row.get(5)?,
+                requires_browser_verification,
+                acceptance_count,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -52,7 +90,17 @@ pub fn task_list(show_all: bool) -> Result<()> {
     println!("{}", bold("Tasks"));
     println!("{}", "=".repeat(60));
 
-    for (id, description, status, priority, blocked_by, _created_at) in rows {
+    for (
+        id,
+        description,
+        status,
+        priority,
+        blocked_by,
+        _created_at,
+        requires_browser_verification,
+        acceptance_count,
+    ) in rows
+    {
         let status_str = match status.as_str() {
             "pending" => dim(&format!("[{}]", status)),
             "in_progress" => yellow(&format!("[{}]", status)),
@@ -74,9 +122,21 @@ pub fn task_list(show_all: bool) -> Result<()> {
             String::new()
         };
 
+        let criteria_str = if acceptance_count > 0 {
+            dim(&format!(" [criteria:{}]", acceptance_count))
+        } else {
+            String::new()
+        };
+
+        let browser_str = if requires_browser_verification {
+            yellow(" [browser]")
+        } else {
+            String::new()
+        };
+
         println!(
-            "  #{:3} {:20} {:4} {}{}",
-            id, status_str, priority_str, description, blocked_str
+            "  #{:3} {:20} {:4} {}{}{}{}",
+            id, status_str, priority_str, description, blocked_str, criteria_str, browser_str
         );
     }
 
@@ -87,7 +147,9 @@ pub fn task_next() -> Result<Option<Task>> {
     let conn = get_db(None)?;
 
     let mut stmt = conn.prepare(
-        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at,
+                prd_section_id, total_attempts, total_failures, last_failure_at,
+                acceptance_criteria_json, requires_browser_verification
          FROM tasks WHERE status = 'pending'
          AND id NOT IN (
              SELECT td.task_id FROM task_dependencies td
@@ -105,6 +167,18 @@ pub fn task_next() -> Result<Option<Task>> {
             println!("  #{}: {}", t.id, t.description);
             if let Some(spec_id) = t.spec_section_id {
                 println!("{}", dim(&format!("  Spec section: {}", spec_id)));
+            }
+            if !t.acceptance_criteria.is_empty() {
+                println!(
+                    "{}",
+                    dim(&format!(
+                        "  Acceptance criteria: {} item(s)",
+                        t.acceptance_criteria.len()
+                    ))
+                );
+            }
+            if t.requires_browser_verification {
+                println!("{}", yellow("  Browser verification required"));
             }
         }
         None => {
@@ -242,14 +316,327 @@ pub fn task_search(query: &str) -> Result<()> {
 
 pub fn get_task_by_id(task_id: i64) -> Result<Task> {
     let conn = get_db(None)?;
+    get_task_by_id_with_conn(&conn, task_id)
+}
 
+pub fn task_show(task_id: i64) -> Result<()> {
+    let conn = get_db(None)?;
+    let task = get_task_by_id(task_id)?;
+    let dependencies = task_get_dependencies(task_id)?;
+    let dependents = task_get_dependents(task_id)?;
+    let latest_verification = latest_browser_verification(&conn, task_id)?;
+    let current_iteration_id = current_iteration_id_for_task(&conn, task_id)?;
+    let current_verification = match current_iteration_id {
+        Some(iteration_id) => get_browser_verification_for_iteration(&conn, task_id, iteration_id)?,
+        None => None,
+    };
+
+    println!("{}", bold(&format!("Task #{}", task.id)));
+    println!("{}", "=".repeat(60));
+    println!("{}", task.description);
+    println!();
+    println!("Status: {}", task.status);
+    println!("Priority: {}", task.priority);
+    if let Some(spec_id) = task.spec_section_id {
+        println!("Spec section: {}", spec_id);
+    }
+    if let Some(prd_section_id) = &task.prd_section_id {
+        println!("PRD section: {}", prd_section_id);
+    }
+    println!("Attempts: {}", task.total_attempts);
+    println!("Failures: {}", task.total_failures);
+
+    println!();
+    println!("{}", bold("Acceptance Criteria"));
+    if task.acceptance_criteria.is_empty() {
+        println!("{}", dim("  None recorded."));
+    } else {
+        for criterion in &task.acceptance_criteria {
+            println!("  - {}", criterion);
+        }
+    }
+
+    println!();
+    println!("{}", bold("Browser Verification"));
+    if task.requires_browser_verification {
+        println!("{}", yellow("  Required"));
+        if let Some(record) = current_verification {
+            println!("  Current iteration: verified on {}", record.page);
+            println!("  Verified at: {}", record.verified_at);
+            if let Some(path) = record.screenshot_path {
+                println!("  Screenshot: {}", path);
+            }
+            if let Some(notes) = record.notes {
+                println!("  Notes: {}", notes);
+            }
+            if let Some(path) = record.artifact_path {
+                println!("  Artifact: {}", path);
+            }
+        } else if let Some(record) = latest_verification {
+            println!("{}", dim("  Current iteration: not yet verified."));
+            println!(
+                "{}",
+                dim(&format!(
+                    "  Last recorded verification: {} on {}",
+                    record.page, record.verified_at
+                ))
+            );
+        } else {
+            println!("{}", dim("  No browser verification recorded yet."));
+        }
+    } else {
+        println!("{}", dim("  Not required."));
+    }
+
+    println!();
+    println!("{}", bold("Dependencies"));
+    if dependencies.is_empty() {
+        println!("{}", dim("  None."));
+    } else {
+        println!(
+            "  Depends on: {}",
+            dependencies
+                .iter()
+                .map(|id| format!("#{}", id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if dependents.is_empty() {
+        println!("{}", dim("  No dependents."));
+    } else {
+        println!(
+            "  Blocks: {}",
+            dependents
+                .iter()
+                .map(|id| format!("#{}", id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+pub fn task_record_browser_verification(
+    task_id: i64,
+    page: &str,
+    screenshot_path: Option<&str>,
+    notes: Option<&str>,
+) -> Result<BrowserVerificationRecord> {
+    let conn = get_db(None)?;
+    let task = get_task_by_id(task_id)?;
+    if !task.requires_browser_verification {
+        return Err(DialError::UserError(format!(
+            "Task #{} does not require browser verification.",
+            task_id
+        )));
+    }
+
+    let iteration_id = current_iteration_id_for_task(&conn, task_id)?.ok_or_else(|| {
+        DialError::UserError(format!(
+            "Task #{} has no active iteration. Start the task before recording browser verification.",
+            task_id
+        ))
+    })?;
+
+    let page = page.trim();
+    if page.is_empty() {
+        return Err(DialError::UserError(
+            "Browser verification requires a non-empty --page value.".to_string(),
+        ));
+    }
+
+    let verified_at = Local::now().to_rfc3339();
+    let screenshot = screenshot_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let notes = notes
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+
+    let artifact_path = write_browser_verification_artifact(
+        task_id,
+        iteration_id,
+        page,
+        screenshot.as_deref(),
+        notes.as_deref(),
+        &verified_at,
+    )?;
+
+    conn.execute(
+        "INSERT INTO task_browser_verifications
+         (task_id, iteration_id, page, screenshot_path, notes, artifact_path, verified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(task_id, iteration_id) DO UPDATE SET
+           page = excluded.page,
+           screenshot_path = excluded.screenshot_path,
+           notes = excluded.notes,
+           artifact_path = excluded.artifact_path,
+           verified_at = excluded.verified_at",
+        rusqlite::params![
+            task_id,
+            iteration_id,
+            page,
+            screenshot,
+            notes,
+            artifact_path,
+            verified_at,
+        ],
+    )?;
+
+    let _ = crate::artifacts::sync_task_ledger(&conn);
+
+    Ok(BrowserVerificationRecord {
+        task_id,
+        iteration_id,
+        page: page.to_string(),
+        screenshot_path: screenshot,
+        notes,
+        artifact_path: Some(artifact_path),
+        verified_at,
+    })
+}
+
+pub fn current_browser_verification_requirement_message(
+    conn: &Connection,
+    task_id: i64,
+    iteration_id: i64,
+) -> Result<Option<String>> {
+    let task = get_task_by_id_with_conn(conn, task_id)?;
+    if !task.requires_browser_verification {
+        return Ok(None);
+    }
+
+    if get_browser_verification_for_iteration(conn, task_id, iteration_id)?.is_some() {
+        return Ok(None);
+    }
+
+    Ok(Some(format!(
+        "Task #{} requires browser verification before completion. Run `dial task verify-browser {} --page <screen-or-route>` after checking the UI, then rerun `dial validate` or `dial approve`.",
+        task_id, task_id
+    )))
+}
+
+fn get_task_by_id_with_conn(conn: &Connection, task_id: i64) -> Result<Task> {
     let mut stmt = conn.prepare(
-        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at,
+                prd_section_id, total_attempts, total_failures, last_failure_at,
+                acceptance_criteria_json, requires_browser_verification
          FROM tasks WHERE id = ?1",
     )?;
 
     stmt.query_row([task_id], |row| Task::from_row(row))
         .map_err(|_| DialError::TaskNotFound(task_id))
+}
+
+fn normalize_acceptance_criteria(criteria: &[String]) -> Option<Vec<String>> {
+    let mut seen = HashSet::new();
+    let normalized: Vec<String> = criteria
+        .iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .filter(|item| seen.insert(item.to_ascii_lowercase()))
+        .collect();
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn current_iteration_id_for_task(conn: &Connection, task_id: i64) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT id
+             FROM iterations
+             WHERE task_id = ?1 AND status IN ('in_progress', 'awaiting_approval')
+             ORDER BY id DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .ok())
+}
+
+pub fn get_browser_verification_for_iteration(
+    conn: &Connection,
+    task_id: i64,
+    iteration_id: i64,
+) -> Result<Option<BrowserVerificationRecord>> {
+    Ok(conn
+        .query_row(
+            "SELECT task_id, iteration_id, page, screenshot_path, notes, artifact_path, verified_at
+             FROM task_browser_verifications
+             WHERE task_id = ?1 AND iteration_id = ?2",
+            rusqlite::params![task_id, iteration_id],
+            |row| {
+                Ok(BrowserVerificationRecord {
+                    task_id: row.get(0)?,
+                    iteration_id: row.get(1)?,
+                    page: row.get(2)?,
+                    screenshot_path: row.get(3)?,
+                    notes: row.get(4)?,
+                    artifact_path: row.get(5)?,
+                    verified_at: row.get(6)?,
+                })
+            },
+        )
+        .ok())
+}
+
+fn latest_browser_verification(
+    conn: &Connection,
+    task_id: i64,
+) -> Result<Option<BrowserVerificationRecord>> {
+    Ok(conn
+        .query_row(
+            "SELECT task_id, iteration_id, page, screenshot_path, notes, artifact_path, verified_at
+             FROM task_browser_verifications
+             WHERE task_id = ?1
+             ORDER BY verified_at DESC, id DESC LIMIT 1",
+            [task_id],
+            |row| {
+                Ok(BrowserVerificationRecord {
+                    task_id: row.get(0)?,
+                    iteration_id: row.get(1)?,
+                    page: row.get(2)?,
+                    screenshot_path: row.get(3)?,
+                    notes: row.get(4)?,
+                    artifact_path: row.get(5)?,
+                    verified_at: row.get(6)?,
+                })
+            },
+        )
+        .ok())
+}
+
+fn write_browser_verification_artifact(
+    task_id: i64,
+    iteration_id: i64,
+    page: &str,
+    screenshot_path: Option<&str>,
+    notes: Option<&str>,
+    verified_at: &str,
+) -> Result<String> {
+    let dir = get_dial_dir().join("browser-verifications");
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("task-{}-iteration-{}.json", task_id, iteration_id));
+    let payload = json!({
+        "task_id": task_id,
+        "iteration_id": iteration_id,
+        "page": page,
+        "screenshot_path": screenshot_path,
+        "notes": notes,
+        "verified_at": verified_at,
+    });
+    let json = serde_json::to_string_pretty(&payload).map_err(|err| {
+        DialError::UserError(format!("Failed to serialize verification record: {}", err))
+    })?;
+    fs::write(&path, json)?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 // --- Dependency Management ---
@@ -399,7 +786,9 @@ pub fn find_similar_completed_tasks(
 
     let mut stmt = conn.prepare(
         "SELECT t.id, t.description, t.status, t.priority, t.blocked_by,
-                t.spec_section_id, t.created_at, t.started_at, t.completed_at
+                t.spec_section_id, t.created_at, t.started_at, t.completed_at,
+                t.prd_section_id, t.total_attempts, t.total_failures, t.last_failure_at,
+                t.acceptance_criteria_json, t.requires_browser_verification
          FROM tasks t
          INNER JOIN tasks_fts fts ON t.id = fts.rowid
          WHERE tasks_fts MATCH ?1 AND t.status = 'completed'
@@ -706,6 +1095,74 @@ mod tests {
         // Threshold 10: neither
         let results = get_chronic_failures_with_conn(&conn, 10).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_acceptance_criteria_trims_and_dedupes() {
+        let normalized = normalize_acceptance_criteria(&[
+            "  Shows the updated badge  ".to_string(),
+            "shows the updated badge".to_string(),
+            "".to_string(),
+            "Persists the updated value".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            normalized,
+            vec![
+                "Shows the updated badge".to_string(),
+                "Persists the updated value".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_browser_verification_requirement_message_tracks_iteration_state() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO tasks (
+                id, description, priority, acceptance_criteria_json, requires_browser_verification
+             ) VALUES (
+                1,
+                'Verify settings page layout',
+                5,
+                '[\"Settings page shows the new save button\"]',
+                1
+             )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO iterations (id, task_id, status, started_at, attempt_number)
+             VALUES (1, 1, 'in_progress', ?1, 1)",
+            [Local::now().to_rfc3339()],
+        )
+        .unwrap();
+
+        let message = current_browser_verification_requirement_message(&conn, 1, 1)
+            .unwrap()
+            .unwrap();
+        assert!(message.contains("dial task verify-browser 1 --page"));
+
+        conn.execute(
+            "INSERT INTO task_browser_verifications (
+                task_id, iteration_id, page, screenshot_path, notes, artifact_path, verified_at
+             ) VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5)",
+            rusqlite::params![
+                1,
+                1,
+                "/settings",
+                ".dial/browser-verifications/task-1-iteration-1.json",
+                Local::now().to_rfc3339()
+            ],
+        )
+        .unwrap();
+
+        assert!(
+            current_browser_verification_requirement_message(&conn, 1, 1)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

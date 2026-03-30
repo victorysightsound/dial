@@ -976,6 +976,78 @@ async fn test_validate_commit_failure_leaves_task_pending() {
     env::set_current_dir(original_dir).unwrap();
 }
 
+#[tokio::test]
+async fn test_browser_verification_gates_completion_until_recorded() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let original_dir = env::current_dir().unwrap();
+    let tmp = TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    env::set_current_dir(tmp.path()).unwrap();
+    let engine = Engine::init("test", None, false).await.unwrap();
+
+    engine.config_set("build_cmd", "true").await.unwrap();
+    engine.config_set("test_cmd", "true").await.unwrap();
+
+    let task_id = engine
+        .task_add_with_metadata(
+            "Update settings page save flow",
+            5,
+            None,
+            &[
+                "Settings page renders the new save button".to_string(),
+                "Clicking save preserves the new form state".to_string(),
+            ],
+            true,
+        )
+        .await
+        .unwrap();
+    let (_has_task, _status) = engine.iterate().await.unwrap();
+
+    fs::write(tmp.path().join("ui-change.txt"), "manual ui change\n").unwrap();
+
+    let first_result = engine.validate().await.unwrap();
+    assert!(
+        !first_result,
+        "validation should pause until browser verification is recorded"
+    );
+
+    let task = engine.task_get(task_id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::InProgress);
+
+    let conn = dial_core::db::get_db(None).unwrap();
+    let iteration_status: String = conn
+        .query_row(
+            "SELECT status FROM iterations WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(iteration_status, "awaiting_approval");
+
+    let record = engine
+        .task_verify_browser(
+            task_id,
+            "/settings",
+            Some("shots/settings-save.png"),
+            Some("Checked the new save flow manually."),
+        )
+        .await
+        .unwrap();
+    let artifact_path = record.artifact_path.unwrap();
+    assert!(tmp.path().join(artifact_path).exists());
+
+    let second_result = engine.validate().await.unwrap();
+    assert!(
+        second_result,
+        "validation should succeed after verification"
+    );
+
+    let task = engine.task_get(task_id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Completed);
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
 // --- Budget / Token Counting Tests ---
 
 #[tokio::test]

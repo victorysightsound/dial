@@ -17,7 +17,19 @@ Operator trust and inspectability improvements.
 - runs migrations during fresh database initialization so new projects start with the complete schema on first use
 - fixes parallel test isolation for current-working-directory-sensitive artifact coverage
 
-No schema migrations needed.
+### Acceptance Criteria and Manual Verification
+- adds first-class task acceptance criteria so DIAL can carry concrete completion checks from manual task creation and wizard-generated plans into execution context
+- adds optional browser-verification gates for UI tasks, including `dial task show` and `dial task verify-browser`
+- pauses `dial validate` and `dial auto-run` after local validation when a task requires manual browser verification instead of letting UI work complete as a black box
+
+### Wizard and Status Flow
+- extends Phase 6 task review so reviewed tasks include acceptance criteria and a browser-verification requirement flag
+- updates `dial status` and `dial task next` so paused verification work stays visible instead of looking idle
+- lets `dial reset` recover paused `awaiting_approval` iterations as well as normal in-progress work
+
+### Schema
+- adds task acceptance-criteria storage and per-iteration browser-verification records
+- migration runs automatically on open and on fresh init
 
 ---
 

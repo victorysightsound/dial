@@ -70,6 +70,11 @@ const MIGRATIONS: &[Migration] = &[
             "Add attempt/failure tracking to tasks and pattern/iteration linking to learnings",
         apply: migrate_011_task_attempts_and_learning_links,
     },
+    Migration {
+        version: 12,
+        description: "Add task acceptance criteria and browser verification tracking",
+        apply: migrate_012_task_acceptance_and_browser_verification,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -408,6 +413,31 @@ fn migrate_011_task_attempts_and_learning_links(conn: &Connection) -> Result<()>
     Ok(())
 }
 
+fn migrate_012_task_acceptance_and_browser_verification(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE tasks ADD COLUMN acceptance_criteria_json TEXT;
+        ALTER TABLE tasks ADD COLUMN requires_browser_verification INTEGER NOT NULL DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS task_browser_verifications (
+            id INTEGER PRIMARY KEY,
+            task_id INTEGER NOT NULL,
+            iteration_id INTEGER NOT NULL,
+            page TEXT NOT NULL,
+            screenshot_path TEXT,
+            notes TEXT,
+            artifact_path TEXT,
+            verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(task_id, iteration_id),
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+            FOREIGN KEY (iteration_id) REFERENCES iterations(id) ON DELETE CASCADE
+        );
+        "#,
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,5 +534,35 @@ mod tests {
         assert_eq!(sort_order, 0);
         assert_eq!(required, 1);
         assert_eq!(timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn test_task_acceptance_and_browser_verification_schema_created() {
+        let conn = setup_test_db();
+        run_migrations(&conn).unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(tasks)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .filter_map(|row| row.ok())
+            .collect();
+
+        assert!(columns
+            .iter()
+            .any(|name| name == "acceptance_criteria_json"));
+        assert!(columns
+            .iter()
+            .any(|name| name == "requires_browser_verification"));
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='task_browser_verifications'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
     }
 }

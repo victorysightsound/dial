@@ -14,6 +14,7 @@ pub enum ProgressOutcome {
     Failed,
     Blocked,
     NoSignal,
+    AwaitingVerification,
 }
 
 impl ProgressOutcome {
@@ -23,6 +24,7 @@ impl ProgressOutcome {
             Self::Failed => "failed",
             Self::Blocked => "blocked",
             Self::NoSignal => "no-signal",
+            Self::AwaitingVerification => "awaiting-verification",
         }
     }
 }
@@ -218,21 +220,35 @@ pub fn render_task_ledger(conn: &Connection) -> Result<String> {
         |row| row.get(0),
     )?;
 
-    let current: Option<(i64, String, i32)> = conn
+    let current: Option<(i64, String, i32, String, bool, bool)> = conn
         .query_row(
-            "SELECT t.id, t.description, i.attempt_number
+            "SELECT t.id, t.description, i.attempt_number, i.status,
+                    COALESCE(t.requires_browser_verification, 0),
+                    EXISTS(
+                        SELECT 1 FROM task_browser_verifications tbv
+                        WHERE tbv.task_id = t.id AND tbv.iteration_id = i.id
+                    )
              FROM tasks t
              INNER JOIN iterations i ON i.task_id = t.id
-             WHERE i.status = 'in_progress'
+             WHERE i.status IN ('in_progress', 'awaiting_approval')
              ORDER BY i.id DESC LIMIT 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get::<_, i64>(4)? != 0,
+                    row.get::<_, i64>(5)? != 0,
+                ))
+            },
         )
         .ok();
 
-    let ready: Vec<(i64, String)> = conn
+    let ready: Vec<(i64, String, bool)> = conn
         .prepare(
-            "SELECT id, description
+            "SELECT id, description, COALESCE(requires_browser_verification, 0)
              FROM tasks WHERE status = 'pending'
              AND id NOT IN (
                  SELECT td.task_id FROM task_dependencies td
@@ -241,7 +257,9 @@ pub fn render_task_ledger(conn: &Connection) -> Result<String> {
              )
              ORDER BY priority, id LIMIT 8",
         )?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? != 0))
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -284,11 +302,21 @@ pub fn render_task_ledger(conn: &Connection) -> Result<String> {
 
     out.push_str("## Current Work\n\n");
     match current {
-        Some((task_id, description, attempt)) => {
+        Some((task_id, description, attempt, iteration_status, requires_browser, verified)) => {
             out.push_str(&format!(
                 "- Task #{} (attempt {}): {}\n\n",
                 task_id, attempt, description
             ));
+            if iteration_status == "awaiting_approval" {
+                out.push_str("  Waiting for manual approval or verification.\n");
+            }
+            if requires_browser {
+                let browser_status = if verified { "recorded" } else { "pending" };
+                out.push_str(&format!("  Browser verification: {}\n", browser_status));
+            }
+            if iteration_status == "awaiting_approval" || requires_browser {
+                out.push('\n');
+            }
         }
         None => out.push_str("No iteration in progress.\n\n"),
     }
@@ -297,8 +325,15 @@ pub fn render_task_ledger(conn: &Connection) -> Result<String> {
     if ready.is_empty() {
         out.push_str("No ready pending tasks.\n\n");
     } else {
-        for (task_id, description) in ready {
-            out.push_str(&format!("- Task #{}: {}\n", task_id, description));
+        for (task_id, description, requires_browser) in ready {
+            if requires_browser {
+                out.push_str(&format!(
+                    "- Task #{}: {} [browser verification]\n",
+                    task_id, description
+                ));
+            } else {
+                out.push_str(&format!("- Task #{}: {}\n", task_id, description));
+            }
         }
         out.push('\n');
     }

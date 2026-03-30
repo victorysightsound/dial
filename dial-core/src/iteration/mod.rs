@@ -94,7 +94,9 @@ pub fn iterate_once() -> Result<(bool, String)> {
 
     // Get next task (dependency-aware: skip tasks with unsatisfied deps)
     let mut stmt = conn.prepare(
-        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at,
+                prd_section_id, total_attempts, total_failures, last_failure_at,
+                acceptance_criteria_json, requires_browser_verification
          FROM tasks WHERE status = 'pending'
          AND id NOT IN (
              SELECT td.task_id FROM task_dependencies td
@@ -119,6 +121,15 @@ pub fn iterate_once() -> Result<(bool, String)> {
     println!("Description: {}", task.description);
     println!("{}", bold(&"=".repeat(60)));
     println!();
+    if task.requires_browser_verification {
+        println!(
+            "{}",
+            yellow(
+                "This task requires browser verification before completion. After checking the UI manually, record it with `dial task verify-browser <task-id> --page <screen-or-route>`."
+            )
+        );
+        println!();
+    }
 
     // Check for existing failed iterations
     let max_attempt: Option<i32> = conn
@@ -238,7 +249,7 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             "SELECT i.id, i.task_id, t.description, i.attempt_number
              FROM iterations i
              INNER JOIN tasks t ON i.task_id = t.id
-             WHERE i.status = 'in_progress'
+             WHERE i.status IN ('in_progress', 'awaiting_approval')
              ORDER BY i.id DESC LIMIT 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
@@ -264,6 +275,53 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
     let step_results = validation.step_results;
 
     if success {
+        if let Some(message) = crate::task::current_browser_verification_requirement_message(
+            &conn,
+            task_id,
+            iteration_id,
+        )? {
+            complete_iteration(
+                &conn,
+                iteration_id,
+                "awaiting_approval",
+                None,
+                Some(&message),
+            )?;
+            println!();
+            println!("{}", yellow(&message));
+            println!(
+                "{}",
+                yellow("Record the verification, then rerun `dial validate` or `dial approve`.")
+            );
+            let _ = append_progress_log_entry(&ProgressLogEntry {
+                task_id,
+                task_description: task_description.clone(),
+                iteration_id,
+                attempt_number,
+                outcome: ProgressOutcome::AwaitingVerification,
+                summary: Some(message.clone()),
+                changed_files_summary: if git_is_repo() {
+                    let summary = git_diff_stat().unwrap_or_default();
+                    if summary.trim().is_empty() {
+                        None
+                    } else {
+                        Some(summary)
+                    }
+                } else {
+                    None
+                },
+                commit_hash: None,
+                learnings: Vec::new(),
+            });
+            let _ = sync_operator_artifacts(&conn);
+            return Ok(ValidateResult {
+                success: false,
+                step_results,
+                task_id: Some(task_id),
+                suggested_solutions: Vec::new(),
+            });
+        }
+
         let changed_files_summary = if git_is_repo() {
             Some(git_diff_stat().unwrap_or_default())
         } else {
@@ -660,7 +718,10 @@ pub fn reset_current() -> Result<()> {
 
     let iteration: Option<(i64, i64)> = conn
         .query_row(
-            "SELECT id, task_id FROM iterations WHERE status = 'in_progress' ORDER BY id DESC LIMIT 1",
+            "SELECT id, task_id
+             FROM iterations
+             WHERE status IN ('in_progress', 'awaiting_approval')
+             ORDER BY id DESC LIMIT 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -712,10 +773,12 @@ pub fn show_context() -> Result<()> {
     // Try to find current in-progress task first
     let task: Option<Task> = conn
         .query_row(
-            "SELECT t.id, t.description, t.status, t.priority, t.blocked_by, t.spec_section_id, t.created_at, t.started_at, t.completed_at
+            "SELECT t.id, t.description, t.status, t.priority, t.blocked_by, t.spec_section_id, t.created_at, t.started_at, t.completed_at,
+                    t.prd_section_id, t.total_attempts, t.total_failures, t.last_failure_at,
+                    t.acceptance_criteria_json, t.requires_browser_verification
              FROM tasks t
              INNER JOIN iterations i ON i.task_id = t.id
-             WHERE i.status = 'in_progress'
+             WHERE i.status IN ('in_progress', 'awaiting_approval')
              ORDER BY i.id DESC LIMIT 1",
             [],
             |row| Task::from_row(row),
@@ -727,7 +790,9 @@ pub fn show_context() -> Result<()> {
         Some(t) => t,
         None => {
             let mut stmt = conn.prepare(
-                "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+                "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at,
+                        prd_section_id, total_attempts, total_failures, last_failure_at,
+                        acceptance_criteria_json, requires_browser_verification
                  FROM tasks WHERE status = 'pending'
                  AND id NOT IN (
                      SELECT td.task_id FROM task_dependencies td
@@ -775,7 +840,9 @@ pub fn orchestrate() -> Result<()> {
 
     // Get next pending task (dependency-aware)
     let mut stmt = conn.prepare(
-        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+        "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at,
+                prd_section_id, total_attempts, total_failures, last_failure_at,
+                acceptance_criteria_json, requires_browser_verification
          FROM tasks WHERE status = 'pending'
          AND id NOT IN (
              SELECT td.task_id FROM task_dependencies td

@@ -334,6 +334,14 @@ enum TaskCommands {
         /// Task ID this new task depends on (can be repeated)
         #[arg(long = "after")]
         after: Vec<i64>,
+
+        /// Acceptance criterion for this task (repeatable)
+        #[arg(long = "accept")]
+        acceptance: Vec<String>,
+
+        /// Require browser verification before this task can be completed
+        #[arg(long = "browser-check")]
+        browser_check: bool,
     },
     /// List tasks
     List {
@@ -341,6 +349,8 @@ enum TaskCommands {
         #[arg(short, long)]
         all: bool,
     },
+    /// Show detailed information for a task
+    Show { id: i64 },
     /// Show next task
     Next,
     /// Mark task done
@@ -367,6 +377,20 @@ enum TaskCommands {
     },
     /// Show dependency info for a task
     Deps { id: i64 },
+    /// Record browser verification for the current iteration of a task
+    VerifyBrowser {
+        /// Task ID
+        id: i64,
+        /// Route, page, or screen that was verified
+        #[arg(long)]
+        page: String,
+        /// Optional screenshot path
+        #[arg(long)]
+        screenshot: Option<String>,
+        /// Optional notes about the verification
+        #[arg(long)]
+        notes: Option<String>,
+    },
     /// Show tasks with chronic failures (total_failures >= threshold)
     Chronic {
         /// Minimum total failures to report
@@ -649,14 +673,27 @@ async fn run_command(command: Commands) -> anyhow::Result<()> {
                 priority,
                 spec,
                 after,
+                acceptance,
+                browser_check,
             }) => {
-                let task_id = engine.task_add(&description, priority, spec).await?;
+                let task_id = engine
+                    .task_add_with_metadata(
+                        &description,
+                        priority,
+                        spec,
+                        &acceptance,
+                        browser_check,
+                    )
+                    .await?;
                 for dep_id in after {
                     engine.task_depends(task_id, dep_id).await?;
                 }
             }
             Some(TaskCommands::List { all }) => {
                 engine.task_list(all).await?;
+            }
+            Some(TaskCommands::Show { id }) => {
+                engine.task_show(id).await?;
             }
             Some(TaskCommands::Next) => {
                 engine.task_next().await?;
@@ -681,6 +718,26 @@ async fn run_command(command: Commands) -> anyhow::Result<()> {
             }
             Some(TaskCommands::Deps { id }) => {
                 engine.task_show_deps(id).await?;
+            }
+            Some(TaskCommands::VerifyBrowser {
+                id,
+                page,
+                screenshot,
+                notes,
+            }) => {
+                let record = engine
+                    .task_verify_browser(id, &page, screenshot.as_deref(), notes.as_deref())
+                    .await?;
+                println!(
+                    "{}",
+                    output::green(&format!(
+                        "Recorded browser verification for task #{} on {}",
+                        record.task_id, record.page
+                    ))
+                );
+                if let Some(path) = record.artifact_path {
+                    println!("Artifact: {}", path);
+                }
             }
             Some(TaskCommands::Chronic { threshold }) => {
                 let results = engine.chronic_failures(threshold).await?;
@@ -1327,26 +1384,59 @@ fn show_status() -> Result<()> {
     );
     println!("{}", "=".repeat(60));
 
-    let current: Option<(i64, i64, String, i32)> = conn
+    let current: Option<(i64, i64, String, i32, String, bool, bool)> = conn
         .query_row(
-            "SELECT i.id, i.task_id, t.description, i.attempt_number
+            "SELECT i.id,
+                    i.task_id,
+                    t.description,
+                    i.attempt_number,
+                    i.status,
+                    COALESCE(t.requires_browser_verification, 0),
+                    EXISTS(
+                        SELECT 1
+                        FROM task_browser_verifications bv
+                        WHERE bv.task_id = i.task_id AND bv.iteration_id = i.id
+                    )
              FROM iterations i
              INNER JOIN tasks t ON i.task_id = t.id
-             WHERE i.status = 'in_progress'
+             WHERE i.status IN ('in_progress', 'awaiting_approval')
              ORDER BY i.id DESC LIMIT 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get::<_, i64>(5)? != 0,
+                    row.get::<_, i64>(6)? != 0,
+                ))
+            },
         )
         .ok();
 
     match current {
-        Some((_, task_id, description, attempt)) => {
+        Some((_, task_id, description, attempt, status, requires_browser, has_verification)) => {
             println!(
                 "{}",
-                output::yellow(&format!("\nIn Progress: Task #{}", task_id))
+                output::yellow(&format!("\nCurrent Iteration: Task #{}", task_id))
             );
             println!("  {}", description);
             println!("  Attempt {} of {}", attempt, MAX_FIX_ATTEMPTS);
+            if status == "awaiting_approval" {
+                println!("  State: awaiting approval");
+                if requires_browser {
+                    let browser_state = if has_verification {
+                        "recorded"
+                    } else {
+                        "pending"
+                    };
+                    println!("  Browser verification: {}", browser_state);
+                }
+            } else {
+                println!("  State: in progress");
+            }
         }
         None => {
             println!("{}", output::dim("\nNo iteration in progress."));
@@ -1384,10 +1474,11 @@ fn show_status() -> Result<()> {
     if !recent.is_empty() {
         println!("\nRecent Iterations:");
         for (id, status, duration, description) in recent {
-            let status_color = if status == "completed" {
-                output::green(&status)
-            } else {
-                output::red(&status)
+            let status_color = match status.as_str() {
+                "completed" => output::green(&status),
+                "awaiting_approval" => output::yellow(&status),
+                "in_progress" => output::yellow(&status),
+                _ => output::red(&status),
             };
 
             let duration_str = duration

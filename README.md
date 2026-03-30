@@ -163,7 +163,7 @@ The wizard works in both of these common setups:
 | 3 | **Technical** | AI covers architecture, data model, integrations, constraints |
 | 4 | **Gap Analysis** | AI reviews everything for gaps, contradictions, missing details |
 | 5 | **Generate** | AI produces structured PRD sections, terminology, and initial tasks |
-| 6 | **Task Review** | AI reorders tasks by implementation sequence, adds dependencies, removes redundancy |
+| 6 | **Task Review** | AI reorders tasks, adds dependencies, assigns task acceptance criteria, and flags UI work that needs manual browser verification |
 | 7 | **Build & Test** | AI suggests build/test commands and validation pipeline based on tech stack |
 | 8 | **Iteration Mode** | AI recommends how to run: autonomous, review every N tasks, or review each |
 | 9 | **Launch** | Prints summary of everything configured, ready for `dial auto-run` |
@@ -353,8 +353,11 @@ See [`dial-core/examples/`](dial-core/examples/) for more: custom providers, eve
 ### Task Management
 ```bash
 dial task add "description" -p 1    # Add with priority
+dial task add "Polish settings page" --accept "Save button uses primary style" --browser-check
 dial task list                      # Show active tasks
+dial task show 5                    # Show task details, criteria, verification state
 dial task next                      # Preview next task
+dial task verify-browser 5 --page /settings --notes "Checked save flow manually"
 dial task done 5                    # Mark complete
 dial task block 3 "waiting on API"  # Block with reason
 dial task depends 5 3               # Task 5 depends on task 3
@@ -389,6 +392,8 @@ dial config set approval_mode review   # auto | review | manual
 dial approve                           # Accept a paused iteration
 dial reject "needs error handling"     # Reject with reason
 ```
+
+Tasks can now carry explicit acceptance criteria and an optional manual browser-verification gate. When a task requires a UI check, `dial validate` and `dial auto-run` stop after local validation until you record the manual check with `dial task verify-browser ...`.
 
 ### Failure Pattern Detection
 

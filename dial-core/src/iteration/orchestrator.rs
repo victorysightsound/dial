@@ -437,7 +437,9 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
 
         // Get next pending task (dependency-aware)
         let mut stmt = conn.prepare(
-            "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+            "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at,
+                    prd_section_id, total_attempts, total_failures, last_failure_at,
+                    acceptance_criteria_json, requires_browser_verification
              FROM tasks WHERE status = 'pending'
              AND id NOT IN (
                  SELECT td.task_id FROM task_dependencies td
@@ -466,6 +468,14 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
             bold(&format!("Task #{}: {}", task.id, task.description))
         );
         println!("{}", bold(&"=".repeat(70)));
+        if task.requires_browser_verification {
+            println!(
+                "{}",
+                yellow(
+                    "This task requires browser verification before completion. Auto-run will stop after local validation so you can verify the UI and record it."
+                )
+            );
+        }
 
         // Check cross-iteration chronic failure threshold
         let max_total_failures: i64 = config_get("max_total_failures")?
@@ -639,6 +649,51 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
             let (success, error_output) = run_validation(&conn, iteration_id)?;
 
             if success {
+                if let Some(message) =
+                    crate::task::current_browser_verification_requirement_message(
+                        &conn,
+                        task.id,
+                        iteration_id,
+                    )?
+                {
+                    complete_iteration(
+                        &conn,
+                        iteration_id,
+                        "awaiting_approval",
+                        None,
+                        Some(&message),
+                    )?;
+                    println!("{}", yellow(&message));
+                    println!(
+                        "{}",
+                        yellow(
+                            "Auto-run is pausing here. Record the verification, then run `dial validate` or `dial approve` to finish this task."
+                        )
+                    );
+                    let _ = append_progress_log_entry(&ProgressLogEntry {
+                        task_id: task.id,
+                        task_description: task.description.clone(),
+                        iteration_id,
+                        attempt_number,
+                        outcome: ProgressOutcome::AwaitingVerification,
+                        summary: Some(message),
+                        changed_files_summary: if git_is_repo() {
+                            let summary = git_diff_stat().unwrap_or_default();
+                            if summary.trim().is_empty() {
+                                None
+                            } else {
+                                Some(summary)
+                            }
+                        } else {
+                            None
+                        },
+                        commit_hash: None,
+                        learnings: result.learnings.clone(),
+                    });
+                    let _ = sync_operator_artifacts(&conn);
+                    break;
+                }
+
                 let changed_files_summary = if git_is_repo() {
                     Some(git_diff_stat().unwrap_or_default())
                 } else {

@@ -310,6 +310,32 @@ impl Engine {
         result
     }
 
+    /// Add a new task with acceptance criteria and browser verification metadata.
+    pub async fn task_add_with_metadata(
+        &self,
+        description: &str,
+        priority: i32,
+        spec_section_id: Option<i64>,
+        acceptance_criteria: &[String],
+        requires_browser_verification: bool,
+    ) -> Result<i64> {
+        let result = task::task_add_with_metadata(
+            description,
+            priority,
+            spec_section_id,
+            acceptance_criteria,
+            requires_browser_verification,
+        );
+        if let Ok(id) = &result {
+            self.emit(Event::TaskAdded {
+                id: *id,
+                description: description.to_string(),
+                priority,
+            });
+        }
+        result
+    }
+
     /// List tasks.
     pub async fn task_list(&self, show_all: bool) -> Result<()> {
         task::task_list(show_all)
@@ -358,6 +384,22 @@ impl Engine {
     /// Get a task by ID.
     pub async fn task_get(&self, task_id: i64) -> Result<Task> {
         task::get_task_by_id(task_id)
+    }
+
+    /// Show detailed information for a task.
+    pub async fn task_show(&self, task_id: i64) -> Result<()> {
+        task::task_show(task_id)
+    }
+
+    /// Record browser verification for the current iteration of a task.
+    pub async fn task_verify_browser(
+        &self,
+        task_id: i64,
+        page: &str,
+        screenshot_path: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<task::models::BrowserVerificationRecord> {
+        task::task_record_browser_verification(task_id, page, screenshot_path, notes)
     }
 
     /// Add a dependency: task_id depends on depends_on_id.
@@ -435,7 +477,9 @@ impl Engine {
 
         // Get next pending task (same query as iterate_once / auto_run)
         let mut stmt = conn.prepare(
-            "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at
+            "SELECT id, description, status, priority, blocked_by, spec_section_id, created_at, started_at, completed_at,
+                    prd_section_id, total_attempts, total_failures, last_failure_at,
+                    acceptance_criteria_json, requires_browser_verification
              FROM tasks WHERE status = 'pending'
              AND id NOT IN (
                  SELECT td.task_id FROM task_dependencies td

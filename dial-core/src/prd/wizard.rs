@@ -778,6 +778,27 @@ fn collect_phase_quality_issues(phase: WizardPhase, value: &JsonValue) -> Vec<St
                             truncate_for_prompt(rationale, 120)
                         ));
                     }
+                    match task
+                        .get("acceptance_criteria")
+                        .and_then(|item| item.as_array())
+                    {
+                        Some(criteria) if !criteria.is_empty() => {
+                            for criterion in criteria.iter().take(3) {
+                                if let Some(text) = criterion.as_str() {
+                                    if has_placeholder_language(text) {
+                                        issues.push(format!(
+                                            "`tasks[{index}].acceptance_criteria` still contains placeholder language: {}",
+                                            truncate_for_prompt(text, 120)
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        _ => issues.push(format!(
+                            "`tasks[{index}].acceptance_criteria` must contain at least one concrete acceptance check."
+                        )),
+                    }
                 }
             }
         }
@@ -2150,12 +2171,18 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
-                            "required": ["description", "priority", "spec_section", "depends_on", "rationale", "size"],
+                            "required": ["description", "priority", "spec_section", "depends_on", "acceptance_criteria", "requires_browser_verification", "rationale", "size"],
                             "properties": {
                                 "description": { "type": "string", "minLength": 6 },
                                 "priority": { "type": "integer" },
                                 "spec_section": { "type": ["string", "null"] },
                                 "depends_on": { "type": "array", "items": { "type": "integer" } },
+                                "acceptance_criteria": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": { "type": "string", "minLength": 4 }
+                                },
+                                "requires_browser_verification": { "type": "boolean" },
                                 "rationale": { "type": "string", "minLength": 6 },
                                 "size": { "type": "string", "enum": ["S", "M", "L", "XL"] }
                             }
@@ -3133,6 +3160,8 @@ Before producing the final task list, evaluate EVERY task on three dimensions:
 3. **TESTABILITY**: Success must be verifiable by running build + tests. If a task cannot be validated by automated checks, rewrite it so it can be.
 4. **NO PLACEHOLDERS**: Every task must stand on its own using concrete project nouns. Do not use phrases like `second entity`, `<entity>`, `feature name`, or `as defined in task 2`.
 5. **SOURCE FIDELITY**: Task descriptions must faithfully implement the requested behavior. Do not swap in different enum values, file names, CLI behaviors, or validation rules.
+6. **ACCEPTANCE CRITERIA**: Every task must include 1-3 short acceptance criteria describing the observable result of the work.
+7. **BROWSER VERIFICATION**: Set `requires_browser_verification` to `true` only when the task changes user-facing UI behavior that should be checked manually in a browser. Leave it `false` for backend, CLI, data, or fully automated work.
 
 ### Actions Required
 
@@ -3151,6 +3180,8 @@ Any task sized [XL] MUST be split. Do not leave XL tasks in the final list.
 3. Remove redundant or overly-granular tasks
 4. Set dependency relationships using 0-based indices into your output tasks array
 5. Assign realistic priorities (1 = implement first, higher numbers = implement later)
+6. Include 1-3 concrete acceptance criteria for every task
+7. Mark browser verification only for tasks that truly need a manual UI check
 
 Each task should be roughly one commit's worth of work (~30 minutes).
 In the `depends_on` array, use 0-based indices referring to other tasks in YOUR output array.
@@ -3160,7 +3191,7 @@ Every task description must be self-contained. Do not refer to "the previous tas
 Respond in JSON format:
 {{
   "tasks": [
-    {{"description": "concrete task description", "priority": 1, "spec_section": "1.2", "depends_on": [], "rationale": "why this order", "size": "S"}}
+    {{"description": "concrete task description", "priority": 1, "spec_section": "1.2", "depends_on": [], "acceptance_criteria": ["observable result one", "observable result two"], "requires_browser_verification": false, "rationale": "why this order", "size": "S"}}
   ],
   "removed": [
     {{"original": "task that was removed", "reason": "why"}}
@@ -3331,6 +3362,8 @@ struct ReviewedTask {
     priority: i32,
     prd_section_id: Option<String>,
     depends_on: Vec<usize>,
+    acceptance_criteria: Vec<String>,
+    requires_browser_verification: bool,
 }
 
 fn matching_feature_dependencies(tasks: &[ReviewedTask], test_index: usize) -> Vec<usize> {
@@ -3465,6 +3498,22 @@ pub fn apply_task_review(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
+            acceptance_criteria: task
+                .get("acceptance_criteria")
+                .and_then(|criteria| criteria.as_array())
+                .map(|criteria| {
+                    criteria
+                        .iter()
+                        .filter_map(|criterion| criterion.as_str())
+                        .map(|criterion| criterion.trim().to_string())
+                        .filter(|criterion| !criterion.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            requires_browser_verification: task
+                .get("requires_browser_verification")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
         })
         .collect();
 
@@ -3515,10 +3564,29 @@ pub fn apply_task_review(
     let mut new_task_ids: Vec<i64> = Vec::with_capacity(reviewed_tasks.len());
 
     for task in &reviewed_tasks {
+        let acceptance_criteria_json = if task.acceptance_criteria.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&task.acceptance_criteria).map_err(|err| {
+                    DialError::WizardError(format!(
+                        "Failed to serialize task acceptance criteria: {}",
+                        err
+                    ))
+                })?,
+            )
+        };
         conn.execute(
-            "INSERT INTO tasks (description, status, priority, prd_section_id)
-             VALUES (?1, 'pending', ?2, ?3)",
-            params![task.description, task.priority, task.prd_section_id],
+            "INSERT INTO tasks (
+                description, status, priority, prd_section_id, acceptance_criteria_json, requires_browser_verification
+             ) VALUES (?1, 'pending', ?2, ?3, ?4, ?5)",
+            params![
+                task.description,
+                task.priority,
+                task.prd_section_id,
+                acceptance_criteria_json,
+                if task.requires_browser_verification { 1 } else { 0 }
+            ],
         )?;
         new_task_ids.push(conn.last_insert_rowid());
     }
@@ -4910,6 +4978,8 @@ Validate the complete DIAL loop on a small native Windows project.
                     "priority": 1,
                     "spec_section": "1.2",
                     "depends_on": [],
+                    "acceptance_criteria": ["Render the second entity row in the editor"],
+                    "requires_browser_verification": false,
                     "rationale": "Implements placeholder feature name",
                     "size": "M"
                 }
@@ -5162,6 +5232,17 @@ Validate the complete DIAL loop on a small native Windows project.
     }
 
     #[test]
+    fn test_task_review_prompt_requires_acceptance_and_browser_metadata() {
+        let tasks = vec![(1, "Task".to_string(), 1, None)];
+        let prompt = build_task_review_prompt(&tasks, &json!({}));
+
+        assert!(prompt.contains("ACCEPTANCE CRITERIA"));
+        assert!(prompt.contains("BROWSER VERIFICATION"));
+        assert!(prompt.contains("\"acceptance_criteria\""));
+        assert!(prompt.contains("\"requires_browser_verification\""));
+    }
+
+    #[test]
     fn test_task_review_prompt_contains_split_instructions() {
         let tasks = vec![(1, "Task".to_string(), 1, None)];
         let prompt = build_task_review_prompt(&tasks, &json!({}));
@@ -5207,10 +5288,35 @@ Validate the complete DIAL loop on a small native Windows project.
         let prompt = build_task_review_prompt(&tasks, &json!({}));
 
         assert!(prompt.contains("\"size\": \"S\""));
+        assert!(prompt.contains("\"acceptance_criteria\""));
+        assert!(prompt.contains("\"requires_browser_verification\""));
         assert!(prompt.contains("\"splits\""));
         assert!(prompt.contains("\"rewrites\""));
         assert!(prompt.contains("\"merges\""));
         assert!(prompt.contains("\"sizing_summary\""));
+    }
+
+    #[test]
+    fn test_task_review_schema_requires_acceptance_and_browser_fields() {
+        let schema = wizard_phase_output_schema(WizardPhase::TaskReview).unwrap();
+        let value: JsonValue = serde_json::from_str(&schema).unwrap();
+        let required = value["properties"]["tasks"]["items"]["required"]
+            .as_array()
+            .unwrap();
+
+        assert!(required.iter().any(|item| item == "acceptance_criteria"));
+        assert!(required
+            .iter()
+            .any(|item| item == "requires_browser_verification"));
+        assert_eq!(
+            value["properties"]["tasks"]["items"]["properties"]["acceptance_criteria"]["minItems"],
+            json!(1)
+        );
+        assert_eq!(
+            value["properties"]["tasks"]["items"]["properties"]["requires_browser_verification"]
+                ["type"],
+            json!("boolean")
+        );
     }
 
     #[test]
@@ -5485,6 +5591,8 @@ Validate the complete DIAL loop on a small native Windows project.
                 blocked_by TEXT,
                 spec_section_id INTEGER,
                 prd_section_id TEXT,
+                acceptance_criteria_json TEXT,
+                requires_browser_verification INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 completed_at TEXT,
@@ -5504,8 +5612,24 @@ Validate the complete DIAL loop on a small native Windows project.
 
         let review_data = json!({
             "tasks": [
-                {"description": "Create users table with id, email, hash columns", "priority": 1, "spec_section": "1.1", "depends_on": [], "size": "S"},
-                {"description": "Add bcrypt hashing to User model", "priority": 2, "spec_section": "1.2", "depends_on": [0], "size": "M"},
+                {
+                    "description": "Create users table with id, email, hash columns",
+                    "priority": 1,
+                    "spec_section": "1.1",
+                    "depends_on": [],
+                    "acceptance_criteria": ["Database contains users table with id, email, and password hash columns"],
+                    "requires_browser_verification": false,
+                    "size": "S"
+                },
+                {
+                    "description": "Add bcrypt hashing to User model",
+                    "priority": 2,
+                    "spec_section": "1.2",
+                    "depends_on": [0],
+                    "acceptance_criteria": ["New users persist password_hash instead of plain text", "Automated auth tests cover password hashing"],
+                    "requires_browser_verification": true,
+                    "size": "M"
+                },
             ],
             "removed": [{"original": "old task", "reason": "too vague"}],
             "added": [{"description": "Add bcrypt hashing to User model", "reason": "security"}],
@@ -5533,6 +5657,22 @@ Validate the complete DIAL loop on a small native Windows project.
             })
             .unwrap();
         assert_eq!(dep_count, 1);
+
+        let (criteria_json, requires_browser): (Option<String>, i64) = conn
+            .query_row(
+                "SELECT acceptance_criteria_json, requires_browser_verification
+                 FROM tasks WHERE description = 'Add bcrypt hashing to User model'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let criteria: Vec<String> = serde_json::from_str(&criteria_json.unwrap()).unwrap();
+        assert_eq!(criteria.len(), 2);
+        assert_eq!(
+            criteria[0],
+            "New users persist password_hash instead of plain text"
+        );
+        assert_eq!(requires_browser, 1);
     }
 
     #[test]

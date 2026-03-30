@@ -101,6 +101,10 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
         context.push(String::new());
     }
 
+    if let Some(task_requirements) = render_task_requirements(task) {
+        context.push(format!("## Task Requirements\n\n{}", task_requirements));
+    }
+
     // For retry attempts: include previous failed attempt's diff
     {
         let prev_failed_notes: Option<String> = conn
@@ -357,6 +361,7 @@ fn gather_context_impl(conn: &Connection, task: &Task, include_signs: bool) -> R
 /// Priority levels for context items (lower = higher priority).
 pub const PRIORITY_SIGNS: u32 = 0;
 pub const PRIORITY_TASK_SPEC: u32 = 5;
+pub const PRIORITY_TASK_REQUIREMENTS: u32 = 7;
 pub const PRIORITY_FTS_SPECS: u32 = 10;
 pub const PRIORITY_SUGGESTED_SOLUTIONS: u32 = 15;
 pub const PRIORITY_TRUSTED_SOLUTIONS: u32 = 20;
@@ -392,6 +397,14 @@ fn gather_context_items_impl(
         &signs_content,
         PRIORITY_SIGNS,
     ));
+
+    if let Some(task_requirements) = render_task_requirements(task) {
+        items.push(ContextItem::new(
+            "Task Requirements",
+            &task_requirements,
+            PRIORITY_TASK_REQUIREMENTS,
+        ));
+    }
 
     // For retry attempts: include previous failed attempt's diff
     {
@@ -698,6 +711,33 @@ fn gather_context_items_impl(
     Ok(items)
 }
 
+fn render_task_requirements(task: &Task) -> Option<String> {
+    let mut lines = Vec::new();
+
+    if !task.acceptance_criteria.is_empty() {
+        lines.push("Acceptance criteria:".to_string());
+        for criterion in &task.acceptance_criteria {
+            lines.push(format!("- {}", criterion));
+        }
+    }
+
+    if task.requires_browser_verification {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(
+            "Browser verification required before completion. After checking the UI manually, record it with `dial task verify-browser <task-id> --page <screen-or-route>`."
+                .to_string(),
+        );
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
 /// Gather context with a token budget. Returns the formatted context string
 /// and a list of excluded items (for warning events).
 pub fn gather_context_budgeted(
@@ -835,6 +875,8 @@ mod tests {
             ALTER TABLE tasks ADD COLUMN total_attempts INTEGER DEFAULT 0;
             ALTER TABLE tasks ADD COLUMN total_failures INTEGER DEFAULT 0;
             ALTER TABLE tasks ADD COLUMN last_failure_at TEXT;
+            ALTER TABLE tasks ADD COLUMN acceptance_criteria_json TEXT;
+            ALTER TABLE tasks ADD COLUMN requires_browser_verification INTEGER NOT NULL DEFAULT 0;
             ALTER TABLE failure_patterns ADD COLUMN regex_pattern TEXT;
             ALTER TABLE failure_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'trusted';
             ALTER TABLE solutions ADD COLUMN source TEXT NOT NULL DEFAULT 'auto-learned';
@@ -861,6 +903,8 @@ mod tests {
             total_attempts: 0,
             total_failures: 0,
             last_failure_at: None,
+            acceptance_criteria: Vec::new(),
+            requires_browser_verification: false,
         }
     }
 
