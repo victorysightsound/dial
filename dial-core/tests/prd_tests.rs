@@ -798,6 +798,67 @@ async fn test_apply_build_test_config_skips_redundant_test_task_when_existing_te
     env::set_current_dir(original_dir).unwrap();
 }
 
+#[tokio::test]
+async fn test_apply_build_test_config_folds_manual_browser_verification_into_feature_task() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+    let feature_description = r#"Add a Compact mode control to `settings.html` and wire `settings.js` to load, display, and persist the `app-settings` `compactMode` value with synced status text."#;
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, status, priority, requires_browser_verification)
+             VALUES (?1, 'pending', 3, 0)",
+            [feature_description],
+        )
+        .unwrap();
+    let feature_id = phase_conn.last_insert_rowid();
+
+    let feature_tasks = vec![(feature_id, feature_description.to_string(), 3, None)];
+    let config_data = json!({
+        "build_cmd": "npm run build",
+        "test_cmd": "npm test",
+        "test_tasks": [
+            {
+                "description": "Manually verify settings.html shows a visible Compact mode checkbox and status text, initializes from the saved app-settings localStorage value, and updates both the status text and localStorage payload when toggled in the browser.",
+                "depends_on_feature": 0,
+                "rationale": "Visible settings behavior needs browser confirmation"
+            }
+        ]
+    });
+
+    let (_build_cmd, _test_cmd, _steps_count, test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &feature_tasks).unwrap();
+
+    assert_eq!(
+        test_tasks_count, 0,
+        "Should not create a separate task for manual browser verification"
+    );
+
+    let pending_tasks: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending_tasks, 1, "Should keep only the original feature task");
+
+    let browser_required: i64 = phase_conn
+        .query_row(
+            "SELECT requires_browser_verification FROM tasks WHERE id = ?1",
+            [feature_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        browser_required, 1,
+        "Manual browser verification should stay attached to the feature task"
+    );
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
 // --- Phase 8: Iteration Mode Config Writing ---
 
 #[tokio::test]
@@ -1343,6 +1404,14 @@ fn test_build_build_test_config_prompt_empty_gathered_info() {
     assert!(prompt.contains("No technical details available from prior phases."));
     assert!(!prompt.contains("Full PRD Context"));
     assert!(!prompt.contains("Project Summary"));
+}
+
+#[test]
+fn test_build_build_test_config_prompt_discourages_manual_browser_test_tasks() {
+    let prompt = prd::wizard::build_build_test_config_prompt(&json!({}), &[]);
+
+    assert!(prompt.contains("Do NOT emit a separate `test_task` whose only purpose is manual browser verification"));
+    assert!(prompt.contains("Keep manual browser verification attached to the feature task"));
 }
 
 // =============================================================================

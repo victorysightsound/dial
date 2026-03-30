@@ -726,7 +726,7 @@ fn render_task_requirements(task: &Task) -> Option<String> {
             lines.push(String::new());
         }
         lines.push(
-            "Browser verification required before completion. After checking the UI manually, record it with `dial task verify-browser <task-id> --page <screen-or-route>`."
+            "Browser verification is required before the task can be marked complete. Do not attempt browser verification yourself and do not run `dial task verify-browser`. Leave the UI ready for the operator or parent DIAL process to check it and record verification with `dial task verify-browser <task-id> --page <screen-or-route>` after you exit."
                 .to_string(),
         );
     }
@@ -1402,5 +1402,19 @@ mod tests {
         assert!(prompt.contains("Do NOT run `session-context`"));
         assert!(!prompt.contains("VALIDATE BEFORE DONE"));
         assert!(!prompt.contains("RECORD LEARNINGS"));
+    }
+
+    #[test]
+    fn test_generate_autonomous_subagent_prompt_defers_browser_verification_to_host() {
+        let conn = setup_context_test_db();
+        let mut task = make_test_task(1);
+        task.requires_browser_verification = true;
+
+        let prompt = generate_autonomous_subagent_prompt(&conn, &task).unwrap();
+
+        assert!(prompt.contains("Browser verification is required before the task can be marked complete."));
+        assert!(prompt.contains("Do not attempt browser verification yourself"));
+        assert!(prompt.contains("do not run `dial task verify-browser`"));
+        assert!(prompt.contains("operator or parent DIAL process"));
     }
 }

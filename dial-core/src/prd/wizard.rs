@@ -3261,6 +3261,12 @@ fn task_explicitly_owns_test_coverage(description: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
+fn task_is_manual_browser_verification(description: &str) -> bool {
+    let lower = description.to_ascii_lowercase();
+    (lower.contains("manually verify") || lower.contains("manual browser verification"))
+        && lower.contains("browser")
+}
+
 fn pipeline_step_is_brittle_inline_eval(command: &str) -> bool {
     let normalized = command.to_ascii_lowercase();
     let has_inline_node_eval =
@@ -3684,6 +3690,7 @@ For EACH feature task, decide:
 2. **Simple features** (config changes, single-function utilities, constants) include tests inline with the feature; no separate test task needed.
 
 3. If a feature task description already explicitly includes its required tests or coverage, do NOT emit a separate `test_task` for that feature. Keep the verification inline with that feature task.
+4. Do NOT emit a separate `test_task` whose only purpose is manual browser verification for a UI feature. Keep manual browser verification attached to the feature task instead of turning it into a new standalone task.
 
 Use concrete project terminology from the earlier phases. Do not use placeholders like `module`, `entity`, `<route>`, or `as defined in task 2`.
 
@@ -3919,7 +3926,17 @@ pub fn apply_build_test_config(
     for test_task in &test_tasks {
         // Validate the dependency index is within bounds
         if test_task.depends_on_feature < feature_tasks.len() {
+            let feature_id = feature_tasks[test_task.depends_on_feature].0;
             let feature_description = &feature_tasks[test_task.depends_on_feature].1;
+            if task_is_manual_browser_verification(&test_task.description) {
+                conn.execute(
+                    "UPDATE tasks
+                     SET requires_browser_verification = 1
+                     WHERE id = ?1",
+                    params![feature_id],
+                )?;
+                continue;
+            }
             if task_explicitly_owns_test_coverage(feature_description) {
                 continue;
             }
@@ -3940,8 +3957,6 @@ pub fn apply_build_test_config(
             {
                 continue;
             }
-
-            let feature_id = feature_tasks[test_task.depends_on_feature].0;
 
             // Determine priority: one level after the feature task it depends on
             let feature_priority = feature_tasks[test_task.depends_on_feature].2;
