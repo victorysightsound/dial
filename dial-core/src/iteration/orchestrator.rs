@@ -10,11 +10,12 @@ use crate::task::models::Task;
 use crate::MAX_FIX_ATTEMPTS;
 use chrono::Local;
 use regex::Regex;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-use super::context::generate_subagent_prompt;
+use super::context::generate_autonomous_subagent_prompt;
 use super::signal::{read_signal_file, signal_file_to_result};
 use super::validation::run_validation;
 use super::{complete_iteration, create_iteration};
@@ -39,30 +40,49 @@ impl AiCli {
         }
     }
 
+    fn build_command_for_platform(&self, prompt_file: &str, windows: bool) -> String {
+        if windows {
+            let prompt_file_ps = prompt_file.replace('\'', "''");
+            match self {
+                AiCli::ClaudeCode => format!(
+                    "claude -p (Get-Content -Raw '{}') 2>&1",
+                    prompt_file_ps
+                ),
+                AiCli::Codex => format!(
+                    "chcp 65001>nul && type .dial\\subagent_prompt.md | codex --dangerously-bypass-approvals-and-sandbox -C . exec --skip-git-repo-check 2>&1"
+                ),
+                AiCli::Copilot => format!(
+                    "copilot -p (Get-Content -Raw '{}') -s --allow-all-tools --allow-all-paths --allow-all-urls 2>&1",
+                    prompt_file_ps
+                ),
+                AiCli::Gemini => format!(
+                    "Get-Content -Raw '{}' | gemini -p - 2>&1",
+                    prompt_file_ps
+                ),
+            }
+        } else {
+            match self {
+                // claude -p "prompt" (reads prompt, outputs response, exits)
+                AiCli::ClaudeCode => format!("claude -p \"$(cat {})\" 2>&1", prompt_file),
+                // codex exec "prompt" (non-interactive mode, skip git check for temp dirs)
+                AiCli::Codex => format!(
+                    "cat {} | codex -a never -s workspace-write -C . exec --skip-git-repo-check 2>&1",
+                    prompt_file
+                ),
+                // copilot -p "prompt" (non-interactive mode, silent output)
+                AiCli::Copilot => format!(
+                    "copilot -p \"$(cat {})\" -s --allow-all-tools --allow-all-paths --allow-all-urls 2>&1",
+                    prompt_file
+                ),
+                // gemini -p "prompt" (reads from stdin with -)
+                AiCli::Gemini => format!("cat {} | gemini -p - 2>&1", prompt_file),
+            }
+        }
+    }
+
     /// Build the shell command to run this AI CLI with a prompt file
     pub fn build_command(&self, prompt_file: &str) -> String {
-        match self {
-            // claude -p "prompt" (reads prompt, outputs response, exits)
-            AiCli::ClaudeCode => format!(
-                "claude -p \"$(cat {})\" 2>&1",
-                prompt_file
-            ),
-            // codex exec "prompt" (non-interactive mode, skip git check for temp dirs)
-            AiCli::Codex => format!(
-                "cat {} | codex exec --skip-git-repo-check 2>&1",
-                prompt_file
-            ),
-            // copilot -p "prompt" (non-interactive mode, silent output)
-            AiCli::Copilot => format!(
-                "copilot -p \"$(cat {})\" -s --allow-all-tools --allow-all-paths --allow-all-urls 2>&1",
-                prompt_file
-            ),
-            // gemini -p "prompt" (reads from stdin with -)
-            AiCli::Gemini => format!(
-                "cat {} | gemini -p - 2>&1",
-                prompt_file
-            ),
-        }
+        self.build_command_for_platform(prompt_file, cfg!(windows))
     }
 
     pub fn name(&self) -> &'static str {
@@ -72,6 +92,39 @@ impl AiCli {
             AiCli::Copilot => "GitHub Copilot CLI",
             AiCli::Gemini => "Gemini CLI",
         }
+    }
+}
+
+fn shell_program_and_args(ai_cli: AiCli) -> (&'static str, &'static [&'static str]) {
+    if cfg!(windows) {
+        if ai_cli == AiCli::Codex {
+            ("cmd", &["/d", "/s", "/c"])
+        } else {
+            (
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                &["-Command"],
+            )
+        }
+    } else {
+        ("sh", &["-c"])
+    }
+}
+
+fn prepend_current_exe_dir_to_path(command: &mut Command) {
+    let Ok(exe_path) = std::env::current_exe() else {
+        return;
+    };
+    let Some(exe_dir) = exe_path.parent() else {
+        return;
+    };
+
+    let mut paths = vec![exe_dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+
+    if let Ok(joined) = std::env::join_paths(paths) {
+        command.env("PATH", joined);
     }
 }
 
@@ -177,9 +230,12 @@ fn run_subagent(ai_cli: AiCli, prompt_file: &str, timeout_secs: u64) -> Result<S
     let shell_cmd = ai_cli.build_command(prompt_file);
     println!("{}", dim(&format!("Command: {}", shell_cmd)));
 
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(&shell_cmd)
+    let (shell_program, shell_args) = shell_program_and_args(ai_cli);
+    let mut command = Command::new(shell_program);
+    command.args(shell_args).arg(&shell_cmd);
+    prepend_current_exe_dir_to_path(&mut command);
+
+    let mut child = command
         .env_remove("CLAUDECODE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -487,7 +543,7 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
         let iteration_id = create_iteration(&conn, task.id, attempt_number)?;
 
         // Generate sub-agent prompt
-        let prompt = generate_subagent_prompt(&conn, &task)?;
+        let prompt = generate_autonomous_subagent_prompt(&conn, &task)?;
         fs::write(&prompt_file, &prompt)?;
         println!(
             "{}",
@@ -500,7 +556,15 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
 
         // Process learnings — auto-link to failure pattern if current iteration has failures
         let auto_pattern_id = auto_link_pattern_for_iteration(&conn, iteration_id);
+        let mut seen_learnings = HashSet::new();
         for (category, description) in &result.learnings {
+            let dedupe_key = (
+                category.trim().to_ascii_lowercase(),
+                description.trim().to_string(),
+            );
+            if !seen_learnings.insert(dedupe_key) {
+                continue;
+            }
             let pattern_str = auto_pattern_id
                 .map(|pid| format!(" (linked to pattern #{})", pid))
                 .unwrap_or_default();
@@ -556,11 +620,29 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 // Commit changes
                 let commit_hash = if git_is_repo() && git_has_changes() {
                     let commit_msg = task.description.clone();
-                    if let Some(hash) = git_commit(&commit_msg)? {
-                        println!("{}", green(&format!("Committed: {}", &hash[..8])));
-                        Some(hash)
-                    } else {
-                        None
+                    match git_commit(&commit_msg) {
+                        Ok(Some(hash)) => {
+                            println!("{}", green(&format!("Committed: {}", &hash[..8])));
+                            Some(hash)
+                        }
+                        Ok(None) => None,
+                        Err(err) => {
+                            let commit_error =
+                                format!("Validation passed but commit failed: {}", err);
+                            println!("{}", red(&commit_error));
+                            complete_iteration(
+                                &conn,
+                                iteration_id,
+                                "failed",
+                                None,
+                                Some(&commit_error),
+                            )?;
+                            conn.execute(
+                                "UPDATE tasks SET status = 'pending' WHERE id = ?1",
+                                [task.id],
+                            )?;
+                            return Err(DialError::GitError(commit_error));
+                        }
                     }
                 } else {
                     None
@@ -835,6 +917,48 @@ DIAL_COMPLETE: Implemented the feature
         assert!(!result.complete);
         assert!(!result.blocked);
         assert!(result.learnings.is_empty());
+    }
+
+    #[test]
+    fn test_codex_build_command_for_windows_uses_cmd_utf8_pipeline() {
+        let cmd = AiCli::Codex.build_command_for_platform(r"C:\tmp\prompt.md", true);
+        assert_eq!(
+            cmd,
+            "chcp 65001>nul && type .dial\\subagent_prompt.md | codex --dangerously-bypass-approvals-and-sandbox -C . exec --skip-git-repo-check 2>&1"
+        );
+    }
+
+    #[test]
+    fn test_codex_build_command_for_unix_sets_never_approval() {
+        let cmd = AiCli::Codex.build_command_for_platform("/tmp/prompt.md", false);
+        assert_eq!(
+            cmd,
+            "cat /tmp/prompt.md | codex -a never -s workspace-write -C . exec --skip-git-repo-check 2>&1"
+        );
+    }
+
+    #[test]
+    fn test_gemini_build_command_for_windows_uses_powershell_pipeline() {
+        let cmd = AiCli::Gemini.build_command_for_platform(r"C:\tmp\prompt.md", true);
+        assert_eq!(
+            cmd,
+            "Get-Content -Raw 'C:\\tmp\\prompt.md' | gemini -p - 2>&1"
+        );
+    }
+
+    #[test]
+    fn test_shell_program_and_args_match_current_platform() {
+        let (program, args) = shell_program_and_args(AiCli::ClaudeCode);
+        if cfg!(windows) {
+            assert!(program.ends_with("powershell.exe"));
+            assert_eq!(args, &["-Command"]);
+            let (codex_program, codex_args) = shell_program_and_args(AiCli::Codex);
+            assert_eq!(codex_program, "cmd");
+            assert_eq!(codex_args, &["/d", "/s", "/c"]);
+        } else {
+            assert_eq!(program, "sh");
+            assert_eq!(args, &["-c"]);
+        }
     }
 
     #[test]

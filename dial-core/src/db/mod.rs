@@ -6,6 +6,7 @@ use rusqlite::Connection;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 pub const DEFAULT_PHASE: &str = "default";
 
@@ -134,6 +135,7 @@ pub fn init_db(
         import_trusted_solutions(&conn, &dial_dir, source_phase)?;
     }
 
+    ensure_git_info_exclude_contains(".dial/")?;
     set_current_phase(phase)?;
 
     crate::output::print_success(&format!("Initialized DIAL database: {}", db_path.display()));
@@ -143,6 +145,52 @@ pub fn init_db(
     }
 
     Ok(true)
+}
+
+fn ensure_git_info_exclude_contains(pattern: &str) -> Result<()> {
+    let output = match Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(()),
+    };
+
+    if !output.status.success() {
+        return Ok(());
+    }
+
+    let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if git_dir.is_empty() {
+        return Ok(());
+    }
+
+    let git_dir_path = PathBuf::from(&git_dir);
+    let git_dir_path = if git_dir_path.is_absolute() {
+        git_dir_path
+    } else {
+        env::current_dir()?.join(git_dir_path)
+    };
+
+    let exclude_path = git_dir_path.join("info").join("exclude");
+    let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
+    if existing.lines().any(|line| line.trim() == pattern) {
+        return Ok(());
+    }
+
+    if let Some(parent) = exclude_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(pattern);
+    updated.push('\n');
+    fs::write(exclude_path, updated)?;
+
+    Ok(())
 }
 
 fn import_trusted_solutions(
@@ -288,6 +336,19 @@ dial config set test_cmd "your test command"
 ```
 "#;
 
+const OPTIONAL_SESSION_CONTEXT_SECTION: &str = r#"## On Entry
+
+Run `session-context` if it is available in this environment.
+If the command is not installed on this machine, continue without blocking on it.
+"#;
+
+fn new_agents_content(project_name: &str) -> String {
+    format!(
+        "# Project: {}\n\n{}\n{}",
+        project_name, OPTIONAL_SESSION_CONTEXT_SECTION, DIAL_AGENTS_SECTION
+    )
+}
+
 pub fn setup_agents_md(skip_if_exists: bool) -> Result<bool> {
     let project_root = env::current_dir()?;
     let agents_files = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
@@ -329,10 +390,7 @@ pub fn setup_agents_md(skip_if_exists: bool) -> Result<bool> {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Project".to_string());
 
-            let content = format!(
-                "# Project: {}\n\n## On Entry (MANDATORY)\n\n```bash\nsession-context\n```\n{}",
-                project_name, DIAL_AGENTS_SECTION
-            );
+            let content = new_agents_content(&project_name);
             fs::write(&path, content)?;
             crate::output::print_success(&format!(
                 "Created {} with DIAL instructions.",
@@ -375,6 +433,12 @@ pub fn setup_agents_md(skip_if_exists: bool) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::errors::DialError;
+    use serial_test::serial;
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use tempfile::TempDir;
 
     /// Create an in-memory SQLite connection with a simple test table.
     fn test_conn() -> Connection {
@@ -467,5 +531,65 @@ mod tests {
         assert!(result.is_err());
         // Both writes should be rolled back
         assert_eq!(row_count(&conn), 0);
+    }
+
+    struct CwdGuard(PathBuf);
+
+    impl CwdGuard {
+        fn change_to(path: &std::path::Path) -> Self {
+            let original = env::current_dir().unwrap();
+            env::set_current_dir(path).unwrap();
+            Self(original)
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.0);
+        }
+    }
+
+    #[test]
+    fn new_agents_content_makes_session_context_optional() {
+        let content = new_agents_content("demo-project");
+
+        assert!(content.contains("# Project: demo-project"));
+        assert!(content.contains("Run `session-context` if it is available"));
+        assert!(content.contains("continue without blocking"));
+        assert!(!content.contains("On Entry (MANDATORY)"));
+        assert!(!content.contains("```bash\nsession-context\n```"));
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn setup_agents_md_creates_cross_platform_startup_guidance() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        let created = setup_agents_md(true).unwrap();
+        assert!(created);
+
+        let content = fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
+        assert!(content.contains("Run `session-context` if it is available"));
+        assert!(content.contains("continue without blocking"));
+        assert!(!content.contains("On Entry (MANDATORY)"));
+        assert!(!content.contains("```bash\nsession-context\n```"));
+        assert!(content.contains("## DIAL"));
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn init_db_adds_dial_dir_to_git_info_exclude() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        Command::new("git").args(["init"]).output().unwrap();
+
+        let created = init_db(DEFAULT_PHASE, None, false).unwrap();
+        assert!(created);
+
+        let exclude =
+            fs::read_to_string(tmp.path().join(".git").join("info").join("exclude")).unwrap();
+        assert!(exclude.lines().any(|line| line.trim() == ".dial/"));
     }
 }

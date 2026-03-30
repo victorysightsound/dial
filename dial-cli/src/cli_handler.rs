@@ -20,6 +20,27 @@ struct WizardPhasePresentation {
     wait_hint: Option<&'static str>,
 }
 
+fn wizard_completion_messages(
+    sections_generated: usize,
+    tasks_generated: usize,
+    task_count: usize,
+    full_flow: bool,
+) -> Vec<String> {
+    let mut lines = vec![format!("Generated {} PRD sections", sections_generated)];
+
+    if full_flow {
+        lines.push(format!("Created {} initial linked tasks", tasks_generated));
+        lines.push(format!(
+            "Prepared {} total tasks for implementation",
+            task_count
+        ));
+    } else {
+        lines.push(format!("Created {} linked tasks", task_count));
+    }
+
+    lines
+}
+
 pub(crate) fn build_wizard_orientation(
     kind: WizardRunKind,
     backend: &str,
@@ -406,6 +427,7 @@ impl EventHandler for CliEventHandler {
             Event::WizardCompleted {
                 sections_generated,
                 tasks_generated,
+                task_count,
                 full_flow,
             } => {
                 let title = if *full_flow {
@@ -415,8 +437,14 @@ impl EventHandler for CliEventHandler {
                 };
                 println!("\n{}", output::bold(title));
                 println!("{}", "=".repeat(40));
-                output::print_success(&format!("Generated {} PRD sections", sections_generated));
-                output::print_success(&format!("Created {} linked tasks", tasks_generated));
+                for line in wizard_completion_messages(
+                    *sections_generated,
+                    *tasks_generated,
+                    *task_count,
+                    *full_flow,
+                ) {
+                    output::print_success(&line);
+                }
                 if !*full_flow {
                     println!(
                         "{}",
@@ -698,5 +726,22 @@ mod tests {
                 phase
             );
         }
+    }
+
+    #[test]
+    fn full_wizard_completion_mentions_total_task_backlog() {
+        let lines = wizard_completion_messages(6, 6, 34, true);
+
+        assert_eq!(lines[0], "Generated 6 PRD sections");
+        assert_eq!(lines[1], "Created 6 initial linked tasks");
+        assert_eq!(lines[2], "Prepared 34 total tasks for implementation");
+    }
+
+    #[test]
+    fn prd_wizard_completion_reports_linked_tasks_only() {
+        let lines = wizard_completion_messages(6, 6, 6, false);
+
+        assert_eq!(lines[0], "Generated 6 PRD sections");
+        assert_eq!(lines[1], "Created 6 linked tasks");
     }
 }

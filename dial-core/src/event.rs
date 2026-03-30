@@ -138,6 +138,7 @@ pub enum Event {
     WizardCompleted {
         sections_generated: usize,
         tasks_generated: usize,
+        task_count: usize,
         full_flow: bool,
     },
     /// The wizard reached a user-facing checkpoint between major stages.

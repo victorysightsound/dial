@@ -38,7 +38,11 @@ fn run_command_with_label(
     let _timeout_secs = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     let start = Instant::now();
 
-    let result = Command::new("sh").arg("-c").arg(&sanitized.value).output();
+    let (shell_program, shell_args) = validation_shell_program_and_args(&sanitized.value);
+    let mut command = Command::new(shell_program);
+    command.args(shell_args).arg(&sanitized.value);
+    prepend_current_exe_dir_to_path(&mut command);
+    let result = command.output();
 
     let duration = start.elapsed().as_secs_f64();
 
@@ -68,6 +72,57 @@ fn run_command_with_label(
             output: e.to_string(),
             duration,
         }),
+    }
+}
+
+fn validation_shell_program_and_args(cmd: &str) -> (&'static str, &'static [&'static str]) {
+    if cfg!(windows) {
+        if looks_like_powershell(cmd) {
+            (
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                &["-Command"],
+            )
+        } else {
+            ("cmd", &["/d", "/s", "/c"])
+        }
+    } else {
+        ("sh", &["-c"])
+    }
+}
+
+fn looks_like_powershell(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    if lower.contains("node -e '") || lower.contains("node --eval '") {
+        return true;
+    }
+    [
+        "get-childitem",
+        "foreach-object",
+        "$_",
+        "out-null",
+        "set-content",
+        "literalpath",
+        "select-object",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn prepend_current_exe_dir_to_path(command: &mut Command) {
+    let Ok(exe_path) = std::env::current_exe() else {
+        return;
+    };
+    let Some(exe_dir) = exe_path.parent() else {
+        return;
+    };
+
+    let mut paths = vec![exe_dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+
+    if let Ok(joined) = std::env::join_paths(paths) {
+        command.env("PATH", joined);
     }
 }
 
@@ -482,5 +537,35 @@ mod tests {
             "unexpected output: {}",
             result.output
         );
+    }
+
+    #[test]
+    fn validation_shell_uses_sh_on_unix() {
+        if !cfg!(windows) {
+            let (program, args) = validation_shell_program_and_args("npm test");
+            assert_eq!(program, "sh");
+            assert_eq!(args, &["-c"]);
+        }
+    }
+
+    #[test]
+    fn validation_shell_detects_powershell_commands() {
+        let (program, args) =
+            validation_shell_program_and_args("Get-ChildItem -Recurse | ForEach-Object { $_ }");
+
+        if cfg!(windows) {
+            assert!(program.ends_with("powershell.exe"));
+            assert_eq!(args, &["-Command"]);
+        } else {
+            assert_eq!(program, "sh");
+            assert_eq!(args, &["-c"]);
+        }
+    }
+
+    #[test]
+    fn validation_shell_detects_single_quoted_node_eval_for_windows() {
+        assert!(looks_like_powershell(
+            "node -e 'const fs = require(\"fs\"); fs.accessSync(\"src/index.js\")'"
+        ));
     }
 }

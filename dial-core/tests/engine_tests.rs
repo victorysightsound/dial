@@ -3,6 +3,8 @@ use dial_core::provider::{Provider, ProviderRequest, ProviderResponse, TokenUsag
 use dial_core::task::models::TaskStatus;
 use dial_core::{Engine, EngineConfig, Event, EventHandler};
 use std::env;
+use std::fs;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
@@ -19,6 +21,35 @@ async fn setup_engine() -> (Engine, TempDir, std::path::PathBuf) {
 
     let engine = Engine::init("test", None, false).await.unwrap();
     (engine, tmp, original_dir)
+}
+
+fn init_git_repo(path: &std::path::Path) {
+    Command::new("git")
+        .args(["init"])
+        .current_dir(path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "test@dial.dev"])
+        .current_dir(path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "DIAL Test"])
+        .current_dir(path)
+        .output()
+        .unwrap();
+    fs::write(path.join("README.md"), "initial\n").unwrap();
+    Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "Initial commit"])
+        .current_dir(path)
+        .output()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -908,6 +939,39 @@ async fn test_pipeline_step_events_emitted() {
         !step_events.is_empty() || result.is_ok(),
         "Either step events emitted or validation succeeded"
     );
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_validate_commit_failure_leaves_task_pending() {
+    let _lock = CWD_LOCK.lock().unwrap();
+    let original_dir = env::current_dir().unwrap();
+    let tmp = TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    env::set_current_dir(tmp.path()).unwrap();
+    let engine = Engine::init("test", None, false).await.unwrap();
+
+    engine.config_set("build_cmd", "true").await.unwrap();
+    engine.config_set("test_cmd", "true").await.unwrap();
+
+    let task_id = engine
+        .task_add("Implement feature and add tests", 5, None)
+        .await
+        .unwrap();
+    let (_has_task, _status) = engine.iterate().await.unwrap();
+
+    fs::write(tmp.path().join("feature.txt"), "real change\n").unwrap();
+    fs::create_dir(tmp.path().join(".git/index.lock")).unwrap();
+
+    let error = engine.validate().await.unwrap_err();
+    assert!(
+        error.to_string().contains("commit failed"),
+        "expected commit failure, got {error}"
+    );
+
+    let task = engine.task_get(task_id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Pending);
 
     env::set_current_dir(original_dir).unwrap();
 }

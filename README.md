@@ -120,7 +120,7 @@ dial new --template mvp --wizard-backend copilot
 
 The wizard is guided by default. You do not need to craft a special AI prompt for each phase; DIAL sends structured prompts internally and explains what it is doing as it moves through the flow.
 
-Current release verification covers fresh macOS wizard runs with Codex and Copilot plus native Windows wizard runs with Copilot.
+Current release verification covers fresh macOS wizard runs with Codex and Copilot, native Windows wizard runs with Codex and Copilot, and a seeded native Windows `dial auto-run --cli codex` end-to-end validation against the `mini-note-formatter` fixture scenario.
 
 | Phase | Name | What Happens |
 |-------|------|-------------|

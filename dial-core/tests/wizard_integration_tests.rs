@@ -832,11 +832,12 @@ async fn test_new_project_emits_phase_progress_events_for_full_wizard() {
         events.iter().any(|event| matches!(
             event,
             Event::WizardCompleted {
+                task_count: 4,
                 full_flow: true,
                 ..
             }
         )),
-        "full wizard completion event should be marked as full_flow"
+        "full wizard completion event should report the final task backlog"
     );
     assert!(
         events
@@ -872,11 +873,12 @@ async fn test_prd_wizard_marks_completion_as_prd_only_without_checkpoint() {
         events.iter().any(|event| matches!(
             event,
             Event::WizardCompleted {
+                task_count: 3,
                 full_flow: false,
                 ..
             }
         )),
-        "PRD-only wizard should mark completion as non-full-flow"
+        "PRD-only wizard should report the initial linked task count"
     );
     assert!(
         events

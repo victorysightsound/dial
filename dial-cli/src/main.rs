@@ -5,8 +5,32 @@ mod wizard_backend;
 
 use clap::{Parser, Subcommand};
 use dial_core::*;
+use std::path::PathBuf;
 use std::sync::Arc;
 use wizard_backend::resolve_wizard_provider;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedWizardSourceDoc {
+    display_path: String,
+    prompt_content: String,
+}
+
+fn resolve_wizard_source_doc(from: Option<&str>) -> Result<Option<ResolvedWizardSourceDoc>> {
+    let Some(from_path) = from else {
+        return Ok(None);
+    };
+
+    let prompt_content = dial_core::prd::wizard::load_existing_doc(from_path)?;
+    let display_path = std::fs::canonicalize(from_path)
+        .unwrap_or_else(|_| PathBuf::from(from_path))
+        .to_string_lossy()
+        .to_string();
+
+    Ok(Some(ResolvedWizardSourceDoc {
+        display_path,
+        prompt_content,
+    }))
+}
 
 #[derive(Parser)]
 #[command(name = "dial")]
@@ -503,17 +527,22 @@ async fn run_command(command: Commands) -> Result<()> {
     } = command
     {
         let resolved = resolve_wizard_provider(wizard_backend.as_deref(), wizard_model.as_deref())?;
+        let source_doc = resolve_wizard_source_doc(from.as_deref())?;
         let mut engine = open_or_init_new_engine(&phase, resume).await?;
         engine.on_event(Arc::new(cli_handler::CliEventHandler));
         cli_handler::print_wizard_orientation(
             cli_handler::WizardRunKind::Full,
             resolved.backend.as_str(),
-            from.as_deref(),
+            source_doc.as_ref().map(|doc| doc.display_path.as_str()),
         );
         engine.set_provider(resolved.provider);
 
         engine
-            .new_project(&template, from.as_deref(), resume)
+            .new_project(
+                &template,
+                source_doc.as_ref().map(|doc| doc.prompt_content.as_str()),
+                resume,
+            )
             .await?;
         return Ok(());
     }
@@ -651,14 +680,19 @@ async fn run_command(command: Commands) -> Result<()> {
                         wizard_backend.as_deref(),
                         wizard_model.as_deref(),
                     )?;
+                    let source_doc = resolve_wizard_source_doc(from.as_deref())?;
                     cli_handler::print_wizard_orientation(
                         cli_handler::WizardRunKind::PrdOnly,
                         resolved.backend.as_str(),
-                        from.as_deref(),
+                        source_doc.as_ref().map(|doc| doc.display_path.as_str()),
                     );
                     engine.set_provider(resolved.provider);
                     engine
-                        .prd_wizard(&template, from.as_deref(), resume)
+                        .prd_wizard(
+                            &template,
+                            source_doc.as_ref().map(|doc| doc.prompt_content.as_str()),
+                            resume,
+                        )
                         .await?;
                 }
                 Some(SpecCommands::Migrate) => {
@@ -1480,6 +1514,7 @@ mod tests {
     use super::*;
     use crate::test_support::cwd_lock;
     use std::env;
+    use std::fs;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -1493,6 +1528,28 @@ mod tests {
 
         let reopened = open_or_init_new_engine("mvp", true).await;
         assert!(reopened.is_ok(), "resume should reopen an existing project");
+
+        env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_wizard_source_doc_loads_content_and_canonicalizes_display_path() {
+        let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = env::current_dir().unwrap();
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("wizard-source.md");
+        fs::write(&source, "# Example\n\nLoaded from disk.\n").unwrap();
+        env::set_current_dir(temp.path()).unwrap();
+
+        let resolved = resolve_wizard_source_doc(Some("wizard-source.md"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(resolved.prompt_content, "# Example\n\nLoaded from disk.\n");
+        assert_eq!(
+            PathBuf::from(&resolved.display_path),
+            source.canonicalize().unwrap()
+        );
 
         env::set_current_dir(original_dir).unwrap();
     }

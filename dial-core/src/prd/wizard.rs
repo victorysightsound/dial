@@ -168,6 +168,155 @@ fn truncate_for_prompt(text: &str, max_chars: usize) -> String {
     format!("{}...", truncated.trim_end())
 }
 
+fn maybe_store_source_requirements(state: &mut WizardState, from_doc: Option<&str>) -> bool {
+    let Some(doc) = from_doc else {
+        return false;
+    };
+
+    if state.gathered_info.get("source_requirements").is_some() {
+        return false;
+    }
+
+    state.gathered_info["source_requirements"] = extract_source_requirements(doc);
+    true
+}
+
+fn extract_source_requirements(existing_doc: &str) -> JsonValue {
+    let sections = parse_markdown_sections(existing_doc);
+    let mut source = serde_json::Map::new();
+
+    for (field, headings) in [
+        ("goal", &["goal", "summary", "objective"][..]),
+        (
+            "repository_context",
+            &["repository context", "project context", "context"][..],
+        ),
+        (
+            "requested_outcome",
+            &["requested outcome", "requested outcomes", "mvp"][..],
+        ),
+        ("hard_constraints", &["hard constraints", "constraints"][..]),
+        (
+            "acceptance_checks",
+            &["acceptance checks", "acceptance criteria"][..],
+        ),
+    ] {
+        if let Some(summary) = find_markdown_section(&sections, headings) {
+            source.insert(field.to_string(), JsonValue::String(summary));
+        }
+    }
+
+    if source.is_empty() {
+        source.insert(
+            "source_excerpt".to_string(),
+            JsonValue::String(summarize_markdown_excerpt(existing_doc, 18, 1800)),
+        );
+    }
+
+    JsonValue::Object(source)
+}
+
+fn parse_markdown_sections(markdown: &str) -> Vec<(String, String)> {
+    let mut sections = Vec::new();
+    let mut current_heading = String::new();
+    let mut current_lines = Vec::new();
+
+    for line in markdown.lines() {
+        let trimmed = line.trim_end();
+        let heading = trimmed.trim();
+        if heading.starts_with('#') {
+            if !current_heading.is_empty() || !current_lines.is_empty() {
+                sections.push((current_heading.clone(), current_lines.join("\n")));
+                current_lines.clear();
+            }
+            current_heading = heading.trim_start_matches('#').trim().to_string();
+        } else {
+            current_lines.push(trimmed.to_string());
+        }
+    }
+
+    if !current_heading.is_empty() || !current_lines.is_empty() {
+        sections.push((current_heading, current_lines.join("\n")));
+    }
+
+    sections
+}
+
+fn find_markdown_section(
+    sections: &[(String, String)],
+    heading_candidates: &[&str],
+) -> Option<String> {
+    sections.iter().find_map(|(heading, content)| {
+        let normalized_heading = normalize_quality_text(heading);
+        if heading_candidates.iter().any(|candidate| {
+            normalized_heading == *candidate || normalized_heading.contains(candidate)
+        }) {
+            let summary = summarize_markdown_excerpt(content, 14, 1400);
+            if !summary.is_empty() {
+                Some(summary)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn summarize_markdown_excerpt(markdown: &str, max_lines: usize, max_chars: usize) -> String {
+    let mut lines = Vec::new();
+    let mut total_chars = 0usize;
+    let mut in_code_block = false;
+
+    for raw_line in markdown.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block || trimmed.is_empty() {
+            continue;
+        }
+
+        let normalized = if trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed
+                .chars()
+                .next()
+                .map(|ch| ch.is_ascii_digit())
+                .unwrap_or(false)
+        {
+            trimmed.to_string()
+        } else {
+            trimmed.split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+
+        if normalized.is_empty() {
+            continue;
+        }
+
+        let projected = total_chars + normalized.len() + 1;
+        if projected > max_chars {
+            let remaining = max_chars.saturating_sub(total_chars);
+            if remaining > 4 {
+                lines.push(format!(
+                    "{}...",
+                    truncate_for_prompt(&normalized, remaining - 3)
+                ));
+            }
+            break;
+        }
+
+        total_chars = projected;
+        lines.push(normalized);
+        if lines.len() >= max_lines {
+            break;
+        }
+    }
+
+    lines.join("\n")
+}
+
 const EXACT_PLACEHOLDER_PHRASES: &[&str] = &[
     "feature name",
     "workflow name",
@@ -677,6 +826,26 @@ fn build_project_summary_context(gathered_info: &JsonValue) -> String {
                 lines.push(format!("- Target users: {}", names.join(", ")));
             }
         }
+        if let Some(criteria) = vision.get("success_criteria").and_then(|v| v.as_array()) {
+            let items: Vec<&str> = criteria
+                .iter()
+                .filter_map(|value| value.as_str())
+                .take(4)
+                .collect();
+            if !items.is_empty() {
+                lines.push(format!("- Success criteria: {}", items.join("; ")));
+            }
+        }
+        if let Some(exclusions) = vision.get("scope_exclusions").and_then(|v| v.as_array()) {
+            let items: Vec<&str> = exclusions
+                .iter()
+                .filter_map(|value| value.as_str())
+                .take(4)
+                .collect();
+            if !items.is_empty() {
+                lines.push(format!("- Scope exclusions: {}", items.join("; ")));
+            }
+        }
     }
 
     if let Some(functionality) = gathered_info.get("functionality") {
@@ -749,6 +918,35 @@ fn build_project_summary_context(gathered_info: &JsonValue) -> String {
         String::new()
     } else {
         format!("\n## Project Summary\n{}\n", lines.join("\n"))
+    }
+}
+
+fn build_source_requirements_context(gathered_info: &JsonValue) -> String {
+    let Some(source) = gathered_info.get("source_requirements") else {
+        return String::new();
+    };
+
+    let mut sections = Vec::new();
+    for (label, key) in [
+        ("Goal", "goal"),
+        ("Repository Context", "repository_context"),
+        ("Requested Outcome", "requested_outcome"),
+        ("Hard Constraints", "hard_constraints"),
+        ("Acceptance Checks", "acceptance_checks"),
+        ("Source Excerpt", "source_excerpt"),
+    ] {
+        if let Some(text) = source.get(key).and_then(|value| value.as_str()) {
+            sections.push(format!("{label}:\n{text}"));
+        }
+    }
+
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n## Source Requirements (authoritative)\n{}\n",
+            sections.join("\n\n")
+        )
     }
 }
 
@@ -1119,7 +1317,8 @@ fn build_gap_analysis_detail_context(gathered_info: &JsonValue) -> String {
 }
 
 fn phase_context_for_prompt(phase: WizardPhase, gathered_info: &JsonValue) -> String {
-    let context = match phase {
+    let source_requirements = build_source_requirements_context(gathered_info);
+    let phase_specific = match phase {
         WizardPhase::Vision => String::new(),
         WizardPhase::Functionality => selected_gathered_context(
             gathered_info,
@@ -1147,6 +1346,8 @@ fn phase_context_for_prompt(phase: WizardPhase, gathered_info: &JsonValue) -> St
         ),
         _ => String::new(),
     };
+
+    let context = format!("{source_requirements}{phase_specific}");
 
     if context.is_empty() {
         String::new()
@@ -1330,13 +1531,25 @@ pub fn build_phase_prompt(
         .map(|doc| format!("\n## Existing Document\n{}\n", doc))
         .unwrap_or_default();
 
+    let source_rules = if existing_doc.is_some() {
+        r#"
+## Source-of-Truth Rules
+- Treat the existing document as the authoritative source of scope and acceptance.
+- Preserve exact literal values from it, including enum or status names, commands, file paths, file names, and acceptance checks.
+- Do not invent alternate contracts, validations, or extra scope that the source document does not request.
+- If the source document requests a specific backlog size or implementation shape, keep later phases aligned to it.
+"#
+    } else {
+        ""
+    };
+
     match phase {
         WizardPhase::Vision => format!(
             r#"You are helping create a Product Requirements Document (PRD).
 
 Phase 1: Vision & Problem
 
-{template_context}{prior_context}{doc_context}
+{template_context}{prior_context}{doc_context}{source_rules}
 
 Rules:
 - `project_name` must be a concrete product name tied to the domain. If no name exists yet, invent one.
@@ -1360,13 +1573,14 @@ Respond ONLY with valid JSON."#
         WizardPhase::Functionality => format!(
             r#"You are helping create a PRD. Phase 2: Functionality.
 
-{template_context}{prior_context}{doc_context}
+{template_context}{prior_context}{doc_context}{source_rules}
 
 Based on the vision, define the features in JSON format:
 - Reuse the concrete domain nouns from phase 1.
 - Do not use placeholders like `feature name`, `workflow name`, `some user`, or `TBD`.
 - Every MVP feature should describe a real user-visible capability for this specific product.
 - Every workflow should describe concrete user or system actions for this product.
+- If the existing document names exact literals such as statuses, commands, file paths, or acceptance checks, carry those exact literals forward.
 {{
   "mvp_features": [
     {{"name": "feature name", "description": "what it does", "priority": 1}}
@@ -1384,12 +1598,13 @@ Respond ONLY with valid JSON."#
         WizardPhase::Technical => format!(
             r#"You are helping create a PRD. Phase 3: Technical Details.
 
-{template_context}{prior_context}{doc_context}
+{template_context}{prior_context}{doc_context}{source_rules}
 
 Define the technical architecture in JSON format:
 - Use concrete domain entities, field names, relationships, and integrations from the prior phases.
 - Do not use placeholders like `field1: type`, `second entity`, `service name`, `constraint 1`, or `requirement 1`.
 - If there are no external integrations, return an empty `integrations` array instead of placeholder entries.
+- Preserve exact constraints, commands, file paths, and platform expectations from the existing document when they are explicitly provided.
 {{
   "data_model": [
     {{"entity": "name", "fields": ["field1: type", "field2: type"], "relationships": ["relates to X"]}}
@@ -1407,7 +1622,7 @@ Respond ONLY with valid JSON."#
         WizardPhase::GapAnalysis => format!(
             r#"You are a senior software architect reviewing a PRD for completeness.
 
-{template_context}{prior_context}{doc_context}
+{template_context}{prior_context}{doc_context}{source_rules}
 
 Review everything gathered so far and identify:
 1. Missing details that would block implementation
@@ -1458,7 +1673,7 @@ Respond ONLY with valid JSON."#
         WizardPhase::Generate => format!(
             r#"You are generating a structured PRD from gathered information.
 
-{template_context}{prior_context}{doc_context}
+{template_context}{prior_context}{doc_context}{source_rules}
 
 Generate the complete PRD content as a JSON object where each key is a section title
 from the template and each value is the markdown content for that section.
@@ -1519,6 +1734,10 @@ pub async fn run_wizard_phases_1_3(
     state: &mut WizardState,
     from_doc: Option<&str>,
 ) -> Result<()> {
+    if maybe_store_source_requirements(state, from_doc) {
+        save_wizard_state(prd_conn, state)?;
+    }
+
     let phases = [
         WizardPhase::Vision,
         WizardPhase::Functionality,
@@ -2415,6 +2634,10 @@ pub async fn run_wizard_phases_4_5(
     state: &mut WizardState,
     from_doc: Option<&str>,
 ) -> Result<(usize, usize)> {
+    if maybe_store_source_requirements(state, from_doc) {
+        save_wizard_state(prd_conn, state)?;
+    }
+
     let mut sections_generated = 0;
     let mut tasks_generated = 0;
 
@@ -2578,6 +2801,10 @@ pub async fn run_wizard_with_events(
     // Validate template exists
     if get_template(&state.template).is_none() {
         return Err(DialError::TemplateNotFound(state.template.clone()));
+    }
+
+    if maybe_store_source_requirements(&mut state, from_doc) {
+        save_wizard_state(prd_conn, &mut state)?;
     }
 
     let max_phase: i32 = if full { 9 } else { 5 };
@@ -2872,6 +3099,7 @@ pub fn build_task_review_prompt(
         items.join("\n")
     };
 
+    let source_requirements = build_source_requirements_context(gathered_info);
     let project_summary = build_project_summary_context(gathered_info);
     let section_outline = build_generated_section_outline(gathered_info);
 
@@ -2880,7 +3108,15 @@ pub fn build_task_review_prompt(
 
 ## Current Task List (generated from PRD)
 {task_list}
-{project_summary}{section_outline}
+{source_requirements}{project_summary}{section_outline}
+
+## SOURCE FIDELITY
+
+If source requirements are present above, they are authoritative:
+- Preserve exact literal values from them, including enum or status names, commands, file paths, file names, and acceptance checks.
+- Do not introduce alternate contracts, validation rules, or extra scope that the source requirements do not ask for.
+- If the source requirements prefer a task-count range, keep the final task list within that range unless it is impossible to satisfy the scope.
+- Do not create duplicate tasks for behavior or test coverage that is already fully owned by another task.
 
 ## TASK SIZING ANALYSIS
 
@@ -2896,12 +3132,14 @@ Before producing the final task list, evaluate EVERY task on three dimensions:
 
 3. **TESTABILITY**: Success must be verifiable by running build + tests. If a task cannot be validated by automated checks, rewrite it so it can be.
 4. **NO PLACEHOLDERS**: Every task must stand on its own using concrete project nouns. Do not use phrases like `second entity`, `<entity>`, `feature name`, or `as defined in task 2`.
+5. **SOURCE FIDELITY**: Task descriptions must faithfully implement the requested behavior. Do not swap in different enum values, file names, CLI behaviors, or validation rules.
 
 ### Actions Required
 
 - **SPLIT** any task that requires more than 3 files OR implements multiple features. Create sub-tasks with explicit dependency relationships between them (the sub-tasks should appear in order in the tasks array, with later ones depending on earlier ones).
 - **REWRITE** any vague task description to be concrete with specific inputs, outputs, and acceptance criteria.
 - **MERGE** tasks that are too small for a separate iteration (e.g., single-line config changes) into a related neighboring task.
+- **DEDUPE** tasks that repeat work already completed by another task or that describe the same acceptance check twice.
 - **SIZE** every task as one of: [S]mall (1 file, <15 min), [M]edium (1-2 files, ~30 min), [L]arge (2-3 files, ~45 min), [XL]needs-review (>3 files or >1 hour; should be split further).
 
 Any task sized [XL] MUST be split. Do not leave XL tasks in the final list.
@@ -2970,6 +3208,149 @@ fn read_task_list(conn: &Connection) -> Result<Vec<(i64, String, i32, Option<Str
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     Ok(rows)
+}
+
+fn task_explicitly_owns_test_coverage(description: &str) -> bool {
+    let lower = description.to_ascii_lowercase();
+    [
+        "add tests",
+        "add test",
+        "write tests",
+        "write test",
+        "test coverage",
+        "coverage in ",
+        "integration test",
+        "integration coverage",
+        "unit test",
+        "cli coverage",
+        "test/",
+        "tests/",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn pipeline_step_is_brittle_inline_eval(command: &str) -> bool {
+    let normalized = command.to_ascii_lowercase();
+    let has_inline_node_eval =
+        normalized.contains("node -e ") || normalized.contains("node --eval ");
+    has_inline_node_eval && (command.len() > 220 || command.contains('\''))
+}
+
+fn normalize_task_text_for_dedupe(text: &str) -> String {
+    let normalized: String = text
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn task_scope_keywords(text: &str) -> std::collections::HashSet<String> {
+    const STOP_WORDS: &[&str] = &[
+        "a",
+        "add",
+        "all",
+        "and",
+        "automated",
+        "coverage",
+        "execute",
+        "existing",
+        "extend",
+        "for",
+        "from",
+        "implement",
+        "in",
+        "include",
+        "includes",
+        "into",
+        "message",
+        "note",
+        "object",
+        "of",
+        "one",
+        "only",
+        "package",
+        "preserve",
+        "preserving",
+        "print",
+        "prints",
+        "required",
+        "return",
+        "returns",
+        "scripts",
+        "so",
+        "test",
+        "tests",
+        "that",
+        "the",
+        "to",
+        "update",
+        "using",
+        "valid",
+        "verifies",
+        "verify",
+        "when",
+        "while",
+        "with",
+    ];
+
+    normalize_task_text_for_dedupe(text)
+        .split_whitespace()
+        .filter(|token| token.len() >= 3)
+        .filter(|token| !STOP_WORDS.contains(token))
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn task_covers_feature_scope(existing_task: &str, feature_description: &str) -> bool {
+    if !task_explicitly_owns_test_coverage(existing_task) {
+        return false;
+    }
+
+    let feature_keywords = task_scope_keywords(feature_description);
+    if feature_keywords.is_empty() {
+        return false;
+    }
+
+    let existing_keywords = task_scope_keywords(existing_task);
+    let overlap = feature_keywords.intersection(&existing_keywords).count();
+    let required_overlap = std::cmp::min(4, feature_keywords.len());
+
+    overlap >= required_overlap
+}
+
+#[derive(Clone, Debug)]
+struct ReviewedTask {
+    description: String,
+    priority: i32,
+    prd_section_id: Option<String>,
+    depends_on: Vec<usize>,
+}
+
+fn matching_feature_dependencies(tasks: &[ReviewedTask], test_index: usize) -> Vec<usize> {
+    let test_description = &tasks[test_index].description;
+
+    tasks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, task)| {
+            if index == test_index || task_explicitly_owns_test_coverage(&task.description) {
+                return None;
+            }
+
+            if task_covers_feature_scope(test_description, &task.description) {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Run wizard phase 6: Task Review with Sizing Analysis.
@@ -3062,6 +3443,60 @@ pub fn apply_task_review(
         }
     };
 
+    let mut reviewed_tasks: Vec<ReviewedTask> = tasks
+        .iter()
+        .map(|task| ReviewedTask {
+            description: task
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("Untitled task")
+                .to_string(),
+            priority: task.get("priority").and_then(|p| p.as_i64()).unwrap_or(5) as i32,
+            prd_section_id: task
+                .get("spec_section")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string()),
+            depends_on: task
+                .get("depends_on")
+                .and_then(|d| d.as_array())
+                .map(|deps| {
+                    deps.iter()
+                        .filter_map(|dep| dep.as_u64().map(|value| value as usize))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    for index in 0..reviewed_tasks.len() {
+        if !task_explicitly_owns_test_coverage(&reviewed_tasks[index].description) {
+            continue;
+        }
+
+        let matches = matching_feature_dependencies(&reviewed_tasks, index);
+        if matches.is_empty() {
+            continue;
+        }
+
+        let max_dependency_priority = matches
+            .iter()
+            .filter_map(|dep_index| reviewed_tasks.get(*dep_index))
+            .map(|task| task.priority)
+            .max()
+            .unwrap_or(reviewed_tasks[index].priority);
+
+        for dep_index in matches {
+            if !reviewed_tasks[index].depends_on.contains(&dep_index) {
+                reviewed_tasks[index].depends_on.push(dep_index);
+            }
+        }
+        reviewed_tasks[index].depends_on.sort_unstable();
+        reviewed_tasks[index].depends_on.dedup();
+        reviewed_tasks[index].priority = reviewed_tasks[index]
+            .priority
+            .max(max_dependency_priority + 1);
+    }
+
     // Delete existing pending/in-progress tasks and their dependencies (both directions)
     conn.execute(
         "DELETE FROM task_dependencies WHERE task_id IN (
@@ -3077,46 +3512,33 @@ pub fn apply_task_review(
     )?;
 
     // Insert reviewed tasks and collect their new IDs (indexed by position)
-    let mut new_task_ids: Vec<i64> = Vec::with_capacity(tasks.len());
+    let mut new_task_ids: Vec<i64> = Vec::with_capacity(reviewed_tasks.len());
 
-    for task in tasks {
-        let description = task
-            .get("description")
-            .and_then(|d| d.as_str())
-            .unwrap_or("Untitled task");
-        let priority = task.get("priority").and_then(|p| p.as_i64()).unwrap_or(5) as i32;
-        let spec_section = task.get("spec_section").and_then(|s| s.as_str());
-        let prd_section_id = spec_section.map(|s| s.to_string());
-
+    for task in &reviewed_tasks {
         conn.execute(
             "INSERT INTO tasks (description, status, priority, prd_section_id)
              VALUES (?1, 'pending', ?2, ?3)",
-            params![description, priority, prd_section_id],
+            params![task.description, task.priority, task.prd_section_id],
         )?;
         new_task_ids.push(conn.last_insert_rowid());
     }
 
     // Set up dependency relationships using 0-based indices
-    for (i, task) in tasks.iter().enumerate() {
-        if let Some(deps) = task.get("depends_on").and_then(|d| d.as_array()) {
-            let task_id = new_task_ids[i];
-            for dep in deps {
-                if let Some(dep_idx) = dep.as_u64() {
-                    let dep_idx = dep_idx as usize;
-                    if dep_idx < new_task_ids.len() && dep_idx != i {
-                        let depends_on_id = new_task_ids[dep_idx];
-                        conn.execute(
-                            "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id)
-                             VALUES (?1, ?2)",
-                            params![task_id, depends_on_id],
-                        )?;
-                    }
-                }
+    for (i, task) in reviewed_tasks.iter().enumerate() {
+        let task_id = new_task_ids[i];
+        for dep_idx in &task.depends_on {
+            if *dep_idx < new_task_ids.len() && *dep_idx != i {
+                let depends_on_id = new_task_ids[*dep_idx];
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id)
+                     VALUES (?1, ?2)",
+                    params![task_id, depends_on_id],
+                )?;
             }
         }
     }
 
-    let kept_count = tasks.len().saturating_sub(added_count);
+    let kept_count = reviewed_tasks.len().saturating_sub(added_count);
 
     Ok((kept_count, added_count, removed_count))
 }
@@ -3136,6 +3558,7 @@ pub fn build_build_test_config_prompt(
     gathered_info: &JsonValue,
     tasks: &[(i64, String, i32, Option<String>)],
 ) -> String {
+    let source_requirements = build_source_requirements_context(gathered_info);
     let technical_context = if let Some(technical) = gathered_info.get("technical") {
         format!(
             "\n## Technical Details (from Phase 3)\n```json\n{}\n```\n",
@@ -3167,10 +3590,12 @@ pub fn build_build_test_config_prompt(
 
     format!(
         r#"You are configuring build and test commands for a software project.
+{source_requirements}
 {technical_context}
 {project_summary}{section_outline}
 Based on the technical details above (languages, frameworks, platform, constraints),
 suggest the appropriate build and test commands and a validation pipeline.
+Preserve exact commands, file paths, stdin/stdout behavior, and acceptance checks from the source requirements when they are explicitly provided.
 
 The pipeline_steps should cover all validation concerns for this project
 (e.g., linting, building, testing, integration tests). Order them by execution sequence.
@@ -3190,6 +3615,8 @@ For EACH feature task, decide:
 
 2. **Simple features** (config changes, single-function utilities, constants) include tests inline with the feature; no separate test task needed.
 
+3. If a feature task description already explicitly includes its required tests or coverage, do NOT emit a separate `test_task` for that feature. Keep the verification inline with that feature task.
+
 Use concrete project terminology from the earlier phases. Do not use placeholders like `module`, `entity`, `<route>`, or `as defined in task 2`.
 
 ### Test Framework
@@ -3203,6 +3630,13 @@ Suggest pipeline steps with `sort_order` (execution sequence), `required` flag (
 - Build: required, medium timeout
 - Unit tests: required, medium timeout
 - Integration tests: required if applicable, longer timeout
+
+Important pipeline rules:
+- Required pipeline steps must be safe to run after EVERY task, not just after the final project state. Do not add a required smoke test or end-to-end check that depends on later tasks or future files.
+- If a validation check only makes sense after a later feature task is complete, represent it as a `test_task` or make the pipeline step optional.
+- Prefer the existing `build_cmd` and `test_cmd` as the required gates. Additional pipeline steps should usually be optional preflight checks.
+- Match the host shell for the project platform. For local Windows command-line projects, prefer simple `node`, `npm`, or Windows PowerShell 5.1 compatible commands. Do not emit POSIX-only quoting or bash-specific escape patterns.
+- For local Windows Node.js projects, do not emit inline `node -e` or `node --eval` pipeline steps. Prefer `node --check`, `npm test`, `npm run build`, or a dedicated `test_task` instead.
 
 Respond in JSON format:
 {{
@@ -3355,10 +3789,22 @@ pub fn apply_build_test_config(
         if !steps.is_empty() {
             // Clear existing validation steps before inserting new ones
             conn.execute("DELETE FROM validation_steps", [])?;
+            let mut inserted_steps = 0;
 
             for step in steps {
                 let name = step.get("name").and_then(|v| v.as_str()).unwrap_or("step");
                 let raw_command = step.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let required = step
+                    .get("required")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if !required && pipeline_step_is_brittle_inline_eval(raw_command) {
+                    print_warning(&format!(
+                        "Skipping optional pipeline step '{}' because inline node -e commands with complex or shell-sensitive quoting are brittle across shells; prefer npm test, node --check, or a dedicated test task instead.",
+                        name
+                    ));
+                    continue;
+                }
                 let command =
                     sanitize_shell_command(&format!("pipeline step '{}'", name), raw_command)?;
                 if let Some(warning) = &command.warning {
@@ -3370,10 +3816,6 @@ pub fn apply_build_test_config(
                     .and_then(|v| v.as_i64())
                     .or_else(|| step.get("order").and_then(|v| v.as_i64()))
                     .unwrap_or(0) as i32;
-                let required = step
-                    .get("required")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
                 let timeout = step.get("timeout").and_then(|v| v.as_i64());
 
                 conn.execute(
@@ -3387,8 +3829,9 @@ pub fn apply_build_test_config(
                         timeout,
                     ],
                 )?;
+                inserted_steps += 1;
             }
-            steps.len()
+            inserted_steps
         } else {
             0
         }
@@ -3399,10 +3842,37 @@ pub fn apply_build_test_config(
     // Create test tasks with dependencies on feature tasks
     let test_tasks = parse_test_strategy_response(config_data);
     let mut test_tasks_count = 0;
+    let existing_feature_fingerprints: std::collections::HashSet<String> = feature_tasks
+        .iter()
+        .map(|(_, description, _, _)| normalize_task_text_for_dedupe(description))
+        .collect();
+    let mut inserted_test_fingerprints = std::collections::HashSet::new();
 
     for test_task in &test_tasks {
         // Validate the dependency index is within bounds
         if test_task.depends_on_feature < feature_tasks.len() {
+            let feature_description = &feature_tasks[test_task.depends_on_feature].1;
+            if task_explicitly_owns_test_coverage(feature_description) {
+                continue;
+            }
+            if feature_tasks
+                .iter()
+                .enumerate()
+                .any(|(index, (_, description, _, _))| {
+                    index != test_task.depends_on_feature
+                        && task_covers_feature_scope(description, feature_description)
+                })
+            {
+                continue;
+            }
+
+            let test_fingerprint = normalize_task_text_for_dedupe(&test_task.description);
+            if existing_feature_fingerprints.contains(&test_fingerprint)
+                || !inserted_test_fingerprints.insert(test_fingerprint)
+            {
+                continue;
+            }
+
             let feature_id = feature_tasks[test_task.depends_on_feature].0;
 
             // Determine priority: one level after the feature task it depends on
@@ -3507,6 +3977,11 @@ pub fn build_iteration_mode_prompt_with_preference(
             )
         })
         .unwrap_or_default();
+    let autonomy_bias = if should_prefer_autonomous_iteration(gathered_info, task_count) {
+        "\nAutonomy bias:\n- This is a small, local project with 5 or fewer pending tasks and no external integrations.\n- Unless the gathered information shows a concrete blocking risk, prefer `autonomous` so `dial auto-run` can complete the full loop without manual checkpoints.\n"
+    } else {
+        ""
+    };
 
     format!(
         r#"You are recommending an iteration mode for autonomous AI development of a software project.
@@ -3517,6 +3992,7 @@ pub fn build_iteration_mode_prompt_with_preference(
 {complexity_context}
 {project_summary}
 {current_cli_hint}
+{autonomy_bias}
 Available iteration modes:
 - "autonomous": Run all tasks without stopping. Commit on pass, skip to next on failure. Best for well-specified projects with strong test coverage.
 - "review_every:N": Pause for human review after every N completed tasks. Good balance of speed and oversight.
@@ -3545,6 +4021,81 @@ Notes:
 
 Respond ONLY with valid JSON."#
     )
+}
+
+fn should_prefer_autonomous_iteration(gathered_info: &JsonValue, task_count: usize) -> bool {
+    if task_count == 0 || task_count > 5 {
+        return false;
+    }
+
+    let feature_count = gathered_info
+        .get("functionality")
+        .and_then(|f| f.get("mvp_features"))
+        .and_then(|v| v.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let integration_count = gathered_info
+        .get("technical")
+        .and_then(|t| t.get("integrations"))
+        .and_then(|v| v.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let gap_count = gathered_info
+        .get("gap_analysis")
+        .and_then(|g| g.get("gaps"))
+        .and_then(|v| v.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+
+    integration_count == 0 && feature_count <= 5 && gap_count <= 8
+}
+
+pub fn apply_autonomous_iteration_override(
+    gathered_info: &JsonValue,
+    task_count: usize,
+    mode_data: &JsonValue,
+) -> JsonValue {
+    if !should_prefer_autonomous_iteration(gathered_info, task_count) {
+        return mode_data.clone();
+    }
+
+    let raw_mode = mode_data
+        .get("recommended_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("autonomous");
+    if raw_mode == "autonomous" {
+        return mode_data.clone();
+    }
+
+    let mut overridden = mode_data.clone();
+    if let Some(object) = overridden.as_object_mut() {
+        object.insert(
+            "recommended_mode".to_string(),
+            JsonValue::String("autonomous".to_string()),
+        );
+        object.insert("review_interval".to_string(), JsonValue::Null);
+
+        let existing_rationale = object
+            .get("rationale")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let override_rationale = if existing_rationale.is_empty() {
+            "Small-project autonomy override: 5 or fewer pending tasks, no external integrations, and bounded complexity favor a fully autonomous loop."
+                .to_string()
+        } else {
+            format!(
+                "Small-project autonomy override: 5 or fewer pending tasks, no external integrations, and bounded complexity favor a fully autonomous loop. Original provider rationale: {}",
+                existing_rationale
+            )
+        };
+        object.insert(
+            "rationale".to_string(),
+            JsonValue::String(override_rationale),
+        );
+    }
+
+    overridden
 }
 
 /// Run wizard phase 8: Iteration Mode.
@@ -3603,6 +4154,7 @@ pub async fn run_wizard_phase_8(
         event_sink,
     )
     .await?;
+    let data = apply_autonomous_iteration_override(&state.gathered_info, task_count, &data);
 
     // 4. Apply iteration mode config to the database
     let mode = apply_iteration_mode_with_preference(&phase_conn, &data, preferred_ai_cli)?;
@@ -4288,6 +4840,68 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_source_requirements_captures_structured_sections() {
+        let doc = r#"
+# Scenario
+
+## Goal
+
+Validate the complete DIAL loop on a small native Windows project.
+
+## Requested Outcome
+
+1. Add note status formatting:
+   - input status `todo` renders `[ ]`
+   - input status `done` renders `[x]`
+
+## Hard Constraints
+
+- Keep the implementation within `src/noteFormatter.js`, `src/cli.js`, and `test/noteFormatter.test.js`
+- Prefer 3 to 5 implementation tasks total
+
+## Acceptance Checks
+
+- `npm test` passes
+- `node src/cli.js` accepts JSON from stdin and prints the formatted note
+"#;
+
+        let extracted = extract_source_requirements(doc);
+
+        assert!(extracted["goal"]
+            .as_str()
+            .unwrap()
+            .contains("Validate the complete DIAL loop"));
+        assert!(extracted["requested_outcome"]
+            .as_str()
+            .unwrap()
+            .contains("input status `todo` renders `[ ]`"));
+        assert!(extracted["hard_constraints"]
+            .as_str()
+            .unwrap()
+            .contains("Prefer 3 to 5 implementation tasks total"));
+        assert!(extracted["acceptance_checks"]
+            .as_str()
+            .unwrap()
+            .contains("`node src/cli.js` accepts JSON from stdin"));
+    }
+
+    #[test]
+    fn test_vision_prompt_marks_existing_doc_as_source_of_truth() {
+        let state = WizardState::new("spec");
+        let prompt = build_phase_prompt(
+            WizardPhase::Vision,
+            &state,
+            Some("## Requested Outcome\n- input status `todo` renders `[ ]`"),
+        );
+
+        assert!(prompt.contains("Source-of-Truth Rules"));
+        assert!(prompt.contains(
+            "Treat the existing document as the authoritative source of scope and acceptance"
+        ));
+        assert!(prompt.contains("Preserve exact literal values"));
+    }
+
+    #[test]
     fn test_collect_phase_quality_issues_flags_placeholder_task_language() {
         let data = json!({
             "tasks": [
@@ -4631,6 +5245,62 @@ mod tests {
     }
 
     #[test]
+    fn test_task_review_prompt_carries_source_requirements_forward() {
+        let tasks = vec![(
+            1,
+            "Implement: Features".to_string(),
+            1,
+            Some("3".to_string()),
+        )];
+        let gathered = json!({
+            "source_requirements": {
+                "requested_outcome": "1. Add note status formatting:\n- input status `todo` renders `[ ]`\n- input status `done` renders `[x]`",
+                "hard_constraints": "- Prefer 3 to 5 implementation tasks total",
+                "acceptance_checks": "- `node src/cli.js` accepts JSON from stdin and prints the formatted note"
+            }
+        });
+
+        let prompt = build_task_review_prompt(&tasks, &gathered);
+
+        assert!(prompt.contains("Source Requirements (authoritative)"));
+        assert!(prompt.contains("input status `todo` renders `[ ]`"));
+        assert!(prompt.contains("Prefer 3 to 5 implementation tasks total"));
+        assert!(prompt.contains("Do not create duplicate tasks"));
+        assert!(prompt.contains("Do not introduce alternate contracts"));
+    }
+
+    #[test]
+    fn test_build_test_config_prompt_carries_source_requirements_forward() {
+        let tasks = vec![(
+            1,
+            "Implement CLI stdin flow".to_string(),
+            1,
+            Some("3".to_string()),
+        )];
+        let gathered = json!({
+            "source_requirements": {
+                "hard_constraints": "- Keep `npm test` as the test command",
+                "acceptance_checks": "- Invalid JSON on stdin causes a non-zero exit code and a human-readable error"
+            },
+            "technical": {
+                "platform": {
+                    "languages": ["JavaScript"],
+                    "frameworks": [],
+                    "database": "",
+                    "hosting": "local CLI"
+                }
+            }
+        });
+
+        let prompt = build_build_test_config_prompt(&gathered, &tasks);
+
+        assert!(prompt.contains("Source Requirements (authoritative)"));
+        assert!(prompt.contains("Keep `npm test` as the test command"));
+        assert!(prompt.contains("Invalid JSON on stdin causes a non-zero exit code"));
+        assert!(prompt.contains("Preserve exact commands, file paths, stdin/stdout behavior"));
+    }
+
+    #[test]
     fn test_task_review_prompt_xl_must_be_split() {
         let tasks = vec![(1, "Task".to_string(), 1, None)];
         let prompt = build_task_review_prompt(&tasks, &json!({}));
@@ -4871,6 +5541,7 @@ mod tests {
 
         assert!(prompt.contains("Use only ASCII hyphen-minus characters"));
         assert!(prompt.contains("Prefer single quotes around shell arguments"));
+        assert!(prompt.contains("do not emit inline `node -e` or `node --eval` pipeline steps"));
         assert!(!prompt.contains('—'));
         assert!(!prompt.contains('–'));
     }

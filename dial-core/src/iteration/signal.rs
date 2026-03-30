@@ -1,8 +1,11 @@
 use crate::db::get_dial_dir;
 use crate::errors::{DialError, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::error::Category as JsonErrorCategory;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use super::orchestrator::SubagentResult;
 
@@ -33,6 +36,9 @@ pub struct SignalFile {
     pub timestamp: String,
 }
 
+const SIGNAL_READ_ATTEMPTS: usize = 5;
+const SIGNAL_READ_RETRY_DELAY_MS: u64 = 50;
+
 /// Default path for the signal file: `.dial/signal.json`
 pub fn signal_file_path() -> PathBuf {
     get_dial_dir().join("signal.json")
@@ -53,21 +59,29 @@ pub fn read_signal_file() -> Result<Option<SignalFile>> {
 
 /// Read and parse a signal file at the given path, then delete it.
 pub fn read_signal_file_at(path: &Path) -> Result<Option<SignalFile>> {
-    if !path.exists() {
-        return Ok(None);
+    let mut last_retryable_error = None;
+
+    for attempt in 0..SIGNAL_READ_ATTEMPTS {
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        match try_read_signal_file_once(path)? {
+            SignalReadOutcome::Parsed(signal_file) => return Ok(Some(signal_file)),
+            SignalReadOutcome::Retryable(error) => {
+                last_retryable_error = Some(error);
+
+                if attempt + 1 < SIGNAL_READ_ATTEMPTS {
+                    thread::sleep(Duration::from_millis(SIGNAL_READ_RETRY_DELAY_MS));
+                    continue;
+                }
+            }
+        }
     }
 
-    let contents = fs::read_to_string(path)
-        .map_err(|e| DialError::CommandFailed(format!("Failed to read signal file: {}", e)))?;
-
-    let signal_file: SignalFile = serde_json::from_str(&contents)
-        .map_err(|e| DialError::CommandFailed(format!("Failed to parse signal file: {}", e)))?;
-
-    // Delete the file after successful parse so it's not re-read
-    fs::remove_file(path)
-        .map_err(|e| DialError::CommandFailed(format!("Failed to delete signal file: {}", e)))?;
-
-    Ok(Some(signal_file))
+    Err(last_retryable_error.unwrap_or_else(|| {
+        DialError::CommandFailed("Failed to read signal file after retries".to_string())
+    }))
 }
 
 /// Write a signal file to `.dial/signal.json` (primarily for testing).
@@ -84,6 +98,97 @@ pub fn write_signal_file_at(path: &Path, signal_file: &SignalFile) -> Result<()>
         .map_err(|e| DialError::CommandFailed(format!("Failed to write signal file: {}", e)))?;
 
     Ok(())
+}
+
+enum SignalReadOutcome {
+    Parsed(SignalFile),
+    Retryable(DialError),
+}
+
+fn try_read_signal_file_once(path: &Path) -> Result<SignalReadOutcome> {
+    let bytes = fs::read(path)
+        .map_err(|e| DialError::CommandFailed(format!("Failed to read signal file: {}", e)))?;
+
+    if bytes.is_empty() {
+        return Ok(SignalReadOutcome::Retryable(DialError::CommandFailed(
+            "Signal file is empty".to_string(),
+        )));
+    }
+
+    let contents = decode_signal_file_bytes(&bytes)?;
+    if contents.trim().is_empty() {
+        return Ok(SignalReadOutcome::Retryable(DialError::CommandFailed(
+            "Signal file is empty".to_string(),
+        )));
+    }
+
+    let signal_file: SignalFile = match serde_json::from_str(&contents) {
+        Ok(signal_file) => signal_file,
+        Err(e) if signal_parse_error_is_retryable(&e) => {
+            return Ok(SignalReadOutcome::Retryable(DialError::CommandFailed(
+                format!("Failed to parse signal file: {}", e),
+            )));
+        }
+        Err(e) => {
+            return Err(DialError::CommandFailed(format!(
+                "Failed to parse signal file: {}",
+                e
+            )));
+        }
+    };
+
+    // Delete the file after successful parse so it's not re-read
+    fs::remove_file(path)
+        .map_err(|e| DialError::CommandFailed(format!("Failed to delete signal file: {}", e)))?;
+
+    Ok(SignalReadOutcome::Parsed(signal_file))
+}
+
+fn decode_signal_file_bytes(bytes: &[u8]) -> Result<String> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8(bytes[3..].to_vec()).map_err(|e| {
+            DialError::CommandFailed(format!("Failed to decode signal file as UTF-8: {}", e))
+        });
+    }
+
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return decode_utf16_signal_bytes(&bytes[2..], true);
+    }
+
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return decode_utf16_signal_bytes(&bytes[2..], false);
+    }
+
+    String::from_utf8(bytes.to_vec()).map_err(|e| {
+        DialError::CommandFailed(format!("Failed to decode signal file as UTF-8: {}", e))
+    })
+}
+
+fn decode_utf16_signal_bytes(bytes: &[u8], little_endian: bool) -> Result<String> {
+    if bytes.len() % 2 != 0 {
+        return Err(DialError::CommandFailed(
+            "Failed to decode signal file as UTF-16: odd-length byte stream".to_string(),
+        ));
+    }
+
+    let code_units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|chunk| {
+            if little_endian {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            }
+        })
+        .collect();
+
+    String::from_utf16(&code_units).map_err(|e| {
+        DialError::CommandFailed(format!("Failed to decode signal file as UTF-16: {}", e))
+    })
+}
+
+fn signal_parse_error_is_retryable(error: &serde_json::Error) -> bool {
+    matches!(error.classify(), JsonErrorCategory::Eof) || (error.line() == 1 && error.column() == 1)
 }
 
 /// Convert a `SignalFile` into a `SubagentResult` for compatibility with
@@ -352,6 +457,82 @@ mod tests {
 
         let result = read_signal_file_at(&path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_signal_file_with_utf8_bom() {
+        let (_tmp, path) = setup_temp_signal_path();
+
+        let json = concat!(
+            "\u{feff}",
+            "{",
+            "\"signals\":[{\"type\":\"complete\",\"summary\":\"Done\"}],",
+            "\"timestamp\":\"2026-03-29T12:00:00Z\"",
+            "}"
+        );
+
+        fs::write(&path, json.as_bytes()).unwrap();
+
+        let result = read_signal_file_at(&path).unwrap().unwrap();
+        assert_eq!(
+            result,
+            SignalFile {
+                signals: vec![SubagentSignal::Complete {
+                    summary: "Done".to_string(),
+                }],
+                timestamp: "2026-03-29T12:00:00Z".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_signal_file_with_utf16le_bom() {
+        let (_tmp, path) = setup_temp_signal_path();
+
+        let json = "{\"signals\":[{\"type\":\"complete\",\"summary\":\"Done\"}],\"timestamp\":\"2026-03-29T12:00:00Z\"}";
+        let mut bytes = vec![0xFF, 0xFE];
+        for code_unit in json.encode_utf16() {
+            bytes.extend_from_slice(&code_unit.to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+
+        let result = read_signal_file_at(&path).unwrap().unwrap();
+        assert_eq!(
+            result,
+            SignalFile {
+                signals: vec![SubagentSignal::Complete {
+                    summary: "Done".to_string(),
+                }],
+                timestamp: "2026-03-29T12:00:00Z".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_signal_file_retries_after_empty_placeholder() {
+        let (_tmp, path) = setup_temp_signal_path();
+
+        let expected = SignalFile {
+            signals: vec![SubagentSignal::Complete {
+                summary: "Recovered after retry".to_string(),
+            }],
+            timestamp: "2026-03-29T12:30:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&expected).unwrap();
+
+        fs::write(&path, "").unwrap();
+
+        let path_for_writer = path.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(SIGNAL_READ_RETRY_DELAY_MS * 2));
+            fs::write(&path_for_writer, json).unwrap();
+        });
+
+        let result = read_signal_file_at(&path).unwrap().unwrap();
+        writer.join().unwrap();
+
+        assert_eq!(result, expected);
+        assert!(!path.exists());
     }
 
     #[test]

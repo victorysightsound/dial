@@ -108,7 +108,9 @@ Install [Codex CLI](https://github.com/openai/codex) and ensure the `codex` comm
 dial auto-run --cli codex --max 10
 ```
 
-DIAL uses `cat .dial/subagent_prompt.md | codex exec --skip-git-repo-check` to run tasks.
+DIAL feeds `.dial/subagent_prompt.md` to Codex in a noninteractive session with the current project as the working directory.
+
+On Windows, DIAL uses a native UTF-8 `cmd.exe` prompt transport so the Codex CLI receives the prompt bytes correctly. Use Codex auto-run only in a trusted local repository because the Codex subprocess is launched for unattended execution rather than interactive approval.
 
 For wizard usage, DIAL runs Codex in a lower-friction noninteractive mode with reduced reasoning/verbosity and web search disabled so short structured prompts stay responsive.
 

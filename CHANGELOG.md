@@ -14,10 +14,20 @@ Guided wizard trust and observability release.
 - adds a planning checkpoint after phase 5 in the full wizard to reinforce that DIAL is still planning and has not started implementation
 - strengthens launch and PRD-only completion messaging so it is explicit that `dial auto-run` is always a separate user-triggered step
 
+### Windows Auto-Run Hardening
+- resolves `--from` source documents before the wizard hands work to the backend so native Windows runs do not waste time trying to rediscover the original scenario file from a temp workdir
+- hardens `.dial/signal.json` reads against transient empty-file races and BOM-prefixed content so Windows subagent completion signals are consumed reliably
+- makes validation and auto-run fail loudly when a post-validation git commit cannot be created instead of falsely marking tasks complete
+- restores missing local git author identity from the latest commit author during validation and auto-run so seeded fixture repos can commit cleanly on Windows smoke machines
+- normalizes autonomous task commit subjects into short human commit messages instead of raw task prose
+- filters brittle optional inline `node -e` validation steps for local Windows Node.js projects so the generated pipeline stays on `build` and `test` instead of noisy shell-specific preflights
+
 ### Verification
 - adds unit coverage for wizard orientation, phase presentation, and heartbeat behavior
 - adds integration coverage for full-wizard checkpoint emission and PRD-only completion semantics
+- adds regression coverage for signal-file retry/BOM parsing, commit-failure rollback, commit-subject normalization, and phase-7 Windows pipeline filtering
 - updates README and CLI reference to match the new guided-default wizard behavior
+- validates a full native Windows seeded auto-run on `gbi-video` with `dial new --template spec --from ..\\windows-e2e-autorun-scenario.md --wizard-backend codex` followed by `dial auto-run --cli codex`
 
 No schema migrations needed.
 

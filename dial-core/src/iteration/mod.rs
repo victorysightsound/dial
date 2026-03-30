@@ -261,11 +261,30 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
         // Commit changes (git operations happen outside the DB transaction)
         let commit_hash = if git_is_repo() && git_has_changes() {
             let message = task_description.to_string();
-            if let Some(hash) = git_commit(&message)? {
-                println!("{}", green(&format!("Committed: {}", &hash[..8])));
-                Some(hash)
-            } else {
-                None
+            match git_commit(&message) {
+                Ok(Some(hash)) => {
+                    println!("{}", green(&format!("Committed: {}", &hash[..8])));
+                    Some(hash)
+                }
+                Ok(None) => None,
+                Err(err) => {
+                    let commit_error = format!("Validation passed but commit failed: {}", err);
+                    with_transaction(&conn, |conn| {
+                        complete_iteration(
+                            conn,
+                            iteration_id,
+                            "failed",
+                            None,
+                            Some(&commit_error),
+                        )?;
+                        conn.execute(
+                            "UPDATE tasks SET status = 'pending' WHERE id = ?1",
+                            [task_id],
+                        )?;
+                        Ok(())
+                    })?;
+                    return Err(DialError::GitError(commit_error));
+                }
             }
         } else {
             None

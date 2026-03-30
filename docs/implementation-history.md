@@ -2,6 +2,20 @@
 
 ## Version Timeline
 
+### v4.2.2 (March 2026) - Guided Wizard Trust & Windows Auto-Run Hardening
+
+Patch release focused on making the guided wizard read like a guided operator and proving the full Windows autonomous loop in a seeded fixture repo:
+
+- Adds startup orientation, plain-English phase narration, long-wait heartbeats, a phase-5 planning checkpoint, and stronger launch/PRD-only trust messaging
+- Resolves `--from` source documents before backend execution so native Windows runs stop searching temp directories for the original scenario file
+- Hardens `.dial/signal.json` reads against transient empty-file races and BOM-prefixed content so Windows subagent completion signals remain reliable
+- Makes validation and auto-run fail loudly when the final git commit cannot be created and restores missing git author identity from the latest commit author when possible
+- Normalizes autonomous task commit subjects into short human commit messages
+- Filters brittle optional inline `node -e` pipeline steps for local Windows Node.js projects so generated validation stays on stable `build` / `test` gates
+- Validates a full native Windows seeded run on `gbi-video` with `dial new --template spec --from ..\\windows-e2e-autorun-scenario.md --wizard-backend codex` followed by `dial auto-run --cli codex`
+
+No schema migrations needed.
+
 ### v4.2.1 (March 2026) - Windows Hardening & Wizard Quality
 
 Patch release focused on proving the wizard in native Windows CLI runs and tightening the remaining quality edges:

@@ -605,6 +605,199 @@ async fn test_apply_build_test_config_normalizes_unicode_dash_commands() {
     env::set_current_dir(original_dir).unwrap();
 }
 
+#[tokio::test]
+async fn test_apply_build_test_config_skips_brittle_optional_inline_node_eval_step() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+    let long_inline_eval = "node -e \"const { spawnSync } = require('child_process'); const payload = JSON.stringify({ title: 'Ship MVP', status: 'todo', tags: ['Bug', ' bug ', 'BUG'] }); const ok = spawnSync(process.execPath, ['src/cli.js'], { input: payload, encoding: 'utf8' }); if (ok.status !== 0) { process.stderr.write(ok.stderr || 'CLI success case failed\\n'); process.exit(ok.status || 1); } if (!ok.stdout.includes('[ ] Ship MVP') || !ok.stdout.includes('bug')) { process.stderr.write('CLI success output did not match expectations\\n'); process.exit(1); }\"";
+    let config_data = json!({
+        "build_cmd": "npm run build",
+        "test_cmd": "npm test",
+        "pipeline_steps": [
+            {"name": "build", "command": "npm run build", "sort_order": 1, "required": true, "timeout": 300},
+            {"name": "cli-smoke", "command": long_inline_eval, "sort_order": 2, "required": false, "timeout": 120}
+        ]
+    });
+
+    let (_build_cmd, _test_cmd, steps_count, _test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &[]).unwrap();
+
+    assert_eq!(steps_count, 1);
+
+    let mut stmt = phase_conn
+        .prepare("SELECT name, command FROM validation_steps ORDER BY sort_order, id")
+        .unwrap();
+    let steps: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].0, "build");
+    assert_eq!(steps[0].1, "npm run build");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_build_test_config_skips_optional_inline_node_eval_with_single_quotes() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+    let quoted_inline_eval = "node -e 'const fs=require(\"fs\"); [\"package.json\",\"src/noteFormatter.js\"].forEach(p=>fs.accessSync(p)); console.log(\"required files present\")'";
+    let config_data = json!({
+        "build_cmd": "npm run build",
+        "test_cmd": "npm test",
+        "pipeline_steps": [
+            {"name": "build", "command": "npm run build", "sort_order": 1, "required": true, "timeout": 300},
+            {"name": "preflight-required-files", "command": quoted_inline_eval, "sort_order": 2, "required": false, "timeout": 60}
+        ]
+    });
+
+    let (_build_cmd, _test_cmd, steps_count, _test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &[]).unwrap();
+
+    assert_eq!(steps_count, 1);
+
+    let mut stmt = phase_conn
+        .prepare("SELECT name, command FROM validation_steps ORDER BY sort_order, id")
+        .unwrap();
+    let steps: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].0, "build");
+    assert_eq!(steps[0].1, "npm run build");
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_build_test_config_skips_redundant_test_task_when_feature_owns_coverage() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+    let feature_description = r#"Finish `src/cli.js` so `node src/cli.js` reads one JSON note from stdin and add CLI coverage in `test/noteFormatter.test.js`."#;
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, status, priority) VALUES (?1, 'pending', 3)",
+            [feature_description],
+        )
+        .unwrap();
+    let feature_id = phase_conn.last_insert_rowid();
+
+    let feature_tasks = vec![(feature_id, feature_description.to_string(), 3, None)];
+    let config_data = json!({
+        "build_cmd": "npm run build",
+        "test_cmd": "npm test",
+        "test_tasks": [
+            {
+                "description": "Add CLI integration coverage in test/noteFormatter.test.js for valid stdin JSON and invalid JSON handling",
+                "depends_on_feature": 0,
+                "rationale": "CLI behavior needs subprocess coverage"
+            }
+        ]
+    });
+
+    let (_build_cmd, _test_cmd, _steps_count, test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &feature_tasks).unwrap();
+
+    assert_eq!(
+        test_tasks_count, 0,
+        "Should not create a separate test task when the feature task already owns explicit coverage"
+    );
+
+    let pending_tasks: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_tasks, 1,
+        "Should keep only the original feature task"
+    );
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_build_test_config_skips_redundant_test_task_when_existing_test_task_covers_feature(
+) {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+    let feature_description = r#"Implement `src/cli.js` to read one JSON note object from stdin, print the formatted note to stdout using `src/noteFormatter.js`, and exit non-zero with a human-readable error message when stdin contains invalid JSON."#;
+    let existing_test_description = r#"Extend `test/noteFormatter.test.js` and, only if required for existing scripts, `package.json` so `npm test` verifies the CLI accepts JSON from stdin, prints the formatted note to stdout, and returns a non-zero exit code with a clear error on invalid JSON while preserving the existing `npm test` and `npm run build` commands."#;
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, status, priority) VALUES (?1, 'pending', 3)",
+            [feature_description],
+        )
+        .unwrap();
+    let feature_id = phase_conn.last_insert_rowid();
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, status, priority) VALUES (?1, 'pending', 4)",
+            [existing_test_description],
+        )
+        .unwrap();
+    let existing_test_id = phase_conn.last_insert_rowid();
+
+    let feature_tasks = vec![
+        (feature_id, feature_description.to_string(), 3, None),
+        (
+            existing_test_id,
+            existing_test_description.to_string(),
+            4,
+            None,
+        ),
+    ];
+    let config_data = json!({
+        "build_cmd": "npm run build",
+        "test_cmd": "npm test",
+        "test_tasks": [
+            {
+                "description": "Add CLI integration tests that execute `node src/cli.js` with stdin payloads: a valid JSON note with `status: 'todo'` and mixed-case duplicate tags prints the formatted note to stdout, and invalid JSON prints a human-readable error to stderr and exits with a non-zero code.",
+                "depends_on_feature": 0,
+                "rationale": "CLI behavior needs subprocess coverage"
+            }
+        ]
+    });
+
+    let (_build_cmd, _test_cmd, _steps_count, test_tasks_count) =
+        prd::wizard::apply_build_test_config(&phase_conn, &config_data, &feature_tasks).unwrap();
+
+    assert_eq!(
+        test_tasks_count, 0,
+        "Should not create a second CLI test task when phase 6 already added one"
+    );
+
+    let pending_tasks: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_tasks, 2,
+        "Should keep the existing feature and test tasks without inserting another duplicate"
+    );
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
 // --- Phase 8: Iteration Mode Config Writing ---
 
 #[tokio::test]
@@ -1199,6 +1392,21 @@ fn test_build_iteration_mode_prompt_with_current_cli_hint() {
 }
 
 #[test]
+fn test_build_iteration_mode_prompt_biases_small_local_projects_toward_autonomous() {
+    let gathered_info = json!({
+        "vision": {"project_name": "Mini Note Formatter"},
+        "functionality": {"mvp_features": ["status", "tags", "cli", "tests"]},
+        "technical": {"integrations": [], "constraints": ["plain Node.js", "no dependencies"]},
+        "gap_analysis": {"gaps": ["stdin edge cases", "error stream behavior"]}
+    });
+
+    let prompt = prd::wizard::build_iteration_mode_prompt(&gathered_info, 5);
+
+    assert!(prompt.contains("Autonomy bias:"));
+    assert!(prompt.contains("prefer `autonomous`"));
+}
+
+#[test]
 fn test_build_iteration_mode_prompt_minimal() {
     let gathered_info = json!({});
 
@@ -1228,6 +1436,56 @@ fn test_build_iteration_mode_prompt_partial_complexity() {
     assert!(!prompt.contains("External integrations:"));
     assert!(!prompt.contains("- Constraints:"));
     assert!(!prompt.contains("Identified gaps:"));
+}
+
+#[test]
+fn test_apply_autonomous_iteration_override_for_small_local_project() {
+    let gathered_info = json!({
+        "functionality": {"mvp_features": ["status", "tags", "cli", "tests"]},
+        "technical": {"integrations": []},
+        "gap_analysis": {"gaps": ["stdin", "errors"]}
+    });
+    let mode_data = json!({
+        "recommended_mode": "review_every",
+        "review_interval": 2,
+        "rationale": "Needs checkpoints"
+    });
+
+    let overridden =
+        prd::wizard::apply_autonomous_iteration_override(&gathered_info, 5, &mode_data);
+
+    assert_eq!(
+        overridden.get("recommended_mode").and_then(|v| v.as_str()),
+        Some("autonomous")
+    );
+    assert!(overridden
+        .get("review_interval")
+        .is_some_and(|value| value.is_null()));
+}
+
+#[test]
+fn test_apply_autonomous_iteration_override_preserves_larger_project_review_mode() {
+    let gathered_info = json!({
+        "functionality": {"mvp_features": ["auth", "billing", "notifications", "search", "export", "reports"]},
+        "technical": {"integrations": ["Stripe"]},
+        "gap_analysis": {"gaps": ["retry", "logging", "monitoring"]}
+    });
+    let mode_data = json!({
+        "recommended_mode": "review_every",
+        "review_interval": 2
+    });
+
+    let overridden =
+        prd::wizard::apply_autonomous_iteration_override(&gathered_info, 8, &mode_data);
+
+    assert_eq!(
+        overridden.get("recommended_mode").and_then(|v| v.as_str()),
+        Some("review_every")
+    );
+    assert_eq!(
+        overridden.get("review_interval").and_then(|v| v.as_i64()),
+        Some(2)
+    );
 }
 
 // =============================================================================
@@ -1314,6 +1572,81 @@ async fn test_apply_task_review_valid_response() {
         .query_row("SELECT COUNT(*) FROM task_dependencies", [], |r| r.get(0))
         .unwrap();
     assert_eq!(dep_count, 3); // task 2 depends on 0; task 3 depends on 0 and 1
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_task_review_pushes_matching_test_task_after_implementation() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["placeholder", 1, "pending"],
+        )
+        .unwrap();
+
+    let review_data = json!({
+        "tasks": [
+            {
+                "description": "Add automated tests in `test/noteFormatter.test.js` for status-aware title prefixes and tag normalization, including lowercase conversion, whitespace trimming, duplicate removal, and first-seen order preservation.",
+                "priority": 1,
+                "spec_section": "6",
+                "depends_on": [],
+                "rationale": "coverage first"
+            },
+            {
+                "description": "Implement the required note-formatting behavior in `src/noteFormatter.js`: render `[ ]` for status `todo`, render `[x]` for status `done`, render no checkbox when status is missing, and normalize tags by lowercasing, trimming whitespace, removing duplicates, and preserving first-seen order after normalization.",
+                "priority": 2,
+                "spec_section": "2",
+                "depends_on": [],
+                "rationale": "implementation"
+            }
+        ],
+        "removed": [],
+        "added": []
+    });
+
+    prd::wizard::apply_task_review(&phase_conn, &review_data).unwrap();
+
+    let test_priority: i64 = phase_conn
+        .query_row(
+            "SELECT priority FROM tasks WHERE description LIKE 'Add automated tests in `test/noteFormatter.test.js`%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let impl_priority: i64 = phase_conn
+        .query_row(
+            "SELECT priority FROM tasks WHERE description LIKE 'Implement the required note-formatting behavior%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        test_priority > impl_priority,
+        "test task should be pushed after the matching implementation task"
+    );
+
+    let dependency_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_dependencies td
+             JOIN tasks t ON t.id = td.task_id
+             JOIN tasks d ON d.id = td.depends_on_id
+             WHERE t.description LIKE 'Add automated tests in `test/noteFormatter.test.js`%'
+               AND d.description LIKE 'Implement the required note-formatting behavior%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        dependency_count, 1,
+        "test task should depend on the matching implementation task"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }
