@@ -63,6 +63,8 @@ The core library (`dial-core`) is embeddable — you can build custom tools, das
 
 ### Install
 
+Choose one install method. DIAL is a global CLI: install it once for your user or machine, then use it in any project directory. The `.dial/` folder that appears later is per-project working data, not the program install location.
+
 **Pre-built binaries** (no Rust required):
 
 ```bash
@@ -83,7 +85,15 @@ curl -L https://github.com/victorysightsound/dial/releases/latest/download/dial-
 sudo mv dial /usr/local/bin/
 ```
 
-**Windows:** Download `dial-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/victorysightsound/dial/releases/latest), extract, and add to your PATH.
+**npm** (requires Node.js 18+):
+
+```bash
+npm install -g dial-cli
+```
+
+This installs the global `dial` command and downloads the matching prebuilt binary for your platform from the GitHub release for the current npm package version.
+
+**Windows:** Download `dial-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/victorysightsound/dial/releases/latest), extract `dial.exe` into a permanent folder, and add that folder to your user PATH. See [Getting Started](docs/getting-started.md) for step-by-step Windows instructions and a plain-language explanation of PATH.
 
 **Via Cargo** (requires Rust 1.70+):
 

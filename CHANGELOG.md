@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.2.4 — 2026-03-30
+
+Installation and distribution patch.
+
+### npm Distribution
+- adds an npm package (`dial-cli`) that downloads the matching GitHub release binary for the current platform and exposes `dial` as the global command
+- validates the npm wrapper with package-level tests and a real packed tarball install that runs `dial --version`
+- adds optional npm publish automation to the tag release workflow when `NPM_TOKEN` is configured
+
+### Installation Guidance
+- expands README and getting started installation docs across GitHub binaries, npm, Cargo, and source builds
+- clarifies that DIAL is installed globally while `.dial/` remains per-project working data
+- adds more explicit Windows PATH guidance, including where to place `dial.exe`, how PATH works, and when to reopen the terminal
+- updates the Unix installer script messaging so the global install scope and PATH step are clearer
+
+No schema migrations needed.
+
+---
+
 ## 4.2.3 — 2026-03-30
 
 Agent file mode and release-alignment patch.

@@ -33,6 +33,7 @@ if [ -z "$LATEST" ]; then
 fi
 
 echo "Latest release: ${LATEST}"
+echo "Installing dial globally for the current user into ${INSTALL_DIR}"
 
 # Download
 URL="https://github.com/${REPO}/releases/download/${LATEST}/dial-${TARGET}.tar.gz"
@@ -57,7 +58,7 @@ case ":$PATH:" in
     *":${INSTALL_DIR}:"*) ;;
     *)
         echo ""
-        echo "Note: ${INSTALL_DIR} is not in your PATH. Add it:"
+        echo "Note: ${INSTALL_DIR} is not in your PATH. Add it once for your user:"
         echo "  echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ~/.bashrc"
         echo ""
         echo "Then restart your shell or run: source ~/.bashrc"

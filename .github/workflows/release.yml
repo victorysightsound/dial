@@ -89,3 +89,33 @@ jobs:
         with:
           generate_release_notes: true
           files: artifacts/**/*
+
+  npm_publish:
+    needs: release
+    if: ${{ secrets.NPM_TOKEN != '' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify npm package version matches tag
+        working-directory: npm/dial-cli
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "npm package version ${PACKAGE_VERSION} does not match tag ${TAG_VERSION}"
+            exit 1
+          fi
+
+      - name: Publish npm package
+        working-directory: npm/dial-cli
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

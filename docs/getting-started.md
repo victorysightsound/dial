@@ -16,6 +16,26 @@ This guide walks through installing DIAL, setting up your first project, and run
 
 ## Installation
 
+### How Installation Works
+
+`dial` is a global command-line tool. You install it once for your user or machine, not once per project.
+
+Three paths matter:
+- the global install location: where `dial` or `dial.exe` lives after you install it
+- your `PATH`: the list of folders your terminal searches when you type a command like `dial`
+- each project's `.dial/` directory: project-specific DIAL state created later by `dial init` or `dial new`
+
+Adding DIAL to `PATH` is usually a one-time setup for your user account. You do not repeat that step for every repository.
+
+### Choose an Install Method
+
+| Method | Best For | Requires |
+|--------|----------|----------|
+| GitHub binary | Most users, especially Windows | nothing beyond the downloaded binary |
+| npm | Users who already have Node.js | Node.js 18+ |
+| Cargo | Rust users | Rust toolchain |
+| Source build | Contributors | Rust toolchain + repo clone |
+
 ### Quick Install (Linux/macOS)
 
 ```bash
@@ -24,15 +44,51 @@ curl -fsSL https://raw.githubusercontent.com/victorysightsound/dial/main/install
 
 Downloads the correct prebuilt binary for your platform and installs it to `~/.local/bin/`. To upgrade, run the same command again.
 
+This is a global install for the current user. If `~/.local/bin` is already on your PATH, `dial` will be available in any new terminal window and in any project directory.
+
+### npm Install
+
+If you already use Node.js, npm is an easy way to install DIAL globally:
+
+```bash
+npm install -g dial-cli
+```
+
+This installs the global `dial` command and downloads the matching prebuilt DIAL binary from the GitHub release for the current npm package version.
+
+Notes:
+- this is still a global install, not a per-project dependency
+- if other global npm commands already work on your machine, `dial` usually works immediately too
+- on Windows, npm global command shims usually live under `%AppData%\\npm`
+- on macOS and Linux, the npm global bin directory is usually under `$(npm prefix -g)/bin`
+
 ### Windows Install
 
-Download `dial-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/victorysightsound/dial/releases/latest), extract `dial.exe`, and add the containing directory to your PATH.
+Use this path if you want the simplest install without Rust or Node.js.
+
+1. Download `dial-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/victorysightsound/dial/releases/latest).
+2. Create a permanent folder for the program, such as `%USERPROFILE%\\.local\\bin` or `%LOCALAPPDATA%\\Programs\\DIAL`.
+3. Extract `dial.exe` into that folder.
+4. Add that folder to your user `Path`:
+   - open Start and search for `Edit environment variables for your account`
+   - open `Path` under the user variables section
+   - choose `New`
+   - paste the folder that contains `dial.exe`
+   - save the dialog
+5. Close and reopen your terminal.
 
 You can verify the install from PowerShell or `cmd.exe` with:
 
 ```powershell
 dial --version
 ```
+
+What `PATH` means on Windows:
+- `Path` is the list of folders Windows checks when you type a command
+- if the folder containing `dial.exe` is in `Path`, you can run `dial` from any directory
+- this is a one-time user setup, not something you repeat inside every project
+
+If `dial --version` still says the command is not found, open a brand-new PowerShell or Command Prompt window and try again.
 
 ### Via Cargo
 
@@ -43,6 +99,8 @@ cargo install dial-cli
 ```
 
 The crate is published as `dial-cli` but the binary is `dial`. To upgrade: `cargo install dial-cli --force`.
+
+Cargo installs the CLI globally for your Rust toolchain user, not per project.
 
 ### From Source
 
@@ -71,6 +129,8 @@ On Windows, the compiled binary is `target\\release\\dial.exe`.
 ```bash
 dial --version
 ```
+
+If that command works, the global install is complete. You can now `cd` into any repository and run DIAL commands there.
 
 ## Your First Project
 

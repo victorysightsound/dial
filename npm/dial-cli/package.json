@@ -1,0 +1,54 @@
+{
+  "name": "dial-cli",
+  "version": "4.2.4",
+  "description": "Install the DIAL CLI as a global command via npm",
+  "keywords": [
+    "dial",
+    "cli",
+    "ai",
+    "automation",
+    "development"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/victorysightsound/dial#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/victorysightsound/dial.git"
+  },
+  "bugs": {
+    "url": "https://github.com/victorysightsound/dial/issues"
+  },
+  "type": "module",
+  "bin": {
+    "dial": "./bin/dial.js"
+  },
+  "files": [
+    "README.md",
+    "bin/",
+    "lib/",
+    "scripts/"
+  ],
+  "scripts": {
+    "postinstall": "node ./scripts/postinstall.js",
+    "test": "node --test ./test/*.test.mjs"
+  },
+  "dependencies": {
+    "extract-zip": "^2.0.1",
+    "tar": "^7.4.3"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

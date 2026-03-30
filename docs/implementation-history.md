@@ -2,6 +2,17 @@
 
 ## Version Timeline
 
+### v4.2.4 (March 2026) - npm Distribution & Install Clarity
+
+Patch release focused on making DIAL easier to install across platforms and adding npm as a supported distribution channel:
+
+- Adds an npm package (`dial-cli`) that downloads the matching GitHub release binary for the current platform and exposes `dial` as the global command
+- Adds release-workflow support for npm publication when `NPM_TOKEN` is configured
+- Expands installation guidance across README and getting started so users understand global install scope, PATH behavior, Windows setup, and the difference between the global CLI install and per-project `.dial/` state
+- Validates the npm wrapper with package-level tests plus a real packed tarball install that successfully runs `dial --version`
+
+No schema migrations needed.
+
 ### v4.2.3 (March 2026) - Agent File Modes & Release Alignment
 
 Patch release focused on making agent instruction files predictable for end users and keeping release metadata aligned with shipped behavior:
@@ -224,10 +235,11 @@ Complete rewrite from Python to Rust. 13x startup improvement (~190ms Python to 
 | 4.2.1 | + Windows CLI hardening & wizard quality fixes | Yes | 416 |
 | 4.2.2 | + Guided wizard trust & Windows auto-run hardening | Yes | 416+ |
 | 4.2.3 | + Agent file modes & release alignment | Yes | 416+ |
+| 4.2.4 | + npm distribution & install clarity | Yes | 416+ |
 
 ## Performance
 
-| Metric | v2.0 | v4.2.3 |
+| Metric | v2.0 | v4.2.4 |
 |--------|------|------|
 | Startup | ~14ms | ~14ms |
 | Binary size | 4.0MB | ~5MB |
