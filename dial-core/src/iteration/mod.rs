@@ -11,8 +11,9 @@ use crate::db::{get_db, get_dial_dir, with_transaction};
 use crate::errors::{DialError, Result};
 use crate::failure::record_failure;
 use crate::git::{
-    checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled, git_commit,
-    git_diff, git_diff_stat, git_has_changes, git_is_repo, git_revert_to,
+    checkpoint_create, checkpoint_drop, checkpoint_restore, checkpoints_enabled,
+    clear_commit_candidates, git_commit_for_iteration, git_diff, git_diff_stat, git_has_changes,
+    git_is_repo, git_revert_to, snapshot_commit_candidates,
 };
 use crate::output::{bold, dim, green, print_success, red, yellow};
 use crate::task::models::Task;
@@ -80,6 +81,10 @@ pub fn complete_iteration(
          WHERE id = ?6",
         rusqlite::params![status, now, duration, commit_hash, notes, iteration_id],
     )?;
+
+    if status != "awaiting_approval" {
+        let _ = clear_commit_candidates(iteration_id);
+    }
 
     // Increment cross-iteration failure counter when iteration fails
     if status == "failed" {
@@ -280,6 +285,9 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
             task_id,
             iteration_id,
         )? {
+            if git_is_repo() {
+                snapshot_commit_candidates(iteration_id)?;
+            }
             complete_iteration(
                 &conn,
                 iteration_id,
@@ -331,7 +339,7 @@ pub fn validate_current_with_details() -> Result<ValidateResult> {
         // Commit changes (git operations happen outside the DB transaction)
         let commit_hash = if git_is_repo() && git_has_changes() {
             let message = task_description.to_string();
-            match git_commit(&message) {
+            match git_commit_for_iteration(&message, iteration_id) {
                 Ok(Some(hash)) => {
                     println!("{}", green(&format!("Committed: {}", &hash[..8])));
                     Some(hash)
@@ -736,6 +744,7 @@ pub fn reset_current() -> Result<()> {
                 "UPDATE iterations SET status = 'reverted', ended_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, iteration_id],
             )?;
+            let _ = clear_commit_candidates(iteration_id);
 
             // Reset task to pending
             conn.execute(

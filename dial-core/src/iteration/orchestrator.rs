@@ -5,7 +5,10 @@ use crate::config::config_get;
 use crate::db::{get_db, get_dial_dir};
 use crate::errors::{DialError, Result};
 use crate::failure::record_failure;
-use crate::git::{git_commit, git_diff_stat, git_has_changes, git_is_repo};
+use crate::git::{
+    git_commit_for_iteration, git_diff_stat, git_has_changes, git_is_repo,
+    snapshot_commit_candidates,
+};
 use crate::learning::{add_learning_with_conn, auto_link_pattern_for_iteration};
 use crate::output::{bold, dim, green, red, yellow};
 use crate::task::auto_unblock_dependents;
@@ -654,6 +657,9 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                         iteration_id,
                     )?
                 {
+                    if git_is_repo() {
+                        snapshot_commit_candidates(iteration_id)?;
+                    }
                     complete_iteration(
                         &conn,
                         iteration_id,
@@ -701,7 +707,7 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                 // Commit changes
                 let commit_hash = if git_is_repo() && git_has_changes() {
                     let commit_msg = task.description.clone();
-                    match git_commit(&commit_msg) {
+                    match git_commit_for_iteration(&commit_msg, iteration_id) {
                         Ok(Some(hash)) => {
                             println!("{}", green(&format!("Committed: {}", &hash[..8])));
                             Some(hash)

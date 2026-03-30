@@ -1412,7 +1412,8 @@ mod tests {
 
         let prompt = generate_autonomous_subagent_prompt(&conn, &task).unwrap();
 
-        assert!(prompt.contains("Browser verification is required before the task can be marked complete."));
+        assert!(prompt
+            .contains("Browser verification is required before the task can be marked complete."));
         assert!(prompt.contains("Do not attempt browser verification yourself"));
         assert!(prompt.contains("do not run `dial task verify-browser`"));
         assert!(prompt.contains("operator or parent DIAL process"));

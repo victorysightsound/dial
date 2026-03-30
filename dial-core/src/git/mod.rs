@@ -1,5 +1,9 @@
 use crate::config::config_get;
+use crate::db::get_dial_dir;
 use crate::errors::{DialError, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::thread;
@@ -31,6 +35,7 @@ const TEST_SUFFIXES: &[&str] = &[
     " and add integration tests",
 ];
 const CLAUSE_SUFFIXES: &[&str] = &[" so ", " while "];
+const COMMIT_CANDIDATES_DIR: &str = "commit-candidates";
 
 /// Check if checkpoints are enabled via the `enable_checkpoints` config key.
 /// Defaults to true when the key is absent or not "false"/"0".
@@ -444,6 +449,11 @@ const DANGEROUS_PATTERNS: &[&str] = &[
 const INTERNAL_EXCLUDE_PREFIXES: &[&str] = &[".dial", ".dial/", ".dial\\"];
 const AGENT_INSTRUCTION_FILES: &[&str] = &["agents.md", "claude.md", "gemini.md"];
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CommitCandidateManifest {
+    paths: Vec<String>,
+}
+
 fn staged_files() -> Vec<String> {
     let output = git_output_with_retry(&["diff", "--cached", "--name-only"]);
 
@@ -464,6 +474,10 @@ fn is_internal_excluded_path(file: &str) -> bool {
         || INTERNAL_EXCLUDE_PREFIXES
             .iter()
             .any(|prefix| normalized.starts_with(&prefix.replace('\\', "/")))
+}
+
+fn normalize_repo_path(file: &str) -> String {
+    file.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
 fn is_top_level_agent_instruction_path(file: &str) -> bool {
@@ -490,6 +504,124 @@ fn auto_commit_excluded_files(staged: &[String]) -> Vec<String> {
         })
         .cloned()
         .collect()
+}
+
+fn parse_nul_separated_paths(bytes: &[u8]) -> Vec<String> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter_map(|chunk| {
+            if chunk.is_empty() {
+                return None;
+            }
+
+            let path = String::from_utf8_lossy(chunk).trim().to_string();
+            if path.is_empty() {
+                None
+            } else {
+                Some(path)
+            }
+        })
+        .collect()
+}
+
+fn changed_paths_from_worktree() -> Result<Vec<String>> {
+    let mut paths = BTreeSet::new();
+
+    let tracked = git_output_with_retry(&["diff", "--name-only", "-z", "HEAD", "--"])
+        .or_else(|_| git_output_with_retry(&["diff", "--name-only", "-z", "--"]))?;
+    for path in parse_nul_separated_paths(&tracked.stdout) {
+        let normalized = normalize_repo_path(&path);
+        if !normalized.is_empty() && !is_internal_excluded_path(&normalized) {
+            paths.insert(normalized);
+        }
+    }
+
+    let untracked = git_output_with_retry(&["ls-files", "--others", "--exclude-standard", "-z"])?;
+    for path in parse_nul_separated_paths(&untracked.stdout) {
+        let normalized = normalize_repo_path(&path);
+        if !normalized.is_empty() && !is_internal_excluded_path(&normalized) {
+            paths.insert(normalized);
+        }
+    }
+
+    Ok(paths.into_iter().collect())
+}
+
+fn commit_candidate_manifest_path(iteration_id: i64) -> PathBuf {
+    get_dial_dir()
+        .join(COMMIT_CANDIDATES_DIR)
+        .join(format!("iteration-{iteration_id}.json"))
+}
+
+pub fn snapshot_commit_candidates(iteration_id: i64) -> Result<Vec<String>> {
+    if !git_is_repo() {
+        return Ok(Vec::new());
+    }
+
+    let paths = changed_paths_from_worktree()?;
+    let manifest_path = commit_candidate_manifest_path(iteration_id);
+
+    if paths.is_empty() {
+        let _ = fs::remove_file(&manifest_path);
+        return Ok(paths);
+    }
+
+    if let Some(parent) = manifest_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let manifest = CommitCandidateManifest {
+        paths: paths.clone(),
+    };
+    let json = serde_json::to_string_pretty(&manifest).map_err(|err| {
+        DialError::GitError(format!("Failed to serialize commit candidates: {}", err))
+    })?;
+    fs::write(&manifest_path, json).map_err(|err| {
+        DialError::GitError(format!(
+            "Failed to write commit candidates at {}: {}",
+            manifest_path.display(),
+            err
+        ))
+    })?;
+
+    Ok(paths)
+}
+
+pub fn load_commit_candidates(iteration_id: i64) -> Result<Option<Vec<String>>> {
+    let manifest_path = commit_candidate_manifest_path(iteration_id);
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&manifest_path).map_err(|err| {
+        DialError::GitError(format!(
+            "Failed to read commit candidates at {}: {}",
+            manifest_path.display(),
+            err
+        ))
+    })?;
+    let manifest: CommitCandidateManifest = serde_json::from_str(&contents).map_err(|err| {
+        DialError::GitError(format!(
+            "Failed to parse commit candidates at {}: {}",
+            manifest_path.display(),
+            err
+        ))
+    })?;
+    Ok(Some(manifest.paths))
+}
+
+pub fn clear_commit_candidates(iteration_id: i64) -> Result<()> {
+    let manifest_path = commit_candidate_manifest_path(iteration_id);
+    if manifest_path.exists() {
+        fs::remove_file(&manifest_path).map_err(|err| {
+            DialError::GitError(format!(
+                "Failed to remove commit candidates at {}: {}",
+                manifest_path.display(),
+                err
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 fn has_staged_changes() -> bool {
@@ -527,6 +659,7 @@ fn git_commit_with_retry_policy(
     retry_attempts: usize,
     retry_delay: Duration,
     stale_lock_age: Duration,
+    allowed_paths: Option<&[String]>,
 ) -> Result<Option<String>> {
     ensure_git_commit_identity()?;
 
@@ -541,7 +674,7 @@ fn git_commit_with_retry_policy(
         )));
     }
 
-    let staged = staged_files();
+    let mut staged = staged_files();
 
     // Safety check: warn about potentially dangerous files before committing
     let dangerous = check_staged_for_secrets(&staged);
@@ -553,6 +686,25 @@ fn git_commit_with_retry_policy(
         eprintln!("Add these to .gitignore if they should not be committed.");
         // Unstage the dangerous files and continue with the rest
         unstage_files(&dangerous);
+        staged = staged_files();
+    }
+
+    if let Some(allowed_paths) = allowed_paths {
+        let allowed: BTreeSet<String> = allowed_paths
+            .iter()
+            .map(|path| normalize_repo_path(path))
+            .filter(|path| !path.is_empty())
+            .collect();
+        let unrelated: Vec<String> = staged
+            .iter()
+            .filter(|file| !allowed.contains(&normalize_repo_path(file)))
+            .cloned()
+            .collect();
+
+        if !unrelated.is_empty() {
+            unstage_files(&unrelated);
+            staged = staged_files();
+        }
     }
 
     let internal_files = auto_commit_excluded_files(&staged);
@@ -604,7 +756,31 @@ pub fn git_commit(message: &str) -> Result<Option<String>> {
         INDEX_LOCK_RETRY_ATTEMPTS,
         Duration::from_millis(INDEX_LOCK_RETRY_DELAY_MS),
         Duration::from_secs(STALE_INDEX_LOCK_AGE_SECS),
+        None,
     )
+}
+
+pub fn git_commit_selected(message: &str, allowed_paths: &[String]) -> Result<Option<String>> {
+    git_commit_with_retry_policy(
+        message,
+        INDEX_LOCK_RETRY_ATTEMPTS,
+        Duration::from_millis(INDEX_LOCK_RETRY_DELAY_MS),
+        Duration::from_secs(STALE_INDEX_LOCK_AGE_SECS),
+        Some(allowed_paths),
+    )
+}
+
+pub fn git_commit_for_iteration(message: &str, iteration_id: i64) -> Result<Option<String>> {
+    let commit_result = match load_commit_candidates(iteration_id)? {
+        Some(paths) => git_commit_selected(message, &paths),
+        None => git_commit(message),
+    };
+
+    if commit_result.is_ok() {
+        let _ = clear_commit_candidates(iteration_id);
+    }
+
+    commit_result
 }
 
 pub fn git_revert_to(commit_hash: &str) -> Result<bool> {
@@ -903,6 +1079,44 @@ mod tests {
 
     #[test]
     #[serial(cwd)]
+    fn test_git_commit_selected_skips_later_scratch_files() {
+        let tmp = setup_git_repo();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        fs::write("feature.txt", "real change\n").unwrap();
+        let snapshot = snapshot_commit_candidates(42).unwrap();
+        assert_eq!(snapshot, vec!["feature.txt".to_string()]);
+
+        fs::write("scratch.txt", "operator scratch\n").unwrap();
+
+        let hash = git_commit_for_iteration("Add feature", 42)
+            .unwrap()
+            .unwrap();
+        assert!(!hash.is_empty());
+
+        let show = Command::new("git")
+            .args(["show", "--name-only", "--format=", "HEAD"])
+            .output()
+            .unwrap();
+        let files = String::from_utf8_lossy(&show.stdout);
+        assert!(files.contains("feature.txt"));
+        assert!(!files.contains("scratch.txt"));
+
+        let status = Command::new("git")
+            .args(["status", "--short"])
+            .output()
+            .unwrap();
+        let status_output = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            status_output.contains("?? scratch.txt"),
+            "expected scratch.txt to remain untracked, got {status_output}"
+        );
+
+        assert!(load_commit_candidates(42).unwrap().is_none());
+    }
+
+    #[test]
+    #[serial(cwd)]
     fn test_git_commit_retries_transient_index_lock() {
         let tmp = setup_git_repo();
         let _guard = CwdGuard::change_to(tmp.path());
@@ -921,6 +1135,7 @@ mod tests {
             6,
             Duration::from_millis(25),
             Duration::from_secs(60),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -943,6 +1158,7 @@ mod tests {
             2,
             Duration::from_millis(10),
             Duration::ZERO,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -965,6 +1181,7 @@ mod tests {
             2,
             Duration::from_millis(10),
             Duration::from_secs(60),
+            None,
         )
         .unwrap_err();
 

@@ -1036,6 +1036,8 @@ async fn test_browser_verification_gates_completion_until_recorded() {
     let artifact_path = record.artifact_path.unwrap();
     assert!(tmp.path().join(artifact_path).exists());
 
+    fs::write(tmp.path().join("scratch-note.txt"), "operator notes\n").unwrap();
+
     let second_result = engine.validate().await.unwrap();
     assert!(
         second_result,
@@ -1044,6 +1046,24 @@ async fn test_browser_verification_gates_completion_until_recorded() {
 
     let task = engine.task_get(task_id).await.unwrap();
     assert_eq!(task.status, TaskStatus::Completed);
+
+    let show = Command::new("git")
+        .args(["show", "--name-only", "--format=", "HEAD"])
+        .output()
+        .unwrap();
+    let committed_files = String::from_utf8_lossy(&show.stdout);
+    assert!(committed_files.contains("ui-change.txt"));
+    assert!(!committed_files.contains("scratch-note.txt"));
+
+    let status = Command::new("git")
+        .args(["status", "--short"])
+        .output()
+        .unwrap();
+    let status_output = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status_output.contains("?? scratch-note.txt"),
+        "expected scratch-note.txt to remain untracked, got {status_output}"
+    );
 
     env::set_current_dir(original_dir).unwrap();
 }

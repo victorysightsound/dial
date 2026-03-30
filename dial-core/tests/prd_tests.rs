@@ -842,7 +842,10 @@ async fn test_apply_build_test_config_folds_manual_browser_verification_into_fea
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(pending_tasks, 1, "Should keep only the original feature task");
+    assert_eq!(
+        pending_tasks, 1,
+        "Should keep only the original feature task"
+    );
 
     let browser_required: i64 = phase_conn
         .query_row(
@@ -1410,7 +1413,9 @@ fn test_build_build_test_config_prompt_empty_gathered_info() {
 fn test_build_build_test_config_prompt_discourages_manual_browser_test_tasks() {
     let prompt = prd::wizard::build_build_test_config_prompt(&json!({}), &[]);
 
-    assert!(prompt.contains("Do NOT emit a separate `test_task` whose only purpose is manual browser verification"));
+    assert!(prompt.contains(
+        "Do NOT emit a separate `test_task` whose only purpose is manual browser verification"
+    ));
     assert!(prompt.contains("Keep manual browser verification attached to the feature task"));
 }
 

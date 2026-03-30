@@ -804,6 +804,7 @@ impl Engine {
             "UPDATE iterations SET status = 'rejected', ended_at = ?1, notes = ?2 WHERE id = ?3",
             rusqlite::params![now, reason, iteration_id],
         )?;
+        let _ = crate::git::clear_commit_candidates(iteration_id);
 
         // Reset task to pending
         conn.execute(
