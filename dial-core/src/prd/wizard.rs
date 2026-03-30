@@ -1457,7 +1457,16 @@ pub struct TaskMergeRecord {
 pub struct TestTaskRecord {
     pub description: String,
     pub depends_on_feature: usize,
+    pub covers_features: Vec<usize>,
+    pub target_files: Vec<String>,
     pub rationale: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Phase6TaskPlanRecord {
+    task_kind: String,
+    feature_group: Option<String>,
+    coverage_mode: String,
 }
 
 /// Save wizard state to the database (upsert).
@@ -2171,7 +2180,7 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
-                            "required": ["description", "priority", "spec_section", "depends_on", "acceptance_criteria", "requires_browser_verification", "rationale", "size"],
+                            "required": ["description", "priority", "spec_section", "depends_on", "acceptance_criteria", "requires_browser_verification", "task_kind", "feature_group", "coverage_mode", "rationale", "size"],
                             "properties": {
                                 "description": { "type": "string", "minLength": 6 },
                                 "priority": { "type": "integer" },
@@ -2183,6 +2192,15 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                                     "items": { "type": "string", "minLength": 4 }
                                 },
                                 "requires_browser_verification": { "type": "boolean" },
+                                "task_kind": {
+                                    "type": "string",
+                                    "enum": ["feature", "test", "config", "docs", "verification", "refactor"]
+                                },
+                                "feature_group": { "type": "string", "minLength": 3 },
+                                "coverage_mode": {
+                                    "type": "string",
+                                    "enum": ["inline", "dedicated", "none"]
+                                },
                                 "rationale": { "type": "string", "minLength": 6 },
                                 "size": { "type": "string", "enum": ["S", "M", "L", "XL"] }
                             }
@@ -2304,10 +2322,18 @@ fn wizard_phase_output_schema(phase: WizardPhase) -> Option<String> {
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
-                            "required": ["description", "depends_on_feature", "rationale"],
+                            "required": ["description", "covers_features", "target_files", "rationale"],
                             "properties": {
                                 "description": { "type": "string", "minLength": 8 },
-                                "depends_on_feature": { "type": "integer" },
+                                "covers_features": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": { "type": "integer" }
+                                },
+                                "target_files": {
+                                    "type": "array",
+                                    "items": { "type": "string", "minLength": 3 }
+                                },
                                 "rationale": { "type": "string", "minLength": 6 }
                             }
                         }
@@ -3162,6 +3188,9 @@ Before producing the final task list, evaluate EVERY task on three dimensions:
 5. **SOURCE FIDELITY**: Task descriptions must faithfully implement the requested behavior. Do not swap in different enum values, file names, CLI behaviors, or validation rules.
 6. **ACCEPTANCE CRITERIA**: Every task must include 1-3 short acceptance criteria describing the observable result of the work.
 7. **BROWSER VERIFICATION**: Set `requires_browser_verification` to `true` only when the task changes user-facing UI behavior that should be checked manually in a browser. Leave it `false` for backend, CLI, data, or fully automated work.
+8. **TASK KIND**: Classify every task as one of `feature`, `test`, `config`, `docs`, `verification`, or `refactor`.
+9. **FEATURE GROUP**: Assign every task a stable kebab-case `feature_group` that identifies the product slice it belongs to. Tasks that serve the same feature slice should share the same group.
+10. **COVERAGE OWNERSHIP**: Set `coverage_mode` to `inline` when the task itself should carry its automated coverage, `dedicated` when this task is the single dedicated coverage owner for its feature_group, or `none` when coverage ownership does not apply.
 
 ### Actions Required
 
@@ -3182,6 +3211,7 @@ Any task sized [XL] MUST be split. Do not leave XL tasks in the final list.
 5. Assign realistic priorities (1 = implement first, higher numbers = implement later)
 6. Include 1-3 concrete acceptance criteria for every task
 7. Mark browser verification only for tasks that truly need a manual UI check
+8. Keep coverage ownership unambiguous: at most one `dedicated` test task per `feature_group`
 
 Each task should be roughly one commit's worth of work (~30 minutes).
 In the `depends_on` array, use 0-based indices referring to other tasks in YOUR output array.
@@ -3191,7 +3221,7 @@ Every task description must be self-contained. Do not refer to "the previous tas
 Respond in JSON format:
 {{
   "tasks": [
-    {{"description": "concrete task description", "priority": 1, "spec_section": "1.2", "depends_on": [], "acceptance_criteria": ["observable result one", "observable result two"], "requires_browser_verification": false, "rationale": "why this order", "size": "S"}}
+    {{"description": "concrete task description", "priority": 1, "spec_section": "1.2", "depends_on": [], "acceptance_criteria": ["observable result one", "observable result two"], "requires_browser_verification": false, "task_kind": "feature", "feature_group": "auth-login", "coverage_mode": "inline", "rationale": "why this order", "size": "S"}}
   ],
   "removed": [
     {{"original": "task that was removed", "reason": "why"}}
@@ -3286,6 +3316,118 @@ fn normalize_task_text_for_dedupe(text: &str) -> String {
         })
         .collect();
     normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_feature_group(value: &str) -> Option<String> {
+    let normalized = normalize_task_text_for_dedupe(value).replace(' ', "-");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn normalize_task_kind(value: &str) -> String {
+    match normalize_task_text_for_dedupe(value).as_str() {
+        "feature" | "test" | "config" | "docs" | "verification" | "refactor" => {
+            normalize_task_text_for_dedupe(value)
+        }
+        _ => "feature".to_string(),
+    }
+}
+
+fn normalize_coverage_mode(value: &str) -> String {
+    match normalize_task_text_for_dedupe(value).as_str() {
+        "inline" | "dedicated" | "none" => normalize_task_text_for_dedupe(value),
+        _ => "none".to_string(),
+    }
+}
+
+fn parse_phase6_task_plan_records(
+    gathered_info: &JsonValue,
+) -> std::collections::HashMap<String, Phase6TaskPlanRecord> {
+    gathered_info
+        .get("task_review")
+        .and_then(|phase| phase.get("tasks"))
+        .and_then(|tasks| tasks.as_array())
+        .map(|tasks| {
+            tasks
+                .iter()
+                .filter_map(|task| {
+                    let description = task.get("description")?.as_str()?.trim();
+                    if description.is_empty() {
+                        return None;
+                    }
+
+                    Some((
+                        normalize_task_text_for_dedupe(description),
+                        Phase6TaskPlanRecord {
+                            task_kind: normalize_task_kind(
+                                task.get("task_kind")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("feature"),
+                            ),
+                            feature_group: task
+                                .get("feature_group")
+                                .and_then(|value| value.as_str())
+                                .and_then(normalize_feature_group),
+                            coverage_mode: normalize_coverage_mode(
+                                task.get("coverage_mode")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("none"),
+                            ),
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn task_path_hints(text: &str) -> std::collections::HashSet<String> {
+    text.split_whitespace()
+        .filter_map(|token| {
+            let cleaned = token.trim_matches(|ch: char| {
+                !(ch.is_ascii_alphanumeric() || ch == '/' || ch == '.' || ch == '_' || ch == '-')
+            });
+            let lower = cleaned.to_ascii_lowercase();
+            if lower.is_empty() {
+                return None;
+            }
+            if !(lower.contains('/') || lower.contains('.')) {
+                return None;
+            }
+            if !lower.chars().any(|ch| ch.is_ascii_alphabetic()) {
+                return None;
+            }
+            Some(lower)
+        })
+        .collect()
+}
+
+fn normalized_path_list(paths: &[String]) -> std::collections::HashSet<String> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_ascii_lowercase())
+            }
+        })
+        .collect()
+}
+
+fn descriptions_materially_overlap(lhs: &str, rhs: &str) -> bool {
+    let lhs_keywords = task_scope_keywords(lhs);
+    let rhs_keywords = task_scope_keywords(rhs);
+    if lhs_keywords.is_empty() || rhs_keywords.is_empty() {
+        return false;
+    }
+    let overlap = lhs_keywords.intersection(&rhs_keywords).count();
+    let required_overlap = std::cmp::min(3, lhs_keywords.len().min(rhs_keywords.len()));
+    overlap >= required_overlap
 }
 
 fn task_scope_keywords(text: &str) -> std::collections::HashSet<String> {
@@ -3644,18 +3786,42 @@ pub fn build_build_test_config_prompt(
 
     let project_summary = build_project_summary_context(gathered_info);
     let section_outline = build_generated_section_outline(gathered_info);
+    let phase6_task_plans = parse_phase6_task_plan_records(gathered_info);
 
     let task_list = if tasks.is_empty() {
-        "No feature tasks available.".to_string()
+        "No tasks available.".to_string()
     } else {
         let items: Vec<String> = tasks
             .iter()
             .enumerate()
             .map(|(idx, (_id, desc, priority, section))| {
                 let section_str = section.as_deref().unwrap_or("none");
+                let task_key = normalize_task_text_for_dedupe(desc);
+                let metadata = phase6_task_plans.get(&task_key);
+                let task_kind = metadata
+                    .map(|plan| plan.task_kind.as_str())
+                    .unwrap_or_else(|| {
+                        if task_explicitly_owns_test_coverage(desc) {
+                            "test"
+                        } else {
+                            "feature"
+                        }
+                    });
+                let coverage_mode = metadata
+                    .map(|plan| plan.coverage_mode.as_str())
+                    .unwrap_or_else(|| {
+                        if task_explicitly_owns_test_coverage(desc) {
+                            "dedicated"
+                        } else {
+                            "inline"
+                        }
+                    });
+                let feature_group = metadata
+                    .and_then(|plan| plan.feature_group.as_deref())
+                    .unwrap_or("unspecified");
                 format!(
-                    "  [{}] P{} (section: {}) {}",
-                    idx, priority, section_str, desc
+                    "  [{}] P{} (section: {}) {} [kind: {} | coverage: {} | group: {}]",
+                    idx, priority, section_str, desc, task_kind, coverage_mode, feature_group
                 )
             })
             .collect();
@@ -3676,12 +3842,15 @@ The pipeline_steps should cover all validation concerns for this project
 
 ## TEST STRATEGY
 
-Review the feature tasks below and determine test coverage needs:
+Review the current task list below and determine test coverage needs:
 
-### Feature Tasks (0-indexed)
+### Current Task List (0-indexed)
 {task_list}
 
-For EACH feature task, decide:
+Phase 6 already assigned each task a `kind`, `coverage`, and `group`.
+Treat those planning decisions as authoritative unless they are obviously inconsistent with the requirements.
+
+For EACH feature-facing slice, decide:
 
 1. **Complex features** (multi-file, API endpoints, data models, state management) get a DEDICATED test task that depends on the feature task. Write specific test descriptions with concrete scenarios:
    - BAD: "Write tests for user module"
@@ -3689,8 +3858,11 @@ For EACH feature task, decide:
 
 2. **Simple features** (config changes, single-function utilities, constants) include tests inline with the feature; no separate test task needed.
 
-3. If a feature task description already explicitly includes its required tests or coverage, do NOT emit a separate `test_task` for that feature. Keep the verification inline with that feature task.
-4. Do NOT emit a separate `test_task` whose only purpose is manual browser verification for a UI feature. Keep manual browser verification attached to the feature task instead of turning it into a new standalone task.
+3. If Phase 6 already marked a task as `kind: test` or `coverage: dedicated` for a given `group`, do NOT emit another dedicated `test_task` for that same `group`.
+4. If a feature task description already explicitly includes its required tests or coverage, do NOT emit a separate `test_task` for that feature. Keep the verification inline with that feature task.
+5. Do NOT emit a separate `test_task` whose only purpose is manual browser verification for a UI feature. Keep manual browser verification attached to the feature task instead of turning it into a new standalone task.
+6. At most one dedicated test task may own a given `group`.
+7. When one dedicated test task intentionally covers multiple adjacent feature groups, keep that work in a single task and list all covered feature indices in `covers_features` instead of duplicating neighboring test tasks.
 
 Use concrete project terminology from the earlier phases. Do not use placeholders like `module`, `entity`, `<route>`, or `as defined in task 2`.
 
@@ -3723,7 +3895,7 @@ Respond in JSON format:
     {{"name": "step name", "command": "shell command", "sort_order": 2, "required": true, "timeout": 300}}
   ],
   "test_tasks": [
-    {{"description": "specific test task description with concrete scenarios", "depends_on_feature": 0, "rationale": "why this feature needs a dedicated test task"}}
+    {{"description": "specific test task description with concrete scenarios", "covers_features": [0], "target_files": ["test/app.test.js"], "rationale": "why this feature needs a dedicated test task"}}
   ],
   "build_timeout": 600,
   "test_timeout": 600,
@@ -3737,7 +3909,8 @@ Notes on the JSON fields:
 - `pipeline_steps[].sort_order`: integer execution sequence (1, 2, 3...)
 - `pipeline_steps[].required`: boolean; if true, pipeline stops on failure
 - `pipeline_steps[].timeout`: integer seconds before the step is killed
-- `test_tasks[].depends_on_feature`: 0-based index into the feature tasks list above
+- `test_tasks[].covers_features`: 0-based indices into the task list above for the feature work this dedicated test task validates
+- `test_tasks[].target_files`: concrete test files expected to change for this dedicated test task
 - Only include test_tasks for complex features that need dedicated test tasks
 
 Respond ONLY with valid JSON."#
@@ -3789,8 +3962,9 @@ pub async fn run_wizard_phase_7(
     .await?;
 
     // 4. Apply config, pipeline steps, and test tasks to the database
+    let phase6_task_plans = parse_phase6_task_plan_records(&state.gathered_info);
     let (build_cmd, test_cmd, steps_count, test_tasks_count) =
-        apply_build_test_config(&phase_conn, &data, &tasks)?;
+        apply_build_test_config_with_phase6_plan(&phase_conn, &data, &tasks, &phase6_task_plans)?;
 
     // 5. Store in wizard state and mark complete
     state.set_phase_data(WizardPhase::BuildTestConfig, data);
@@ -3818,6 +3992,39 @@ pub fn apply_build_test_config(
     conn: &Connection,
     config_data: &JsonValue,
     feature_tasks: &[(i64, String, i32, Option<String>)],
+) -> Result<(String, String, usize, usize)> {
+    apply_build_test_config_with_phase6_plan(
+        conn,
+        config_data,
+        feature_tasks,
+        &std::collections::HashMap::new(),
+    )
+}
+
+fn upsert_phase_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    let normalized = if key.ends_with("_cmd") {
+        let sanitized = sanitize_shell_command(&format!("config '{}'", key), value)?;
+        if let Some(warning) = &sanitized.warning {
+            print_warning(warning);
+        }
+        sanitized.value
+    } else {
+        value.to_string()
+    };
+    let now = chrono::Local::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO config (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        params![key, normalized, now],
+    )?;
+    Ok(())
+}
+
+fn apply_build_test_config_with_phase6_plan(
+    conn: &Connection,
+    config_data: &JsonValue,
+    feature_tasks: &[(i64, String, i32, Option<String>)],
+    phase6_task_plans: &std::collections::HashMap<String, Phase6TaskPlanRecord>,
 ) -> Result<(String, String, usize, usize)> {
     let raw_build_cmd = config_data
         .get("build_cmd")
@@ -3851,11 +4058,11 @@ pub fn apply_build_test_config(
         .and_then(|v| v.as_i64())
         .unwrap_or(600);
 
-    // Write config values via config_set
-    crate::config::config_set("build_cmd", &build_cmd.value)?;
-    crate::config::config_set("test_cmd", &test_cmd.value)?;
-    crate::config::config_set("build_timeout", &build_timeout.to_string())?;
-    crate::config::config_set("test_timeout", &test_timeout.to_string())?;
+    // Write config values directly to the active phase DB.
+    upsert_phase_config(conn, "build_cmd", &build_cmd.value)?;
+    upsert_phase_config(conn, "test_cmd", &test_cmd.value)?;
+    upsert_phase_config(conn, "build_timeout", &build_timeout.to_string())?;
+    upsert_phase_config(conn, "test_timeout", &test_timeout.to_string())?;
 
     // Insert pipeline steps if provided
     let steps_count = if let Some(steps) =
@@ -3922,66 +4129,152 @@ pub fn apply_build_test_config(
         .map(|(_, description, _, _)| normalize_task_text_for_dedupe(description))
         .collect();
     let mut inserted_test_fingerprints = std::collections::HashSet::new();
+    let existing_test_task_scopes: Vec<(
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+        String,
+    )> = feature_tasks
+        .iter()
+        .filter(|(_, description, _, _)| task_explicitly_owns_test_coverage(description))
+        .map(|(_, description, _, _)| {
+            let mut existing_groups = feature_tasks
+                .iter()
+                .filter(|(_, candidate_description, _, _)| {
+                    !task_explicitly_owns_test_coverage(candidate_description)
+                        && task_covers_feature_scope(description, candidate_description)
+                })
+                .filter_map(|(_, candidate_description, _, _)| {
+                    phase6_task_plans
+                        .get(&normalize_task_text_for_dedupe(candidate_description))
+                        .and_then(|plan| plan.feature_group.clone())
+                })
+                .collect::<std::collections::HashSet<_>>();
+            if let Some(plan) = phase6_task_plans.get(&normalize_task_text_for_dedupe(description))
+            {
+                if let Some(feature_group) = &plan.feature_group {
+                    existing_groups.insert(feature_group.clone());
+                }
+            }
+            (
+                existing_groups,
+                task_path_hints(description),
+                description.clone(),
+            )
+        })
+        .collect();
 
     for test_task in &test_tasks {
-        // Validate the dependency index is within bounds
-        if test_task.depends_on_feature < feature_tasks.len() {
-            let feature_id = feature_tasks[test_task.depends_on_feature].0;
-            let feature_description = &feature_tasks[test_task.depends_on_feature].1;
-            if task_is_manual_browser_verification(&test_task.description) {
-                conn.execute(
-                    "UPDATE tasks
-                     SET requires_browser_verification = 1
-                     WHERE id = ?1",
-                    params![feature_id],
-                )?;
-                continue;
-            }
-            if task_explicitly_owns_test_coverage(feature_description) {
-                continue;
-            }
-            if feature_tasks
+        let mut covered_features = if test_task.covers_features.is_empty() {
+            vec![test_task.depends_on_feature]
+        } else {
+            test_task.covers_features.clone()
+        };
+        covered_features.sort_unstable();
+        covered_features.dedup();
+        covered_features.retain(|index| *index < feature_tasks.len());
+        if covered_features.is_empty() {
+            continue;
+        }
+
+        let feature_id = feature_tasks[covered_features[0]].0;
+        if task_is_manual_browser_verification(&test_task.description) {
+            conn.execute(
+                "UPDATE tasks
+                 SET requires_browser_verification = 1
+                 WHERE id = ?1",
+                params![feature_id],
+            )?;
+            continue;
+        }
+        if covered_features
+            .iter()
+            .any(|index| task_explicitly_owns_test_coverage(&feature_tasks[*index].1))
+        {
+            continue;
+        }
+
+        let candidate_groups: std::collections::HashSet<String> = covered_features
+            .iter()
+            .filter_map(|index| {
+                phase6_task_plans
+                    .get(&normalize_task_text_for_dedupe(&feature_tasks[*index].1))
+                    .and_then(|plan| plan.feature_group.clone())
+            })
+            .collect();
+        let candidate_files = normalized_path_list(&test_task.target_files);
+        let overlaps_existing_dedicated_scope = existing_test_task_scopes.iter().any(
+            |(existing_groups, existing_files, existing_description)| {
+                let group_overlap = !candidate_groups.is_empty()
+                    && !existing_groups.is_empty()
+                    && !existing_groups.is_disjoint(&candidate_groups);
+                let file_overlap = !candidate_files.is_empty()
+                    && !existing_files.is_empty()
+                    && !existing_files.is_disjoint(&candidate_files);
+                (group_overlap
+                    && (file_overlap
+                        || descriptions_materially_overlap(
+                            existing_description,
+                            &test_task.description,
+                        )))
+                    || (file_overlap
+                        && descriptions_materially_overlap(
+                            existing_description,
+                            &test_task.description,
+                        ))
+            },
+        );
+        if overlaps_existing_dedicated_scope {
+            continue;
+        }
+        if covered_features.iter().any(|feature_index| {
+            let feature_description = &feature_tasks[*feature_index].1;
+            feature_tasks
                 .iter()
                 .enumerate()
                 .any(|(index, (_, description, _, _))| {
-                    index != test_task.depends_on_feature
+                    index != *feature_index
                         && task_covers_feature_scope(description, feature_description)
                 })
-            {
-                continue;
-            }
+        }) {
+            continue;
+        }
 
-            let test_fingerprint = normalize_task_text_for_dedupe(&test_task.description);
-            if existing_feature_fingerprints.contains(&test_fingerprint)
-                || !inserted_test_fingerprints.insert(test_fingerprint)
-            {
-                continue;
-            }
+        let test_fingerprint = normalize_task_text_for_dedupe(&test_task.description);
+        if existing_feature_fingerprints.contains(&test_fingerprint)
+            || !inserted_test_fingerprints.insert(test_fingerprint)
+        {
+            continue;
+        }
 
-            // Determine priority: one level after the feature task it depends on
-            let feature_priority = feature_tasks[test_task.depends_on_feature].2;
-            let test_priority = feature_priority + 1;
+        let test_priority = covered_features
+            .iter()
+            .map(|index| feature_tasks[*index].2)
+            .max()
+            .unwrap_or(feature_tasks[0].2)
+            + 1;
 
-            // Get the prd_section_id from the feature task
-            let prd_section_id = &feature_tasks[test_task.depends_on_feature].3;
+        let prd_section_id = covered_features
+            .iter()
+            .filter_map(|index| feature_tasks[*index].3.clone())
+            .next();
 
-            conn.execute(
-                "INSERT INTO tasks (description, status, priority, prd_section_id)
-                 VALUES (?1, 'pending', ?2, ?3)",
-                params![test_task.description, test_priority, prd_section_id],
-            )?;
+        conn.execute(
+            "INSERT INTO tasks (description, status, priority, prd_section_id)
+             VALUES (?1, 'pending', ?2, ?3)",
+            params![test_task.description, test_priority, prd_section_id],
+        )?;
 
-            let test_task_id = conn.last_insert_rowid();
+        let test_task_id = conn.last_insert_rowid();
 
-            // Create dependency: test task depends on feature task
+        for feature_index in &covered_features {
             conn.execute(
                 "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id)
                  VALUES (?1, ?2)",
-                params![test_task_id, feature_id],
+                params![test_task_id, feature_tasks[*feature_index].0],
             )?;
-
-            test_tasks_count += 1;
         }
+
+        test_tasks_count += 1;
     }
 
     Ok((
@@ -4687,8 +4980,8 @@ pub fn parse_sizing_response(
 /// Parse test strategy data from a Phase 7 build/test config response.
 ///
 /// Extracts `test_tasks` array from the JSON response. Each test task has a
-/// description, a `depends_on_feature` index (0-based into the feature task list),
-/// and a rationale.
+/// description, one or more `covers_features` indices (0-based into the task list),
+/// optional concrete `target_files`, and a rationale.
 ///
 /// Returns empty vector if the field is missing (backward compatible with
 /// older Phase 7 responses that lack test strategy data).
@@ -4699,10 +4992,36 @@ pub fn parse_test_strategy_response(data: &JsonValue) -> Vec<TestTaskRecord> {
             arr.iter()
                 .filter_map(|item| {
                     let description = item.get("description")?.as_str()?.to_string();
-                    let depends_on_feature = item
+                    let explicit_depends_on_feature = item
                         .get("depends_on_feature")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as usize;
+                        .map(|value| value as usize);
+                    let covers_features = item
+                        .get("covers_features")
+                        .and_then(|value| value.as_array())
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_u64().map(|index| index as usize))
+                                .collect::<Vec<_>>()
+                        })
+                        .filter(|values| !values.is_empty())
+                        .unwrap_or_else(|| vec![explicit_depends_on_feature.unwrap_or(0)]);
+                    let depends_on_feature = explicit_depends_on_feature
+                        .or_else(|| covers_features.first().copied())
+                        .unwrap_or(0);
+                    let target_files = item
+                        .get("target_files")
+                        .and_then(|value| value.as_array())
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str())
+                                .map(|value| value.trim().to_string())
+                                .filter(|value| !value.is_empty())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
                     let rationale = item
                         .get("rationale")
                         .and_then(|r| r.as_str())
@@ -4711,6 +5030,8 @@ pub fn parse_test_strategy_response(data: &JsonValue) -> Vec<TestTaskRecord> {
                     Some(TestTaskRecord {
                         description,
                         depends_on_feature,
+                        covers_features,
+                        target_files,
                         rationale,
                     })
                 })
@@ -5253,8 +5574,14 @@ Validate the complete DIAL loop on a small native Windows project.
 
         assert!(prompt.contains("ACCEPTANCE CRITERIA"));
         assert!(prompt.contains("BROWSER VERIFICATION"));
+        assert!(prompt.contains("TASK KIND"));
+        assert!(prompt.contains("FEATURE GROUP"));
+        assert!(prompt.contains("COVERAGE OWNERSHIP"));
         assert!(prompt.contains("\"acceptance_criteria\""));
         assert!(prompt.contains("\"requires_browser_verification\""));
+        assert!(prompt.contains("\"task_kind\""));
+        assert!(prompt.contains("\"feature_group\""));
+        assert!(prompt.contains("\"coverage_mode\""));
     }
 
     #[test]
@@ -5305,6 +5632,9 @@ Validate the complete DIAL loop on a small native Windows project.
         assert!(prompt.contains("\"size\": \"S\""));
         assert!(prompt.contains("\"acceptance_criteria\""));
         assert!(prompt.contains("\"requires_browser_verification\""));
+        assert!(prompt.contains("\"task_kind\": \"feature\""));
+        assert!(prompt.contains("\"feature_group\": \"auth-login\""));
+        assert!(prompt.contains("\"coverage_mode\": \"inline\""));
         assert!(prompt.contains("\"splits\""));
         assert!(prompt.contains("\"rewrites\""));
         assert!(prompt.contains("\"merges\""));
@@ -5323,6 +5653,9 @@ Validate the complete DIAL loop on a small native Windows project.
         assert!(required
             .iter()
             .any(|item| item == "requires_browser_verification"));
+        assert!(required.iter().any(|item| item == "task_kind"));
+        assert!(required.iter().any(|item| item == "feature_group"));
+        assert!(required.iter().any(|item| item == "coverage_mode"));
         assert_eq!(
             value["properties"]["tasks"]["items"]["properties"]["acceptance_criteria"]["minItems"],
             json!(1)
@@ -5331,6 +5664,21 @@ Validate the complete DIAL loop on a small native Windows project.
             value["properties"]["tasks"]["items"]["properties"]["requires_browser_verification"]
                 ["type"],
             json!("boolean")
+        );
+        assert_eq!(
+            value["properties"]["tasks"]["items"]["properties"]["task_kind"]["enum"],
+            json!([
+                "feature",
+                "test",
+                "config",
+                "docs",
+                "verification",
+                "refactor"
+            ])
+        );
+        assert_eq!(
+            value["properties"]["tasks"]["items"]["properties"]["coverage_mode"]["enum"],
+            json!(["inline", "dedicated", "none"])
         );
     }
 
@@ -5419,6 +5767,50 @@ Validate the complete DIAL loop on a small native Windows project.
         assert!(prompt.contains("Keep `npm test` as the test command"));
         assert!(prompt.contains("Invalid JSON on stdin causes a non-zero exit code"));
         assert!(prompt.contains("Preserve exact commands, file paths, stdin/stdout behavior"));
+    }
+
+    #[test]
+    fn test_build_test_config_prompt_uses_phase6_coverage_metadata() {
+        let tasks = vec![
+            (
+                1,
+                "Implement compact mode settings".to_string(),
+                1,
+                Some("3".to_string()),
+            ),
+            (
+                2,
+                "Add compact mode tests".to_string(),
+                2,
+                Some("3".to_string()),
+            ),
+        ];
+        let gathered = json!({
+            "task_review": {
+                "tasks": [
+                    {
+                        "description": "Implement compact mode settings",
+                        "task_kind": "feature",
+                        "feature_group": "compact-mode-settings",
+                        "coverage_mode": "inline"
+                    },
+                    {
+                        "description": "Add compact mode tests",
+                        "task_kind": "test",
+                        "feature_group": "compact-mode-settings",
+                        "coverage_mode": "dedicated"
+                    }
+                ]
+            }
+        });
+
+        let prompt = build_build_test_config_prompt(&gathered, &tasks);
+
+        assert!(prompt.contains("kind: feature | coverage: inline | group: compact-mode-settings"));
+        assert!(prompt.contains("kind: test | coverage: dedicated | group: compact-mode-settings"));
+        assert!(prompt.contains("At most one dedicated test task may own a given `group`."));
+        assert!(prompt.contains("\"covers_features\""));
+        assert!(prompt.contains("\"target_files\""));
     }
 
     #[test]
@@ -5688,6 +6080,276 @@ Validate the complete DIAL loop on a small native Windows project.
             "New users persist password_hash instead of plain text"
         );
         assert_eq!(requires_browser, 1);
+    }
+
+    #[test]
+    fn test_parse_test_strategy_response_reads_structured_fields() {
+        let data = json!({
+            "test_tasks": [
+                {
+                    "description": "Add compact mode regression coverage",
+                    "covers_features": [0, 2],
+                    "target_files": ["test/app.test.js"],
+                    "rationale": "Single regression file can validate both compact mode slices."
+                }
+            ]
+        });
+
+        let tasks = parse_test_strategy_response(&data);
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].covers_features, vec![0, 2]);
+        assert_eq!(tasks[0].target_files, vec!["test/app.test.js"]);
+        assert_eq!(tasks[0].depends_on_feature, 0);
+    }
+
+    #[test]
+    fn test_apply_build_test_config_creates_multi_feature_dependencies() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY,
+                description TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                priority INTEGER DEFAULT 5,
+                blocked_by TEXT,
+                spec_section_id INTEGER,
+                prd_section_id TEXT,
+                acceptance_criteria_json TEXT,
+                requires_browser_verification INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT,
+                total_attempts INTEGER DEFAULT 0,
+                total_failures INTEGER DEFAULT 0,
+                last_failure_at TEXT
+            );
+            CREATE TABLE task_dependencies (
+                task_id INTEGER NOT NULL,
+                depends_on_id INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (task_id, depends_on_id)
+            );
+            CREATE TABLE validation_steps (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                command TEXT NOT NULL,
+                sort_order INTEGER NOT NULL,
+                required INTEGER NOT NULL DEFAULT 1,
+                timeout_secs INTEGER
+            );
+            CREATE TABLE config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .unwrap();
+
+        let feature_tasks = vec![
+            (
+                1,
+                "Implement compact mode settings".to_string(),
+                1,
+                Some("3".to_string()),
+            ),
+            (
+                2,
+                "Update compact mode preview".to_string(),
+                2,
+                Some("3".to_string()),
+            ),
+        ];
+
+        let config_data = json!({
+            "build_cmd": "npm run build",
+            "test_cmd": "npm test",
+            "test_framework": "node --test",
+            "pipeline_steps": [],
+            "test_tasks": [
+                {
+                    "description": "Add regression coverage in `test/app.test.js` for compact mode settings and preview updates",
+                    "covers_features": [0, 1],
+                    "target_files": ["test/app.test.js"],
+                    "rationale": "One regression file can validate both compact mode slices."
+                }
+            ],
+            "build_timeout": 600,
+            "test_timeout": 600,
+            "rationale": "Use the repo scripts directly."
+        });
+
+        let phase6_task_plans = std::collections::HashMap::from([
+            (
+                normalize_task_text_for_dedupe("Implement compact mode settings"),
+                Phase6TaskPlanRecord {
+                    task_kind: "feature".to_string(),
+                    feature_group: Some("compact-mode-settings".to_string()),
+                    coverage_mode: "inline".to_string(),
+                },
+            ),
+            (
+                normalize_task_text_for_dedupe("Update compact mode preview"),
+                Phase6TaskPlanRecord {
+                    task_kind: "feature".to_string(),
+                    feature_group: Some("compact-mode-preview".to_string()),
+                    coverage_mode: "inline".to_string(),
+                },
+            ),
+        ]);
+
+        let (_build, _test, _steps, test_tasks_count) = apply_build_test_config_with_phase6_plan(
+            &conn,
+            &config_data,
+            &feature_tasks,
+            &phase6_task_plans,
+        )
+        .unwrap();
+
+        assert_eq!(test_tasks_count, 1);
+        let inserted_task_id: i64 = conn
+            .query_row(
+                "SELECT id FROM tasks WHERE description LIKE 'Add regression coverage%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let dep_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_dependencies WHERE task_id = ?1",
+                [inserted_task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(dep_count, 2);
+    }
+
+    #[test]
+    fn test_apply_build_test_config_skips_overlapping_dedicated_group() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY,
+                description TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                priority INTEGER DEFAULT 5,
+                blocked_by TEXT,
+                spec_section_id INTEGER,
+                prd_section_id TEXT,
+                acceptance_criteria_json TEXT,
+                requires_browser_verification INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT,
+                total_attempts INTEGER DEFAULT 0,
+                total_failures INTEGER DEFAULT 0,
+                last_failure_at TEXT
+            );
+            CREATE TABLE task_dependencies (
+                task_id INTEGER NOT NULL,
+                depends_on_id INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (task_id, depends_on_id)
+            );
+            CREATE TABLE validation_steps (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                command TEXT NOT NULL,
+                sort_order INTEGER NOT NULL,
+                required INTEGER NOT NULL DEFAULT 1,
+                timeout_secs INTEGER
+            );
+            CREATE TABLE config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .unwrap();
+
+        let feature_tasks = vec![
+            (
+                1,
+                "Implement compact mode settings".to_string(),
+                1,
+                Some("3".to_string()),
+            ),
+            (
+                2,
+                "Update compact mode preview".to_string(),
+                2,
+                Some("3".to_string()),
+            ),
+            (
+                3,
+                "Add automated tests for the settings flow in `test/app.test.js`".to_string(),
+                3,
+                Some("3".to_string()),
+            ),
+        ];
+
+        let config_data = json!({
+            "build_cmd": "npm run build",
+            "test_cmd": "npm test",
+            "test_framework": "node --test",
+            "pipeline_steps": [],
+            "test_tasks": [
+                {
+                    "description": "Add automated coverage in `test/app.test.js` for settings persistence and preview updates",
+                    "covers_features": [0, 1],
+                    "target_files": ["test/app.test.js"],
+                    "rationale": "Consolidated coverage task."
+                }
+            ],
+            "build_timeout": 600,
+            "test_timeout": 600,
+            "rationale": "Use the repo scripts directly."
+        });
+
+        let phase6_task_plans = std::collections::HashMap::from([
+            (
+                normalize_task_text_for_dedupe("Implement compact mode settings"),
+                Phase6TaskPlanRecord {
+                    task_kind: "feature".to_string(),
+                    feature_group: Some("compact-mode-settings".to_string()),
+                    coverage_mode: "inline".to_string(),
+                },
+            ),
+            (
+                normalize_task_text_for_dedupe("Update compact mode preview"),
+                Phase6TaskPlanRecord {
+                    task_kind: "feature".to_string(),
+                    feature_group: Some("compact-mode-preview".to_string()),
+                    coverage_mode: "inline".to_string(),
+                },
+            ),
+            (
+                normalize_task_text_for_dedupe(
+                    "Add automated tests for the settings flow in `test/app.test.js`",
+                ),
+                Phase6TaskPlanRecord {
+                    task_kind: "test".to_string(),
+                    feature_group: Some("compact-mode-settings".to_string()),
+                    coverage_mode: "dedicated".to_string(),
+                },
+            ),
+        ]);
+
+        let (_build, _test, _steps, test_tasks_count) = apply_build_test_config_with_phase6_plan(
+            &conn,
+            &config_data,
+            &feature_tasks,
+            &phase6_task_plans,
+        )
+        .unwrap();
+
+        assert_eq!(test_tasks_count, 0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

@@ -2678,8 +2678,12 @@ fn test_phase_7_prompt_contains_test_strategy() {
         "Prompt should request test_tasks in JSON format"
     );
     assert!(
-        prompt.contains("depends_on_feature"),
-        "Prompt should request depends_on_feature for test tasks"
+        prompt.contains("covers_features"),
+        "Prompt should request covers_features for test tasks"
+    );
+    assert!(
+        prompt.contains("target_files"),
+        "Prompt should request target_files for test tasks"
     );
     assert!(
         prompt.contains("\"test_framework\""),
@@ -2711,7 +2715,7 @@ fn test_phase_7_prompt_with_empty_tasks() {
     let prompt = prd::wizard::build_build_test_config_prompt(&gathered_info, &[]);
 
     assert!(
-        prompt.contains("No feature tasks available"),
+        prompt.contains("No tasks available"),
         "Prompt should indicate no tasks when list is empty"
     );
     assert!(
@@ -2733,12 +2737,14 @@ fn test_parse_test_strategy_response() {
         "test_tasks": [
             {
                 "description": "Write integration tests for POST /users: valid input 201, duplicate email 409, missing fields 422",
-                "depends_on_feature": 0,
+                "covers_features": [0],
+                "target_files": ["tests/users_api.rs"],
                 "rationale": "User registration has multiple error paths"
             },
             {
                 "description": "Write unit tests for password hashing: bcrypt cost factor 12, verify round-trip, reject empty passwords",
-                "depends_on_feature": 2,
+                "covers_features": [2],
+                "target_files": ["tests/auth.rs"],
                 "rationale": "Security-critical code needs dedicated tests"
             }
         ],
@@ -2751,9 +2757,13 @@ fn test_parse_test_strategy_response() {
 
     assert_eq!(test_tasks[0].description, "Write integration tests for POST /users: valid input 201, duplicate email 409, missing fields 422");
     assert_eq!(test_tasks[0].depends_on_feature, 0);
+    assert_eq!(test_tasks[0].covers_features, vec![0]);
+    assert_eq!(test_tasks[0].target_files, vec!["tests/users_api.rs"]);
     assert!(test_tasks[0].rationale.contains("error paths"));
 
     assert_eq!(test_tasks[1].depends_on_feature, 2);
+    assert_eq!(test_tasks[1].covers_features, vec![2]);
+    assert_eq!(test_tasks[1].target_files, vec!["tests/auth.rs"]);
     assert!(test_tasks[1].description.contains("password hashing"));
 }
 
@@ -2785,7 +2795,7 @@ fn test_parse_test_strategy_response_missing_fields() {
 fn test_parse_test_strategy_response_malformed_entries() {
     let data = json!({
         "test_tasks": [
-            {"description": "Valid test task", "depends_on_feature": 0, "rationale": "needed"},
+            {"description": "Valid test task", "covers_features": [0], "target_files": ["tests/feature.rs"], "rationale": "needed"},
             {"depends_on_feature": 1, "rationale": "missing description"},
             {"description": "Missing depends_on", "rationale": "no dependency index"},
             {"description": "No rationale field", "depends_on_feature": 3}
@@ -2802,10 +2812,12 @@ fn test_parse_test_strategy_response_malformed_entries() {
     );
     assert_eq!(test_tasks[0].description, "Valid test task");
     assert_eq!(test_tasks[0].depends_on_feature, 0);
+    assert_eq!(test_tasks[0].covers_features, vec![0]);
 
     // Missing depends_on_feature defaults to 0
     assert_eq!(test_tasks[1].description, "Missing depends_on");
     assert_eq!(test_tasks[1].depends_on_feature, 0);
+    assert_eq!(test_tasks[1].covers_features, vec![0]);
 
     // Missing rationale defaults to empty string
     assert_eq!(test_tasks[2].description, "No rationale field");
