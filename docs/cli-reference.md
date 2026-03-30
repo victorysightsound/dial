@@ -17,35 +17,41 @@ dial --help
 Initialize DIAL in the current directory. Creates `.dial/` directory and database.
 
 ```bash
-dial init [--phase NAME] [--import-solutions PHASE] [--no-agents]
+dial init [--phase NAME] [--import-solutions PHASE] [--agents MODE]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--phase` | `default` | Name for this development phase |
 | `--import-solutions` | (none) | Copy trusted solutions from another phase's database |
-| `--no-agents` | false | Skip adding DIAL instructions to AGENTS.md |
+| `--agents` | `local` | Agent-file handling: `local`, `shared`, or `off` |
 
 **Examples:**
 
 ```bash
 dial init --phase mvp
 dial init --phase beta --import-solutions mvp
-dial init --no-agents
+dial init --agents shared
+dial init --agents off
 ```
 
 **What it creates:**
 - `.dial/` directory
 - `.dial/<phase>.db` SQLite database with full schema
 - `.dial/current_phase` file containing the phase name
-- Appends DIAL instructions to `AGENTS.md` (unless `--no-agents`)
+- Agent instructions according to `--agents`
+
+`--agents` modes:
+- `local`: create `AGENTS.md` and hide top-level agent files from `git status` via `.git/info/exclude`
+- `shared`: create `AGENTS.md` and leave it visible for intentional commits
+- `off`: skip agent instruction files entirely
 
 ### `dial new`
 
 Full 9-phase guided project setup. One command from zero to autonomous iteration.
 
 ```bash
-dial new [--template NAME] [--from PATH] [--resume] [--phase NAME] [--wizard-backend NAME] [--wizard-model MODEL]
+dial new [--template NAME] [--from PATH] [--resume] [--phase NAME] [--wizard-backend NAME] [--wizard-model MODEL] [--agents MODE]
 ```
 
 | Flag | Default | Description |
@@ -56,6 +62,7 @@ dial new [--template NAME] [--from PATH] [--resume] [--phase NAME] [--wizard-bac
 | `--phase` | `default` | Name for the `.dial/<phase>.db` project phase |
 | `--wizard-backend` | auto-resolved | Wizard backend: `codex`, `claude`, `copilot`, `gemini`, or `openai-compatible` |
 | `--wizard-model` | (none) | Optional model override for the selected wizard backend |
+| `--agents` | `local` | Agent-file handling: `local`, `shared`, or `off` |
 
 The wizard is guided by default:
 - DIAL explains what each phase is doing in plain English
@@ -83,6 +90,7 @@ The wizard is guided by default:
 dial new --template mvp
 dial new --template mvp --wizard-backend copilot
 dial new --template spec --from docs/existing-prd.md
+dial new --template mvp --agents shared
 dial new --resume
 ```
 

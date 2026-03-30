@@ -244,6 +244,8 @@ dial validate         # Build, test, commit
 dial auto-run --cli copilot --max 10   # Fully autonomous
 ```
 
+Agent file handling defaults to `local`: DIAL creates `AGENTS.md` for local AI tooling and hides it from `git status` with `.git/info/exclude`. Use `--agents shared` if you want to commit it intentionally, or `--agents off` to skip it.
+
 `dial spec wizard` runs phases 1-5 only (PRD generation). Use `dial new` for the full 9-phase flow.
 
 ### Querying the PRD

@@ -442,6 +442,7 @@ const DANGEROUS_PATTERNS: &[&str] = &[
 ];
 
 const INTERNAL_EXCLUDE_PREFIXES: &[&str] = &[".dial", ".dial/", ".dial\\"];
+const AGENT_INSTRUCTION_FILES: &[&str] = &["agents.md", "claude.md", "gemini.md"];
 
 fn staged_files() -> Vec<String> {
     let output = git_output_with_retry(&["diff", "--cached", "--name-only"]);
@@ -463,6 +464,32 @@ fn is_internal_excluded_path(file: &str) -> bool {
         || INTERNAL_EXCLUDE_PREFIXES
             .iter()
             .any(|prefix| normalized.starts_with(&prefix.replace('\\', "/")))
+}
+
+fn is_top_level_agent_instruction_path(file: &str) -> bool {
+    let normalized = file
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_ascii_lowercase();
+    !normalized.contains('/') && AGENT_INSTRUCTION_FILES.contains(&normalized.as_str())
+}
+
+fn path_exists_in_head(file: &str) -> bool {
+    let normalized = file.replace('\\', "/");
+    git_output_with_retry(&["cat-file", "-e", &format!("HEAD:{normalized}")])
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn auto_commit_excluded_files(staged: &[String]) -> Vec<String> {
+    staged
+        .iter()
+        .filter(|file| {
+            is_internal_excluded_path(file)
+                || (is_top_level_agent_instruction_path(file) && !path_exists_in_head(file))
+        })
+        .cloned()
+        .collect()
 }
 
 fn has_staged_changes() -> bool {
@@ -528,10 +555,7 @@ fn git_commit_with_retry_policy(
         unstage_files(&dangerous);
     }
 
-    let internal_files: Vec<String> = staged
-        .into_iter()
-        .filter(|file| is_internal_excluded_path(file))
-        .collect();
+    let internal_files = auto_commit_excluded_files(&staged);
     if !internal_files.is_empty() {
         unstage_files(&internal_files);
     }
@@ -737,6 +761,15 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_instruction_path_detection_is_top_level_only() {
+        assert!(is_top_level_agent_instruction_path("AGENTS.md"));
+        assert!(is_top_level_agent_instruction_path("./CLAUDE.md"));
+        assert!(is_top_level_agent_instruction_path("GEMINI.md"));
+        assert!(!is_top_level_agent_instruction_path("docs/AGENTS.md"));
+        assert!(!is_top_level_agent_instruction_path("src/main.rs"));
+    }
+
+    #[test]
     #[serial(cwd)]
     fn test_git_commit_skips_dial_internal_files() {
         let tmp = setup_git_repo();
@@ -756,6 +789,68 @@ mod tests {
         let files = String::from_utf8_lossy(&show.stdout);
         assert!(files.contains("feature.txt"));
         assert!(!files.contains(".dial/default.db"));
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn test_git_commit_skips_new_agents_setup_file() {
+        let tmp = setup_git_repo();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        fs::write("AGENTS.md", "local setup instructions\n").unwrap();
+        fs::write("feature.txt", "real change\n").unwrap();
+
+        let hash = git_commit("Add feature").unwrap().unwrap();
+        assert!(!hash.is_empty());
+
+        let show = Command::new("git")
+            .args(["show", "--name-only", "--format=", "HEAD"])
+            .output()
+            .unwrap();
+        let files = String::from_utf8_lossy(&show.stdout);
+        assert!(files.contains("feature.txt"));
+        assert!(!files.contains("AGENTS.md"));
+
+        let status = Command::new("git")
+            .args(["status", "--short"])
+            .output()
+            .unwrap();
+        let status_output = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            status_output.contains("?? AGENTS.md"),
+            "expected AGENTS.md to remain untracked, got {status_output}"
+        );
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn test_git_commit_keeps_tracked_agents_changes() {
+        let tmp = setup_git_repo();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        fs::write("AGENTS.md", "shared instructions\n").unwrap();
+        Command::new("git")
+            .args(["add", "AGENTS.md"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Add AGENTS"])
+            .output()
+            .unwrap();
+
+        fs::write("AGENTS.md", "shared instructions\nupdated\n").unwrap();
+        fs::write("feature.txt", "real change\n").unwrap();
+
+        let hash = git_commit("Update feature").unwrap().unwrap();
+        assert!(!hash.is_empty());
+
+        let show = Command::new("git")
+            .args(["show", "--name-only", "--format=", "HEAD"])
+            .output()
+            .unwrap();
+        let files = String::from_utf8_lossy(&show.stdout);
+        assert!(files.contains("feature.txt"));
+        assert!(files.contains("AGENTS.md"));
     }
 
     #[test]

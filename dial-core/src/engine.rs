@@ -154,7 +154,21 @@ impl Engine {
         import_solutions_from: Option<&str>,
         setup_agents: bool,
     ) -> Result<Self> {
-        db::init_db(phase, import_solutions_from, setup_agents)?;
+        let agents_mode = if setup_agents {
+            db::AgentsMode::Local
+        } else {
+            db::AgentsMode::Off
+        };
+        Self::init_with_agents_mode(phase, import_solutions_from, agents_mode).await
+    }
+
+    /// Initialize a new DIAL project with explicit agent-file handling.
+    pub async fn init_with_agents_mode(
+        phase: &str,
+        import_solutions_from: Option<&str>,
+        agents_mode: db::AgentsMode,
+    ) -> Result<Self> {
+        db::init_db_with_agents_mode(phase, import_solutions_from, agents_mode)?;
 
         Ok(Self {
             config: EngineConfig {

@@ -9,6 +9,14 @@ use std::path::PathBuf;
 use std::process::Command;
 
 pub const DEFAULT_PHASE: &str = "default";
+const LOCAL_AGENT_EXCLUDE_PATTERNS: &[&str] = &["/AGENTS.md", "/CLAUDE.md", "/GEMINI.md"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentsMode {
+    Off,
+    Local,
+    Shared,
+}
 
 pub fn get_dial_dir() -> PathBuf {
     env::current_dir().unwrap_or_default().join(".dial")
@@ -85,6 +93,19 @@ pub fn init_db(
     import_solutions_from: Option<&str>,
     setup_agents: bool,
 ) -> Result<bool> {
+    let agents_mode = if setup_agents {
+        AgentsMode::Local
+    } else {
+        AgentsMode::Off
+    };
+    init_db_with_agents_mode(phase, import_solutions_from, agents_mode)
+}
+
+pub fn init_db_with_agents_mode(
+    phase: &str,
+    import_solutions_from: Option<&str>,
+    agents_mode: AgentsMode,
+) -> Result<bool> {
     let dial_dir = get_dial_dir();
     fs::create_dir_all(&dial_dir)?;
 
@@ -135,19 +156,28 @@ pub fn init_db(
         import_trusted_solutions(&conn, &dial_dir, source_phase)?;
     }
 
-    ensure_git_info_exclude_contains(".dial/")?;
+    set_git_info_exclude_pattern(".dial/", true)?;
+    configure_local_agent_file_visibility(agents_mode)?;
     set_current_phase(phase)?;
 
     crate::output::print_success(&format!("Initialized DIAL database: {}", db_path.display()));
 
-    if setup_agents {
+    if !matches!(agents_mode, AgentsMode::Off) {
         setup_agents_md(true)?;
     }
 
     Ok(true)
 }
 
-fn ensure_git_info_exclude_contains(pattern: &str) -> Result<()> {
+fn configure_local_agent_file_visibility(agents_mode: AgentsMode) -> Result<()> {
+    let hide_local_agent_files = matches!(agents_mode, AgentsMode::Local);
+    for pattern in LOCAL_AGENT_EXCLUDE_PATTERNS {
+        set_git_info_exclude_pattern(pattern, hide_local_agent_files)?;
+    }
+    Ok(())
+}
+
+fn set_git_info_exclude_pattern(pattern: &str, enabled: bool) -> Result<()> {
     let output = match Command::new("git")
         .args(["rev-parse", "--git-dir"])
         .output()
@@ -174,7 +204,11 @@ fn ensure_git_info_exclude_contains(pattern: &str) -> Result<()> {
 
     let exclude_path = git_dir_path.join("info").join("exclude");
     let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
-    if existing.lines().any(|line| line.trim() == pattern) {
+    let has_pattern = existing.lines().any(|line| line.trim() == pattern);
+    if enabled && has_pattern {
+        return Ok(());
+    }
+    if !enabled && !has_pattern {
         return Ok(());
     }
 
@@ -182,12 +216,18 @@ fn ensure_git_info_exclude_contains(pattern: &str) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let mut updated = existing;
-    if !updated.is_empty() && !updated.ends_with('\n') {
+    let mut lines: Vec<String> = existing.lines().map(|line| line.to_string()).collect();
+
+    if enabled {
+        lines.push(pattern.to_string());
+    } else {
+        lines.retain(|line| line.trim() != pattern);
+    }
+
+    let mut updated = lines.join("\n");
+    if !updated.is_empty() {
         updated.push('\n');
     }
-    updated.push_str(pattern);
-    updated.push('\n');
     fs::write(exclude_path, updated)?;
 
     Ok(())
@@ -591,5 +631,55 @@ mod tests {
         let exclude =
             fs::read_to_string(tmp.path().join(".git").join("info").join("exclude")).unwrap();
         assert!(exclude.lines().any(|line| line.trim() == ".dial/"));
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn init_db_local_agents_hide_agent_instruction_files() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        Command::new("git").args(["init"]).output().unwrap();
+
+        let created = init_db_with_agents_mode(DEFAULT_PHASE, None, AgentsMode::Local).unwrap();
+        assert!(created);
+
+        let exclude =
+            fs::read_to_string(tmp.path().join(".git").join("info").join("exclude")).unwrap();
+        assert!(exclude.lines().any(|line| line.trim() == "/AGENTS.md"));
+        assert!(exclude.lines().any(|line| line.trim() == "/CLAUDE.md"));
+        assert!(exclude.lines().any(|line| line.trim() == "/GEMINI.md"));
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn init_db_shared_agents_keep_agent_instruction_files_visible() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        Command::new("git").args(["init"]).output().unwrap();
+
+        let created = init_db_with_agents_mode(DEFAULT_PHASE, None, AgentsMode::Shared).unwrap();
+        assert!(created);
+
+        let exclude =
+            fs::read_to_string(tmp.path().join(".git").join("info").join("exclude")).unwrap();
+        assert!(!exclude.lines().any(|line| line.trim() == "/AGENTS.md"));
+        assert!(!exclude.lines().any(|line| line.trim() == "/CLAUDE.md"));
+        assert!(!exclude.lines().any(|line| line.trim() == "/GEMINI.md"));
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn init_db_off_agents_skips_file_creation() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = CwdGuard::change_to(tmp.path());
+
+        Command::new("git").args(["init"]).output().unwrap();
+
+        let created = init_db_with_agents_mode(DEFAULT_PHASE, None, AgentsMode::Off).unwrap();
+        assert!(created);
+
+        assert!(!tmp.path().join("AGENTS.md").exists());
     }
 }

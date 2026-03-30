@@ -3,7 +3,7 @@ mod cli_handler;
 mod test_support;
 mod wizard_backend;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use dial_core::*;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,6 +13,23 @@ use wizard_backend::resolve_wizard_provider;
 struct ResolvedWizardSourceDoc {
     display_path: String,
     prompt_content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliAgentsMode {
+    Local,
+    Shared,
+    Off,
+}
+
+impl From<CliAgentsMode> for AgentsMode {
+    fn from(value: CliAgentsMode) -> Self {
+        match value {
+            CliAgentsMode::Local => AgentsMode::Local,
+            CliAgentsMode::Shared => AgentsMode::Shared,
+            CliAgentsMode::Off => AgentsMode::Off,
+        }
+    }
 }
 
 fn resolve_wizard_source_doc(from: Option<&str>) -> Result<Option<ResolvedWizardSourceDoc>> {
@@ -30,6 +47,14 @@ fn resolve_wizard_source_doc(from: Option<&str>) -> Result<Option<ResolvedWizard
         display_path,
         prompt_content,
     }))
+}
+
+fn resolve_agents_mode(agents: Option<CliAgentsMode>, no_agents: bool) -> AgentsMode {
+    if no_agents {
+        AgentsMode::Off
+    } else {
+        agents.unwrap_or(CliAgentsMode::Local).into()
+    }
 }
 
 #[derive(Parser)]
@@ -54,8 +79,12 @@ enum Commands {
         #[arg(long)]
         import_solutions: Option<String>,
 
-        /// Skip adding DIAL instructions to AGENTS.md
-        #[arg(long)]
+        /// How DIAL should handle AGENTS.md and related agent instruction files
+        #[arg(long, value_enum)]
+        agents: Option<CliAgentsMode>,
+
+        /// Legacy alias for `--agents off`
+        #[arg(long, hide = true)]
         no_agents: bool,
     },
 
@@ -84,6 +113,10 @@ enum Commands {
         /// Optional model override for the selected wizard backend
         #[arg(long = "wizard-model", alias = "model")]
         wizard_model: Option<String>,
+
+        /// How DIAL should handle AGENTS.md and related agent instruction files
+        #[arg(long, value_enum)]
+        agents: Option<CliAgentsMode>,
     },
 
     /// Index spec files (deprecated: use 'dial spec import' instead)
@@ -508,10 +541,13 @@ async fn run_command(command: Commands) -> Result<()> {
     if let Commands::Init {
         phase,
         import_solutions,
+        agents,
         no_agents,
     } = command
     {
-        let mut engine = Engine::init(&phase, import_solutions.as_deref(), !no_agents).await?;
+        let agents_mode = resolve_agents_mode(agents, no_agents);
+        let mut engine =
+            Engine::init_with_agents_mode(&phase, import_solutions.as_deref(), agents_mode).await?;
         engine.on_event(Arc::new(cli_handler::CliEventHandler));
         return Ok(());
     }
@@ -524,11 +560,13 @@ async fn run_command(command: Commands) -> Result<()> {
         phase,
         wizard_backend,
         wizard_model,
+        agents,
     } = command
     {
         let resolved = resolve_wizard_provider(wizard_backend.as_deref(), wizard_model.as_deref())?;
         let source_doc = resolve_wizard_source_doc(from.as_deref())?;
-        let mut engine = open_or_init_new_engine(&phase, resume).await?;
+        let agents_mode = resolve_agents_mode(agents, false);
+        let mut engine = open_or_init_new_engine(&phase, resume, agents_mode).await?;
         engine.on_event(Arc::new(cli_handler::CliEventHandler));
         cli_handler::print_wizard_orientation(
             cli_handler::WizardRunKind::Full,
@@ -1459,11 +1497,15 @@ fn print_dry_run_result(result: &DryRunResult) {
     println!("{}", output::dim(&"-".repeat(70)));
 }
 
-async fn open_or_init_new_engine(phase: &str, resume: bool) -> Result<Engine> {
+async fn open_or_init_new_engine(
+    phase: &str,
+    resume: bool,
+    agents_mode: AgentsMode,
+) -> Result<Engine> {
     if resume {
         Engine::open(EngineConfig::default()).await
     } else {
-        Engine::init(phase, None, true).await
+        Engine::init_with_agents_mode(phase, None, agents_mode).await
     }
 }
 
@@ -1526,7 +1568,7 @@ mod tests {
 
         let _engine = Engine::init("mvp", None, true).await.unwrap();
 
-        let reopened = open_or_init_new_engine("mvp", true).await;
+        let reopened = open_or_init_new_engine("mvp", true, AgentsMode::Local).await;
         assert!(reopened.is_ok(), "resume should reopen an existing project");
 
         env::set_current_dir(original_dir).unwrap();
@@ -1552,5 +1594,30 @@ mod tests {
         );
 
         env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_agents_mode_defaults_to_local() {
+        assert_eq!(resolve_agents_mode(None, false), AgentsMode::Local);
+    }
+
+    #[test]
+    fn resolve_agents_mode_honors_explicit_modes() {
+        assert_eq!(
+            resolve_agents_mode(Some(CliAgentsMode::Shared), false),
+            AgentsMode::Shared
+        );
+        assert_eq!(
+            resolve_agents_mode(Some(CliAgentsMode::Off), false),
+            AgentsMode::Off
+        );
+    }
+
+    #[test]
+    fn resolve_agents_mode_legacy_alias_forces_off() {
+        assert_eq!(
+            resolve_agents_mode(Some(CliAgentsMode::Shared), true),
+            AgentsMode::Off
+        );
     }
 }

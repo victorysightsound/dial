@@ -16,7 +16,7 @@ your-project/
 │   └── stop                     # Created by `dial stop` (temporary)
 ├── specs/                       # Specification files (you create these)
 │   └── *.md                     # Markdown specs, indexed by `dial spec import`
-└── AGENTS.md                    # AI agent instructions (optional)
+└── AGENTS.md                    # AI agent instructions (optional; created when agents mode is local/shared)
 ```
 
 ## Configuration Keys
