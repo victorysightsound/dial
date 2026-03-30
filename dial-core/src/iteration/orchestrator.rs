@@ -52,7 +52,8 @@ impl AiCli {
                     prompt_file_ps
                 ),
                 AiCli::Codex => format!(
-                    "chcp 65001>nul && type .dial\\subagent_prompt.md | codex --dangerously-bypass-approvals-and-sandbox -C . exec --skip-git-repo-check 2>&1"
+                    "Get-Content -Raw '{}' | codex exec --dangerously-bypass-approvals-and-sandbox -C . --skip-git-repo-check 2>&1",
+                    prompt_file_ps
                 ),
                 AiCli::Copilot => format!(
                     "copilot -p (Get-Content -Raw '{}') -s --allow-all-tools --allow-all-paths --allow-all-urls 2>&1",
@@ -69,7 +70,7 @@ impl AiCli {
                 AiCli::ClaudeCode => format!("claude -p \"$(cat {})\" 2>&1", prompt_file),
                 // codex exec "prompt" (non-interactive mode, skip git check for temp dirs)
                 AiCli::Codex => format!(
-                    "cat {} | codex -a never -s workspace-write -C . exec --skip-git-repo-check 2>&1",
+                    "cat {} | codex exec -s workspace-write -C . --skip-git-repo-check 2>&1",
                     prompt_file
                 ),
                 // copilot -p "prompt" (non-interactive mode, silent output)
@@ -100,14 +101,11 @@ impl AiCli {
 
 fn shell_program_and_args(ai_cli: AiCli) -> (&'static str, &'static [&'static str]) {
     if cfg!(windows) {
-        if ai_cli == AiCli::Codex {
-            ("cmd", &["/d", "/s", "/c"])
-        } else {
-            (
-                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-                &["-Command"],
-            )
-        }
+        let _ = ai_cli;
+        (
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            &["-Command"],
+        )
     } else {
         ("sh", &["-c"])
     }
@@ -1048,20 +1046,20 @@ DIAL_COMPLETE: Implemented the feature
     }
 
     #[test]
-    fn test_codex_build_command_for_windows_uses_cmd_utf8_pipeline() {
+    fn test_codex_build_command_for_windows_uses_workspace_write_exec() {
         let cmd = AiCli::Codex.build_command_for_platform(r"C:\tmp\prompt.md", true);
         assert_eq!(
             cmd,
-            "chcp 65001>nul && type .dial\\subagent_prompt.md | codex --dangerously-bypass-approvals-and-sandbox -C . exec --skip-git-repo-check 2>&1"
+            "Get-Content -Raw 'C:\\tmp\\prompt.md' | codex exec --dangerously-bypass-approvals-and-sandbox -C . --skip-git-repo-check 2>&1"
         );
     }
 
     #[test]
-    fn test_codex_build_command_for_unix_sets_never_approval() {
+    fn test_codex_build_command_for_unix_uses_workspace_write_exec() {
         let cmd = AiCli::Codex.build_command_for_platform("/tmp/prompt.md", false);
         assert_eq!(
             cmd,
-            "cat /tmp/prompt.md | codex -a never -s workspace-write -C . exec --skip-git-repo-check 2>&1"
+            "cat /tmp/prompt.md | codex exec -s workspace-write -C . --skip-git-repo-check 2>&1"
         );
     }
 
@@ -1072,6 +1070,21 @@ DIAL_COMPLETE: Implemented the feature
             cmd,
             "Get-Content -Raw 'C:\\tmp\\prompt.md' | gemini -p - 2>&1"
         );
+    }
+
+    #[test]
+    fn test_shell_program_and_args_use_powershell_for_windows_codex() {
+        let (program, args) = shell_program_and_args(AiCli::Codex);
+        if cfg!(windows) {
+            assert_eq!(
+                program,
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+            );
+            assert_eq!(args, &["-Command"]);
+        } else {
+            assert_eq!(program, "sh");
+            assert_eq!(args, &["-c"]);
+        }
     }
 
     #[test]
