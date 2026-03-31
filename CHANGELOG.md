@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### npm Package Naming
+- makes `getdial` the official npm package for new installs and future release automation
+- keeps compatibility with existing `@victorysightsound/dial-cli` installs so `dial upgrade` and `dial uninstall` still recognize the legacy package path
+- updates README, getting started, CLI reference, and npm package docs to point new users at `npm install -g getdial`
+
 ## 4.2.7 — 2026-03-30
 
 Operator trust, verification, and planner consistency release.
@@ -61,7 +68,7 @@ No schema migrations needed.
 npm publish correction and release alignment patch.
 
 ### npm Distribution
-- publishes the npm package as `@victorysightsound/dial-cli` after npm rejected the unscoped `dial-cli` name as too similar to an existing package
+- publishes the first public npm package as `@victorysightsound/dial-cli` after npm rejected the unscoped `dial-cli` name as too similar to an existing package
 - keeps the global command name as `dial` while using the scoped package name for installation and upgrades
 - verifies the public package path end to end with authenticated npm publish, registry checks, and install documentation updates
 

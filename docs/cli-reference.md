@@ -24,7 +24,7 @@ dial upgrade [--version X.Y.Z]
 
 Behavior:
 - Cargo install: runs the equivalent of `cargo install dial-cli --force`
-- npm install: runs the equivalent of `npm install -g @victorysightsound/dial-cli`
+- npm install: runs the equivalent of `npm install -g getdial`
 - direct binary install: downloads the matching GitHub release asset and replaces the current binary
 
 On Windows, this command may open a second console window and finish there after the current `dial` process exits.

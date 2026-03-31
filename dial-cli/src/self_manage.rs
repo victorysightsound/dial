@@ -11,12 +11,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const REPO_API_LATEST: &str = "https://api.github.com/repos/victorysightsound/dial/releases/latest";
 const RELEASE_DOWNLOAD_BASE: &str = "https://github.com/victorysightsound/dial/releases/download";
 const CARGO_PACKAGE: &str = "dial-cli";
-const NPM_PACKAGE: &str = "@victorysightsound/dial-cli";
+const NPM_PACKAGE: &str = "getdial";
+const LEGACY_NPM_PACKAGE: &str = "@victorysightsound/dial-cli";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMethod {
     Cargo,
-    Npm,
+    Npm(&'static str),
     Binary,
 }
 
@@ -24,7 +25,7 @@ impl InstallMethod {
     fn display_name(self) -> &'static str {
         match self {
             InstallMethod::Cargo => "cargo",
-            InstallMethod::Npm => "npm",
+            InstallMethod::Npm(_) => "npm",
             InstallMethod::Binary => "binary",
         }
     }
@@ -77,7 +78,7 @@ pub async fn upgrade(requested_version: Option<&str>) -> Result<()> {
 
     match install.method {
         InstallMethod::Cargo => upgrade_via_cargo(&target_version).await,
-        InstallMethod::Npm => upgrade_via_npm(&target_version).await,
+        InstallMethod::Npm(package_name) => upgrade_via_npm(package_name, &target_version).await,
         InstallMethod::Binary => upgrade_binary_install(&install, &target_version).await,
     }
 }
@@ -104,7 +105,7 @@ pub async fn uninstall(yes: bool) -> Result<()> {
 
     match install.method {
         InstallMethod::Cargo => uninstall_via_cargo(&install).await,
-        InstallMethod::Npm => uninstall_via_npm(&install).await,
+        InstallMethod::Npm(package_name) => uninstall_via_npm(package_name, &install).await,
         InstallMethod::Binary => uninstall_binary_install(&install).await,
     }
 }
@@ -129,12 +130,14 @@ fn detect_install_method(path: &Path) -> InstallMethod {
     let parts = path_components_lower(path);
     if path_ends_with(&parts, &[".cargo", "bin"], "dial") {
         InstallMethod::Cargo
+    } else if path_ends_with(&parts, &["node_modules", "getdial", "vendor"], "dial") {
+        InstallMethod::Npm(NPM_PACKAGE)
     } else if path_ends_with(
         &parts,
         &["node_modules", "@victorysightsound", "dial-cli", "vendor"],
         "dial",
     ) {
-        InstallMethod::Npm
+        InstallMethod::Npm(LEGACY_NPM_PACKAGE)
     } else {
         InstallMethod::Binary
     }
@@ -252,12 +255,12 @@ async fn upgrade_via_cargo(target_version: &str) -> Result<()> {
     Ok(())
 }
 
-async fn upgrade_via_npm(target_version: &str) -> Result<()> {
+async fn upgrade_via_npm(package_name: &str, target_version: &str) -> Result<()> {
     if cfg!(windows) {
         ensure_command_available("npm", "--version")?;
         let script = build_windows_command_script(
             "upgrade",
-            &format!("npm install -g {NPM_PACKAGE}@{target_version}"),
+            &format!("npm install -g {package_name}@{target_version}"),
             &format!("DIAL upgraded to {target_version}."),
         );
         spawn_windows_followup(&script)?;
@@ -267,7 +270,7 @@ async fn upgrade_via_npm(target_version: &str) -> Result<()> {
         return Ok(());
     }
 
-    let package_spec = format!("{NPM_PACKAGE}@{target_version}");
+    let package_spec = format!("{package_name}@{target_version}");
     run_command_streaming("npm", &["install", "-g", &package_spec])?;
     output::print_success(&format!("DIAL upgraded to {}.", target_version));
     Ok(())
@@ -329,12 +332,12 @@ async fn uninstall_via_cargo(install: &InstallInfo) -> Result<()> {
     Ok(())
 }
 
-async fn uninstall_via_npm(_install: &InstallInfo) -> Result<()> {
+async fn uninstall_via_npm(package_name: &str, _install: &InstallInfo) -> Result<()> {
     if cfg!(windows) {
         ensure_command_available("npm", "--version")?;
         let script = build_windows_command_script(
             "uninstall",
-            &format!("npm uninstall -g {NPM_PACKAGE}"),
+            &format!("npm uninstall -g {package_name}"),
             "DIAL removed. Existing project .dial directories were left untouched.",
         );
         spawn_windows_followup(&script)?;
@@ -344,7 +347,7 @@ async fn uninstall_via_npm(_install: &InstallInfo) -> Result<()> {
         return Ok(());
     }
 
-    run_command_streaming("npm", &["uninstall", "-g", NPM_PACKAGE])?;
+    run_command_streaming("npm", &["uninstall", "-g", package_name])?;
     output::print_success("DIAL removed. Existing project .dial directories were left untouched.");
     Ok(())
 }
@@ -720,10 +723,19 @@ mod tests {
 
     #[test]
     fn detect_install_method_recognizes_npm_vendor_path() {
+        let path = Path::new("/Users/test/.local/share/node_modules/getdial/vendor/dial");
+        assert_eq!(detect_install_method(path), InstallMethod::Npm(NPM_PACKAGE));
+    }
+
+    #[test]
+    fn detect_install_method_recognizes_legacy_npm_vendor_path() {
         let path = Path::new(
             "/Users/test/.local/share/node_modules/@victorysightsound/dial-cli/vendor/dial",
         );
-        assert_eq!(detect_install_method(path), InstallMethod::Npm);
+        assert_eq!(
+            detect_install_method(path),
+            InstallMethod::Npm(LEGACY_NPM_PACKAGE)
+        );
     }
 
     #[test]

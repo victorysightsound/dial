@@ -1,5 +1,9 @@
 # DIAL Implementation History
 
+Current official npm package: `getdial`
+
+Earlier release notes below still mention `@victorysightsound/dial-cli` where that was the published package at the time.
+
 ## Version Timeline
 
 ### v4.2.6 (March 2026) - Built-In Install Management

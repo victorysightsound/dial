@@ -1,5 +1,5 @@
 {
-  "name": "@victorysightsound/dial-cli",
+  "name": "getdial",
   "version": "4.2.7",
   "description": "Install the DIAL CLI as a global command via npm",
   "keywords": [

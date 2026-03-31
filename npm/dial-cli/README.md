@@ -1,12 +1,14 @@
-# @victorysightsound/dial-cli
+# getdial
 
 Install the DIAL CLI from npm:
 
 ```bash
-npm install -g @victorysightsound/dial-cli
+npm install -g getdial
 ```
 
 This package downloads the matching prebuilt DIAL binary from the GitHub release for the current package version and exposes `dial` as the global command.
+
+Legacy installs via `@victorysightsound/dial-cli` still work, but new installs should use `getdial`.
 
 Supported targets:
 - macOS Apple Silicon

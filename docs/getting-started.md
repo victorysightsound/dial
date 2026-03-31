@@ -51,10 +51,11 @@ This is a global install for the current user. If `~/.local/bin` is already on y
 If you already use Node.js, npm is an easy way to install DIAL globally:
 
 ```bash
-npm install -g @victorysightsound/dial-cli
+npm install -g getdial
 ```
 
 This installs the global `dial` command and downloads the matching prebuilt DIAL binary from the GitHub release for the current npm package version.
+If you already installed the older scoped package `@victorysightsound/dial-cli`, it still works. New installs should use `getdial`.
 
 Notes:
 - this is still a global install, not a per-project dependency
@@ -153,7 +154,7 @@ dial uninstall --yes
 
 How `dial upgrade` works:
 - Cargo install: runs the equivalent of `cargo install dial-cli --force`
-- npm install: runs the equivalent of `npm install -g @victorysightsound/dial-cli`
+- npm install: runs the equivalent of `npm install -g getdial`
 - direct binary install: downloads the matching GitHub release asset for your platform and replaces the current binary
 
 How `dial uninstall` works:

@@ -88,10 +88,11 @@ sudo mv dial /usr/local/bin/
 **npm** (requires Node.js 18+):
 
 ```bash
-npm install -g @victorysightsound/dial-cli
+npm install -g getdial
 ```
 
 This installs the global `dial` command and downloads the matching prebuilt binary for your platform from the GitHub release for the current npm package version.
+Existing installs from `@victorysightsound/dial-cli` continue to work, but `getdial` is now the official package for new installs.
 
 **Windows:** Download `dial-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/victorysightsound/dial/releases/latest), extract `dial.exe` into a permanent folder, and add that folder to your user PATH. See [Getting Started](docs/getting-started.md) for step-by-step Windows instructions and a plain-language explanation of PATH.
 
@@ -123,7 +124,7 @@ dial uninstall
 
 `dial upgrade` detects how DIAL was installed:
 - Cargo install: runs the equivalent of `cargo install dial-cli --force`
-- npm install: runs the equivalent of `npm install -g @victorysightsound/dial-cli`
+- npm install: runs the equivalent of `npm install -g getdial`
 - direct binary install: downloads the matching release asset and replaces the current binary
 
 `dial uninstall` removes the CLI itself but leaves every project's `.dial/` directory alone.
