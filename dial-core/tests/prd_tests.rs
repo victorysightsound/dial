@@ -1357,6 +1357,18 @@ fn test_build_task_review_prompt_no_gathered_info() {
     assert!(!prompt.contains("Project Summary"));
 }
 
+#[test]
+fn test_build_task_review_prompt_discourages_trailing_verification_tasks() {
+    let tasks = vec![(1, "A task".to_string(), 1, None)];
+    let gathered_info = json!({});
+
+    let prompt = prd::wizard::build_task_review_prompt(&tasks, &gathered_info);
+
+    assert!(prompt.contains("NO TRAILING VERIFICATION TASKS"));
+    assert!(prompt
+        .contains("Fold generic acceptance-check-only work into related feature or test tasks"));
+}
+
 // =============================================================================
 // Phase 7 prompt builder tests
 // =============================================================================
@@ -1721,6 +1733,146 @@ async fn test_apply_task_review_pushes_matching_test_task_after_implementation()
         dependency_count, 1,
         "test task should depend on the matching implementation task"
     );
+
+    env::set_current_dir(original_dir).unwrap();
+}
+
+#[tokio::test]
+async fn test_apply_task_review_folds_generic_verification_task_into_feature_slice() {
+    let _lock = lock();
+    let (_engine, _tmp, original_dir) = setup_engine().await;
+
+    let phase_conn = dial_core::get_db(Some("test")).unwrap();
+
+    phase_conn
+        .execute(
+            "INSERT INTO tasks (description, priority, status) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["placeholder", 1, "pending"],
+        )
+        .unwrap();
+
+    let review_data = json!({
+        "tasks": [
+            {
+                "description": "Update `settings.html` and `settings.js` to provide a visible Compact mode checkbox, keep a status message synced to the saved value, and persist `{ \"compactMode\": true|false }` to the `app-settings` localStorage key.",
+                "priority": 1,
+                "spec_section": "2.1",
+                "depends_on": [],
+                "acceptance_criteria": [
+                    "settings.html shows a Compact mode checkbox and status text",
+                    "toggling the checkbox updates app-settings in localStorage"
+                ],
+                "requires_browser_verification": true,
+                "task_kind": "feature",
+                "feature_group": "compact-mode",
+                "coverage_mode": "inline"
+            },
+            {
+                "description": "Update `index.html` and `app.js` so the home page reads `app-settings`, shows `Compact mode on` or `Compact mode off`, and toggles the `compact-mode` class on `<body>`.",
+                "priority": 2,
+                "spec_section": "2.2",
+                "depends_on": [0],
+                "acceptance_criteria": [
+                    "the home page preview reflects the saved compact mode state"
+                ],
+                "requires_browser_verification": true,
+                "task_kind": "feature",
+                "feature_group": "compact-mode",
+                "coverage_mode": "inline"
+            },
+            {
+                "description": "Add Node-based automated tests in `test/app.test.js` that cover compact mode persistence from the settings page and the home-page preview state after reading saved settings.",
+                "priority": 3,
+                "spec_section": "6.1",
+                "depends_on": [0, 1],
+                "acceptance_criteria": [
+                    "npm test covers compact mode persistence and preview state"
+                ],
+                "requires_browser_verification": false,
+                "task_kind": "test",
+                "feature_group": "compact-mode",
+                "coverage_mode": "dedicated"
+            },
+            {
+                "description": "Run the acceptance checks for the compact-mode flow by confirming `npm run build`, `npm test`, and the browser-visible `settings.html` and `index.html` behavior match the requested outcomes.",
+                "priority": 4,
+                "spec_section": "7.0",
+                "depends_on": [0, 1, 2],
+                "acceptance_criteria": [
+                    "build and test commands pass for the compact mode flow",
+                    "browser-visible compact mode behavior matches the requested outcomes"
+                ],
+                "requires_browser_verification": true,
+                "task_kind": "verification",
+                "feature_group": "compact-mode",
+                "coverage_mode": "none"
+            }
+        ],
+        "removed": [],
+        "added": []
+    });
+
+    prd::wizard::apply_task_review(&phase_conn, &review_data).unwrap();
+
+    let descriptions: Vec<String> = phase_conn
+        .prepare("SELECT description FROM tasks WHERE status = 'pending' ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        descriptions.len(),
+        3,
+        "generic verification task should be folded out"
+    );
+    assert!(
+        descriptions
+            .iter()
+            .all(|description| !description.contains("Run the acceptance checks")),
+        "trailing verification task should be removed"
+    );
+
+    let browser_required: i64 = phase_conn
+        .query_row(
+            "SELECT requires_browser_verification
+             FROM tasks
+             WHERE description LIKE 'Update `settings.html` and `settings.js`%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(browser_required, 1);
+
+    let criteria_json: String = phase_conn
+        .query_row(
+            "SELECT acceptance_criteria_json
+             FROM tasks
+             WHERE description LIKE 'Update `settings.html` and `settings.js`%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let criteria: Vec<String> = serde_json::from_str(&criteria_json).unwrap();
+    assert!(
+        criteria
+            .iter()
+            .any(|criterion| criterion.contains("build and test commands pass")),
+        "folded verification acceptance criteria should move to the anchor task"
+    );
+
+    let dependency_count: i64 = phase_conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_dependencies td
+             JOIN tasks t ON t.id = td.task_id
+             JOIN tasks d ON d.id = td.depends_on_id
+             WHERE t.description LIKE 'Add Node-based automated tests in `test/app.test.js`%'
+               AND d.description LIKE 'Update `settings.html` and `settings.js`%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dependency_count, 1);
 
     env::set_current_dir(original_dir).unwrap();
 }

@@ -3191,6 +3191,7 @@ Before producing the final task list, evaluate EVERY task on three dimensions:
 8. **TASK KIND**: Classify every task as one of `feature`, `test`, `config`, `docs`, `verification`, or `refactor`.
 9. **FEATURE GROUP**: Assign every task a stable kebab-case `feature_group` that identifies the product slice it belongs to. Tasks that serve the same feature slice should share the same group.
 10. **COVERAGE OWNERSHIP**: Set `coverage_mode` to `inline` when the task itself should carry its automated coverage, `dedicated` when this task is the single dedicated coverage owner for its feature_group, or `none` when coverage ownership does not apply.
+11. **NO TRAILING VERIFICATION TASKS**: Do not leave a standalone `verification` task for generic acceptance checks when the same build, test, or browser-visible checks can be attached to the relevant feature and dedicated test tasks. Reserve `verification` tasks for rare work that truly cannot be absorbed elsewhere.
 
 ### Actions Required
 
@@ -3212,6 +3213,7 @@ Any task sized [XL] MUST be split. Do not leave XL tasks in the final list.
 6. Include 1-3 concrete acceptance criteria for every task
 7. Mark browser verification only for tasks that truly need a manual UI check
 8. Keep coverage ownership unambiguous: at most one `dedicated` test task per `feature_group`
+9. Fold generic acceptance-check-only work into related feature or test tasks instead of creating a trailing verification task
 
 Each task should be roughly one commit's worth of work (~30 minutes).
 In the `depends_on` array, use 0-based indices referring to other tasks in YOUR output array.
@@ -3512,6 +3514,8 @@ struct ReviewedTask {
     depends_on: Vec<usize>,
     acceptance_criteria: Vec<String>,
     requires_browser_verification: bool,
+    task_kind: String,
+    feature_group: Option<String>,
 }
 
 fn matching_feature_dependencies(tasks: &[ReviewedTask], test_index: usize) -> Vec<usize> {
@@ -3532,6 +3536,150 @@ fn matching_feature_dependencies(tasks: &[ReviewedTask], test_index: usize) -> V
             }
         })
         .collect()
+}
+
+fn task_is_generic_acceptance_verification(description: &str) -> bool {
+    let lower = description.to_ascii_lowercase();
+    lower.contains("run the acceptance checks")
+        || lower.contains("acceptance checks")
+        || lower.contains("acceptance criteria")
+        || (lower.contains("browser-visible")
+            && (lower.contains("npm run build") || lower.contains("npm test")))
+}
+
+fn choose_verification_anchor(tasks: &[ReviewedTask], verification_index: usize) -> Option<usize> {
+    let verification_task = tasks.get(verification_index)?;
+    let dependencies: Vec<usize> = verification_task
+        .depends_on
+        .iter()
+        .copied()
+        .filter(|index| *index < tasks.len() && *index != verification_index)
+        .collect();
+
+    let same_group = |index: usize| {
+        verification_task.feature_group.is_some()
+            && tasks[index].feature_group == verification_task.feature_group
+    };
+
+    let find_match = |predicate: &dyn Fn(usize) -> bool| -> Option<usize> {
+        dependencies
+            .iter()
+            .copied()
+            .find(|index| predicate(*index))
+            .or_else(|| {
+                tasks.iter().enumerate().find_map(|(index, _)| {
+                    if index == verification_index || !predicate(index) {
+                        None
+                    } else {
+                        Some(index)
+                    }
+                })
+            })
+    };
+
+    find_match(&|index| {
+        let task = &tasks[index];
+        same_group(index) && task.task_kind != "verification" && task.task_kind != "test"
+    })
+    .or_else(|| {
+        find_match(&|index| {
+            let task = &tasks[index];
+            same_group(index) && task.task_kind != "verification"
+        })
+    })
+    .or_else(|| {
+        find_match(&|index| {
+            let task = &tasks[index];
+            task.task_kind != "verification" && task.task_kind != "test"
+        })
+    })
+    .or_else(|| find_match(&|index| tasks[index].task_kind != "verification"))
+}
+
+fn merge_acceptance_criteria(target: &mut Vec<String>, source: &[String]) {
+    for criterion in source {
+        if !target.iter().any(|existing| existing == criterion) {
+            target.push(criterion.clone());
+        }
+    }
+}
+
+fn fold_standalone_verification_tasks(reviewed_tasks: &mut Vec<ReviewedTask>) {
+    if reviewed_tasks.is_empty() {
+        return;
+    }
+
+    let mut folded_into = vec![None; reviewed_tasks.len()];
+
+    for index in 0..reviewed_tasks.len() {
+        let Some(task) = reviewed_tasks.get(index).cloned() else {
+            continue;
+        };
+        if task.task_kind != "verification"
+            || !task_is_generic_acceptance_verification(&task.description)
+        {
+            continue;
+        }
+
+        let Some(anchor_index) = choose_verification_anchor(reviewed_tasks, index) else {
+            continue;
+        };
+
+        if let Some(anchor_task) = reviewed_tasks.get_mut(anchor_index) {
+            anchor_task.requires_browser_verification |= task.requires_browser_verification
+                || task.description.to_ascii_lowercase().contains("browser");
+            merge_acceptance_criteria(
+                &mut anchor_task.acceptance_criteria,
+                &task.acceptance_criteria,
+            );
+            folded_into[index] = Some(anchor_index);
+        }
+    }
+
+    if !folded_into.iter().any(|item| item.is_some()) {
+        return;
+    }
+
+    let mut old_to_new: Vec<Option<usize>> = vec![None; reviewed_tasks.len()];
+    let mut retained_tasks = Vec::with_capacity(reviewed_tasks.len());
+
+    for (index, task) in reviewed_tasks.iter().cloned().enumerate() {
+        if folded_into[index].is_some() {
+            continue;
+        }
+        old_to_new[index] = Some(retained_tasks.len());
+        retained_tasks.push(task);
+    }
+
+    for (old_index, task) in reviewed_tasks.iter().enumerate() {
+        if folded_into[old_index].is_some() {
+            continue;
+        }
+        let new_index = old_to_new[old_index].expect("retained tasks must have a mapped index");
+        let retained_task = &mut retained_tasks[new_index];
+        let mut remapped_dependencies = Vec::with_capacity(task.depends_on.len());
+
+        for dep_index in &task.depends_on {
+            if *dep_index >= folded_into.len() {
+                continue;
+            }
+            let mapped_old_index = folded_into[*dep_index].unwrap_or(*dep_index);
+            if mapped_old_index == old_index {
+                continue;
+            }
+            if let Some(mapped_new_index) = old_to_new[mapped_old_index] {
+                if mapped_new_index != new_index {
+                    remapped_dependencies.push(mapped_new_index);
+                }
+            }
+        }
+
+        remapped_dependencies.sort_unstable();
+        remapped_dependencies.dedup();
+        retained_task.depends_on = remapped_dependencies;
+    }
+
+    *reviewed_tasks = retained_tasks;
 }
 
 /// Run wizard phase 6: Task Review with Sizing Analysis.
@@ -3662,6 +3810,15 @@ pub fn apply_task_review(
                 .get("requires_browser_verification")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false),
+            task_kind: normalize_task_kind(
+                task.get("task_kind")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("feature"),
+            ),
+            feature_group: task
+                .get("feature_group")
+                .and_then(|value| value.as_str())
+                .and_then(normalize_feature_group),
         })
         .collect();
 
@@ -3693,6 +3850,8 @@ pub fn apply_task_review(
             .priority
             .max(max_dependency_priority + 1);
     }
+
+    fold_standalone_verification_tasks(&mut reviewed_tasks);
 
     // Delete existing pending/in-progress tasks and their dependencies (both directions)
     conn.execute(
