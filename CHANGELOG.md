@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 4.2.7 — 2026-03-30
 
-Operator trust and inspectability improvements.
+Operator trust, verification, and planner consistency release.
 
 ### Human-Readable Progress Artifacts
 - adds `dial progress` as a human-readable project view for the task ledger and recent iteration outcomes
@@ -26,6 +26,8 @@ Operator trust and inspectability improvements.
 - extends Phase 6 task review so reviewed tasks include acceptance criteria and a browser-verification requirement flag
 - updates `dial status` and `dial task next` so paused verification work stays visible instead of looking idle
 - lets `dial reset` recover paused `awaiting_approval` iterations as well as normal in-progress work
+- folds generic acceptance-only verification work back into the related feature or test slice so compact existing-repo plans do not grow a redundant trailing verification task
+- restores compact-mode planner parity between macOS and native Windows wizard runs
 
 ### Schema
 - adds task acceptance-criteria storage and per-iteration browser-verification records
