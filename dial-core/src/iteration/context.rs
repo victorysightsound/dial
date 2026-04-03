@@ -31,6 +31,7 @@ const MANUAL_SIGNS: &[&str] = &[
     "ONE TASK ONLY: Complete exactly this task. No scope creep.",
     "SEARCH BEFORE CREATE: Always search for existing files/functions before creating new ones.",
     "NO PLACEHOLDERS: Every implementation must be complete. No TODO, FIXME, or stub code.",
+    "WRITABLE WORKSPACE REQUIRED: If the workspace is read-only, stop immediately and report blocked instead of attempting implementation.",
     "VALIDATE BEFORE DONE: Run `dial validate` after implementing. Don't mark complete without testing.",
     "RECORD LEARNINGS: After success, capture what you learned with `dial learn \"...\" -c category`.",
     "FAIL FAST: If blocked or confused, stop and ask rather than guessing.",
@@ -40,6 +41,7 @@ const AUTONOMOUS_SIGNS: &[&str] = &[
     "ONE TASK ONLY: Complete exactly this task. No scope creep.",
     "SEARCH BEFORE CREATE: Always search for existing files/functions before creating new ones.",
     "NO PLACEHOLDERS: Every implementation must be complete. No TODO, FIXME, or stub code.",
+    "WRITABLE WORKSPACE REQUIRED: If the workspace is read-only, stop immediately and report blocked instead of attempting implementation.",
     "LOCAL CHECKS ONLY: Run project-native checks if helpful, but do NOT run `dial validate`, `dial learn`, or any git commit/staging commands. The parent DIAL process will handle validation, learning capture, and commits after you exit.",
     "NO STARTUP COMMANDS: Do NOT run `session-context` or other startup-only environment helpers. DIAL already prepared the task context for you.",
     "FAIL FAST: If blocked or confused, stop and ask rather than guessing.",
@@ -773,9 +775,10 @@ pub fn generate_subagent_prompt_with_mode(
     let signs_block = build_signs_block(mode.signs());
     let mode_specific_instructions = match mode {
         SubagentPromptMode::Manual => {
-            r#"1. **Implement** the task completely (no placeholders)
+r#"1. **Implement** the task completely (no placeholders)
 2. **Test** your implementation locally if possible
-3. **Signal completion** by writing a JSON file to `.dial/signal.json`:
+3. **Stop immediately if the workspace is read-only**. Do not keep retrying or attempting edits in a read-only environment.
+4. **Signal completion** by writing a JSON file to `.dial/signal.json`:
 
 ```json
 {
@@ -799,10 +802,11 @@ Write the file as the **last step** before exiting. Include any learnings alongs
 Do NOT deviate from this task. Do NOT start other tasks."#
         }
         SubagentPromptMode::Autonomous => {
-            r#"1. **Implement** the task completely (no placeholders)
+r#"1. **Implement** the task completely (no placeholders)
 2. **Test** your implementation locally if possible using project-native commands when helpful
-3. **Do not run DIAL lifecycle commands** such as `dial validate`, `dial learn`, `session-context`, or any git staging/commit commands. The parent DIAL process will validate, capture learnings from your signal, and commit after you exit.
-4. **Signal completion** by writing a JSON file to `.dial/signal.json`:
+3. **Stop immediately if the workspace is read-only**. Do not keep retrying or attempting edits in a read-only environment.
+4. **Do not run DIAL lifecycle commands** such as `dial validate`, `dial learn`, `session-context`, or any git staging/commit commands. The parent DIAL process will validate, capture learnings from your signal, and commit after you exit.
+5. **Signal completion** by writing a JSON file to `.dial/signal.json`:
 
 ```json
 {
@@ -1386,6 +1390,7 @@ mod tests {
         let prompt = generate_subagent_prompt(&conn, &task).unwrap();
 
         assert!(prompt.contains("Use only ASCII hyphen-minus characters"));
+        assert!(prompt.contains("WRITABLE WORKSPACE REQUIRED"));
         assert!(prompt.contains("dial validate"));
         assert!(!prompt.contains('—'));
         assert!(!prompt.contains('–'));
@@ -1398,8 +1403,10 @@ mod tests {
 
         let prompt = generate_autonomous_subagent_prompt(&conn, &task).unwrap();
 
+        assert!(prompt.contains("WRITABLE WORKSPACE REQUIRED"));
         assert!(prompt.contains("Do not run DIAL lifecycle commands"));
         assert!(prompt.contains("Do NOT run `session-context`"));
+        assert!(prompt.contains("Stop immediately if the workspace is read-only"));
         assert!(!prompt.contains("VALIDATE BEFORE DONE"));
         assert!(!prompt.contains("RECORD LEARNINGS"));
     }

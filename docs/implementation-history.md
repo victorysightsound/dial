@@ -6,6 +6,29 @@ Earlier release notes below still mention `@victorysightsound/dial-cli` where th
 
 ## Version Timeline
 
+### v4.2.8 (April 2026) - Writable Worker Enforcement
+
+Patch release focused on making DIAL verify writable worker access before task execution:
+
+- Adds a preflight worker write probe so DIAL can fail fast before spawning a read-only implementation agent
+- Records blocked worker access attempts in a dedicated audit table for later inspection
+- Updates orchestrator and auto-run flows so read-only worker setups stop immediately instead of spinning on retries
+- Hardens sub-agent prompts so writable workspace requirements are explicit in both manual and autonomous modes
+- Verifies the new behavior with core tests and real `dial auto-run` smoke runs in writable and blocked scenarios
+- Adds a schema migration for the worker access audit table
+
+### v4.2.7 (March 2026) - Operator Trust, Verification, and Planner Consistency
+
+Patch release focused on tightening task verification and keeping progress visible:
+
+- Adds human-readable progress artifacts for the task ledger, recent iteration outcomes, and change summaries
+- Adds a stable pattern digest section so future runs can reuse trusted codebase learnings
+- Introduces acceptance criteria and optional browser verification gates for UI work
+- Improves status flow so paused verification work stays visible and resumable
+- Adds schema support for task acceptance criteria and per-iteration browser verification records
+
+No schema migrations needed.
+
 ### v4.2.6 (March 2026) - Built-In Install Management
 
 Patch release focused on letting DIAL manage its own lifecycle across supported install methods:

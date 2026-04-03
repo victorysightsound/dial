@@ -7,6 +7,20 @@
 - keeps compatibility with existing `@victorysightsound/dial-cli` installs so `dial upgrade` and `dial uninstall` still recognize the legacy package path
 - updates README, getting started, CLI reference, and npm package docs to point new users at `npm install -g getdial`
 
+## 4.2.8 — 2026-04-03
+
+Writable worker enforcement release.
+
+### Worker Access Enforcement
+- verifies worker write access before task execution starts
+- blocks read-only worker setups immediately and records the failure for later inspection
+- hardens orchestrator, auto-run, and prompt context so writable workspace requirements are explicit
+- keeps the normal worker spawn path unchanged when the workspace is writable
+
+### Reliability
+- adds a dedicated worker-access audit table for blocked access checks
+- keeps the implementation testable with core coverage plus real writable and blocked smoke runs
+
 ## 4.2.7 — 2026-03-30
 
 Operator trust, verification, and planner consistency release.

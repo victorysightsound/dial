@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     FOREIGN KEY (spec_section_id) REFERENCES spec_sections(id)
 );
 
+CREATE TABLE IF NOT EXISTS worker_access_checks (
+    id INTEGER PRIMARY KEY,
+    task_id INTEGER NOT NULL,
+    backend_name TEXT NOT NULL,
+    probe_result TEXT NOT NULL,
+    blocked_reason TEXT NOT NULL,
+    probe_detail TEXT,
+    explicitly_read_only INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
     description,
     content='tasks', content_rowid='id',

@@ -23,6 +23,10 @@ use std::process::{Command, Stdio};
 
 use super::context::generate_autonomous_subagent_prompt;
 use super::signal::{read_signal_file, signal_file_to_result};
+use super::worker_access::{
+    probe_worker_write_access, record_worker_access_block, WorkerAccess, WorkerAccessHint,
+    READ_ONLY_WORKER_REASON,
+};
 use super::validation::run_validation;
 use super::{complete_iteration, create_iteration};
 
@@ -98,6 +102,13 @@ impl AiCli {
             AiCli::Codex => "Codex CLI",
             AiCli::Copilot => "GitHub Copilot CLI",
             AiCli::Gemini => "Gemini CLI",
+        }
+    }
+
+    pub fn worker_access_hint(&self) -> WorkerAccessHint {
+        match self {
+            AiCli::Codex => WorkerAccessHint::Writable,
+            AiCli::ClaudeCode | AiCli::Copilot | AiCli::Gemini => WorkerAccessHint::Unknown,
         }
     }
 }
@@ -476,6 +487,49 @@ pub fn auto_run(max_iterations: Option<u32>, ai_cli_name: Option<&str>) -> Resul
                     "This task requires browser verification before completion. Auto-run will stop after local validation so you can verify the UI and record it."
                 )
             );
+        }
+
+        let workdir = std::env::current_dir().unwrap_or_default();
+        match ai_cli.worker_access_hint() {
+            WorkerAccessHint::ReadOnly => {
+                let detail = "backend is configured for read-only execution".to_string();
+                println!(
+                    "{}",
+                    red(&format!(
+                        "Task #{} blocked before implementation: {}",
+                        task.id, READ_ONLY_WORKER_REASON
+                    ))
+                );
+                println!("{}", dim(&format!("Backend: {}", ai_cli.name())));
+                record_worker_access_block(&conn, &task, ai_cli.name(), true, &detail)?;
+                break;
+            }
+            WorkerAccessHint::Writable | WorkerAccessHint::Unknown => {
+                match probe_worker_write_access(&workdir)? {
+                    WorkerAccess::Writable => {}
+                    WorkerAccess::ReadOnly { detail } => {
+                        println!(
+                            "{}",
+                            red(&format!(
+                                "Task #{} blocked before implementation: {}",
+                                task.id, READ_ONLY_WORKER_REASON
+                            ))
+                        );
+                        println!("{}", dim(&format!("Backend: {}", ai_cli.name())));
+                        if !detail.trim().is_empty() {
+                            println!("{}", dim(&format!("Probe detail: {}", detail.trim())));
+                        }
+                        record_worker_access_block(
+                            &conn,
+                            &task,
+                            ai_cli.name(),
+                            false,
+                            &detail,
+                        )?;
+                        break;
+                    }
+                }
+            }
         }
 
         // Check cross-iteration chronic failure threshold

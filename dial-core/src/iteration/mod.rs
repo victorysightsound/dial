@@ -1,6 +1,7 @@
 pub mod context;
 pub mod orchestrator;
 pub mod signal;
+pub mod worker_access;
 pub mod validation;
 
 use crate::artifacts::{
@@ -21,6 +22,9 @@ use crate::MAX_FIX_ATTEMPTS;
 use chrono::Local;
 use rusqlite::Connection;
 use std::fs;
+use self::worker_access::{
+    probe_worker_write_access, record_worker_access_block, WorkerAccess, READ_ONLY_WORKER_REASON,
+};
 
 pub use context::{
     gather_context, gather_context_budgeted, gather_context_items, gather_context_items_pure,
@@ -134,6 +138,25 @@ pub fn iterate_once() -> Result<(bool, String)> {
             )
         );
         println!();
+    }
+
+    let workdir = std::env::current_dir().unwrap_or_default();
+    match probe_worker_write_access(&workdir)? {
+        WorkerAccess::Writable => {}
+        WorkerAccess::ReadOnly { detail } => {
+            println!(
+                "{}",
+                red(&format!(
+                    "Task #{} blocked before implementation: {}",
+                    task.id, READ_ONLY_WORKER_REASON
+                ))
+            );
+            if !detail.trim().is_empty() {
+                println!("{}", dim(&format!("Probe detail: {}", detail.trim())));
+            }
+            record_worker_access_block(&conn, &task, "manual", false, &detail)?;
+            return Ok((true, "blocked".to_string()));
+        }
     }
 
     // Check for existing failed iterations
@@ -653,6 +676,14 @@ pub fn run_loop(max_iterations: Option<u32>) -> Result<()> {
             break;
         }
 
+        if result == "blocked" {
+            println!(
+                "{}",
+                yellow("\nTask blocked before implementation. Auto-run stopped.")
+            );
+            break;
+        }
+
         iteration_count += 1;
     }
 
@@ -868,6 +899,25 @@ pub fn orchestrate() -> Result<()> {
             return Ok(());
         }
     };
+
+    let workdir = std::env::current_dir().unwrap_or_default();
+    match probe_worker_write_access(&workdir)? {
+        WorkerAccess::Writable => {}
+        WorkerAccess::ReadOnly { detail } => {
+            println!(
+                "{}",
+                red(&format!(
+                    "Task #{} blocked before implementation: {}",
+                    task.id, READ_ONLY_WORKER_REASON
+                ))
+            );
+            if !detail.trim().is_empty() {
+                println!("{}", dim(&format!("Probe detail: {}", detail.trim())));
+            }
+            record_worker_access_block(&conn, &task, "orchestrate", false, &detail)?;
+            return Ok(());
+        }
+    }
 
     // Generate the sub-agent prompt
     let _ = sync_patterns_digest(&conn);

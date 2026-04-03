@@ -75,6 +75,11 @@ const MIGRATIONS: &[Migration] = &[
         description: "Add task acceptance criteria and browser verification tracking",
         apply: migrate_012_task_acceptance_and_browser_verification,
     },
+    Migration {
+        version: 13,
+        description: "Add worker access audit table",
+        apply: migrate_013_worker_access_checks,
+    },
 ];
 
 /// Ensure the migrations tracking table exists, then apply any pending migrations.
@@ -438,6 +443,25 @@ fn migrate_012_task_acceptance_and_browser_verification(conn: &Connection) -> Re
     Ok(())
 }
 
+fn migrate_013_worker_access_checks(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS worker_access_checks (
+            id INTEGER PRIMARY KEY,
+            task_id INTEGER NOT NULL,
+            backend_name TEXT NOT NULL,
+            probe_result TEXT NOT NULL,
+            blocked_reason TEXT NOT NULL,
+            probe_detail TEXT,
+            explicitly_read_only INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+        "#,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +558,21 @@ mod tests {
         assert_eq!(sort_order, 0);
         assert_eq!(required, 1);
         assert_eq!(timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn test_worker_access_checks_table_created() {
+        let conn = setup_test_db();
+        run_migrations(&conn).unwrap();
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='worker_access_checks'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
     }
 
     #[test]
